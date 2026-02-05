@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+ui/dist/
+
+# Data/sessions (may contain sensitive info)
+data/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# IDE
+.vscode/
+.idea/

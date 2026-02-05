@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo:*)",
+      "Bash(cmd //c \"tasklist /FI \"\"IMAGENAME eq node.exe\"\" /FO TABLE\")",
+      "Bash(cmd //c \"tasklist /FI \"\"IMAGENAME eq WindowsTerminal.exe\"\" /FO TABLE\")",
+      "Bash(powershell -Command:*)",
+      "Bash(dir:*)"
+    ]
+  }
+}
