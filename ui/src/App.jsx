@@ -7,6 +7,7 @@ import ContextSidebar from './components/ContextSidebar';
 import SettingsModal from './components/SettingsModal';
 import ResizeHandle from './components/ResizeHandle';
 import HintBadge from './components/HintBadge';
+import KanbanBoard from './components/KanbanBoard';
 import { useSessions } from './hooks/useSessions';
 import { useContextSidebar } from './hooks/useContextSidebar';
 import { useSettings } from './hooks/useSettings';
@@ -14,6 +15,7 @@ import { useHintMode } from './hooks/useHintMode';
 import { registerHint, unregisterHint } from './utils/hintRegistry';
 
 function App() {
+  const [currentView, setCurrentView] = useState('sessions'); // 'sessions' | 'kanban'
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [detailsSession, setDetailsSession] = useState(null);
@@ -146,6 +148,15 @@ function App() {
       // Skip if hint mode is active (let hint mode handle keys)
       if (hintModeActive) return;
 
+      const target = e.target;
+      const isEditableTarget = target instanceof HTMLElement && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable
+      );
+      if (isEditableTarget) return;
+
       if (e.ctrlKey && e.altKey) {
         const resizeStep = 50;
         const maxWidth = Math.floor(window.innerWidth * 0.7);
@@ -162,8 +173,10 @@ function App() {
           // Right arrow makes context wider (terminal narrower)
           setContextWidth(w => Math.min(maxWidth, w + resizeStep));
         }
+      }
 
-        // Session navigation: Ctrl+Alt+[ ] = - +
+      // Session navigation: Ctrl+[ ] ; ' (works even when terminal is focused)
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
         if (e.key === ']') {
           e.preventDefault();
           navigateSession('next');
@@ -172,11 +185,11 @@ function App() {
           e.preventDefault();
           navigateSession('prev');
         }
-        if (e.key === '=' || e.key === '+') {
+        if (e.key === "'") {
           e.preventDefault();
           navigateGroup('next');
         }
-        if (e.key === '-' || e.key === '_') {
+        if (e.key === ';') {
           e.preventDefault();
           navigateGroup('prev');
         }
@@ -254,6 +267,23 @@ function App() {
   return (
     <div className={`app-container ${hintModeActive ? 'hint-mode-active' : ''}`}>
       <aside className="sidebar sessions-sidebar" style={{ width: sessionsWidth, minWidth: sessionsWidth }}>
+        <div className="sidebar-header">
+          <h1>Claude Manager</h1>
+          <div className="view-toggle">
+            <button
+              className={`view-toggle-btn ${currentView === 'sessions' ? 'active' : ''}`}
+              onClick={() => setCurrentView('sessions')}
+            >
+              Sessions
+            </button>
+            <button
+              className={`view-toggle-btn ${currentView === 'kanban' ? 'active' : ''}`}
+              onClick={() => setCurrentView('kanban')}
+            >
+              Kanban
+            </button>
+          </div>
+        </div>
         <Dashboard
           sessions={sessions}
           selectedId={selectedId}
@@ -270,6 +300,16 @@ function App() {
         />
       </aside>
       <ResizeHandle onResize={handleSessionsResize} />
+      {currentView === 'kanban' ? (
+        <main className="main-content">
+          <KanbanBoard
+            sessions={sessions}
+            settings={settings}
+            onUpdateSession={updateSession}
+          />
+        </main>
+      ) : (
+        <>
       {selectedSession && sidebarVisible && (
         <>
           <aside
@@ -329,6 +369,8 @@ function App() {
           </div>
         )}
       </main>
+        </>
+      )}
       {showNewSessionModal && (
         <NewSessionModal
           onClose={() => setShowNewSessionModal(false)}

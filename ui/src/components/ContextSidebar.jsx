@@ -1,13 +1,21 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import PlanViewer from './PlanViewer';
 import PromptsModal from './PromptsModal';
 
-function ContextSidebar({ session, onClose, onUpdateSession, onFocus }) {
+function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseButton = false }) {
   const [plans, setPlans] = useState([]);
   const [loadingPlans, setLoadingPlans] = useState(false);
   const [notes, setNotes] = useState(session?.notes || '');
   const [expandedPlanIndex, setExpandedPlanIndex] = useState(0); // Default expand first (latest) plan
   const [showPromptsModal, setShowPromptsModal] = useState(false);
+  const [showPlanPicker, setShowPlanPicker] = useState(false);
+  const [availablePlans, setAvailablePlans] = useState([]);
+  const [loadingAvailable, setLoadingAvailable] = useState(false);
+  const planPickerRef = useRef(null);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [availableClaudeSessions, setAvailableClaudeSessions] = useState([]);
+  const [loadingClaudeSessions, setLoadingClaudeSessions] = useState(false);
+  const sessionPickerRef = useRef(null);
 
   // Create a stable key to detect plan changes via WebSocket
   // Reacts to: new plans (array change) or updated plans (plansUpdatedAt change)
@@ -47,9 +55,109 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus }) {
     setNotes(session?.notes || '');
   }, [session?.id, session?.notes]);
 
+  // Close plan picker on click outside
+  useEffect(() => {
+    if (!showPlanPicker) return;
+
+    const handleClickOutside = (e) => {
+      if (planPickerRef.current && !planPickerRef.current.contains(e.target)) {
+        setShowPlanPicker(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showPlanPicker]);
+
+  // Close session picker on click outside
+  useEffect(() => {
+    if (!showSessionPicker) return;
+    const handleClickOutside = (e) => {
+      if (sessionPickerRef.current && !sessionPickerRef.current.contains(e.target)) {
+        setShowSessionPicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSessionPicker]);
+
+  const handleOpenSessionPicker = async () => {
+    if (showSessionPicker) {
+      setShowSessionPicker(false);
+      return;
+    }
+    setShowSessionPicker(true);
+    setLoadingClaudeSessions(true);
+    try {
+      const response = await fetch(`/api/sessions/${session.id}/available-claude-sessions`);
+      if (response.ok) {
+        const data = await response.json();
+        setAvailableClaudeSessions(data.claudeSessions || []);
+      }
+    } catch (error) {
+      console.error('Error fetching Claude sessions:', error);
+    } finally {
+      setLoadingClaudeSessions(false);
+    }
+  };
+
+  const handleLinkClaudeSession = async (claudeSessionId) => {
+    try {
+      const response = await fetch(`/api/sessions/${session.id}/link-claude-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claudeSessionId }),
+      });
+      if (response.ok) {
+        setShowSessionPicker(false);
+        // Session state updates automatically via WebSocket sessionUpdated event
+      }
+    } catch (error) {
+      console.error('Error linking Claude session:', error);
+    }
+  };
+
   const handleNotesBlur = () => {
     if (notes !== (session?.notes || '')) {
       onUpdateSession?.(session.id, { notes });
+    }
+  };
+
+  const handleOpenPlanPicker = async () => {
+    if (showPlanPicker) {
+      setShowPlanPicker(false);
+      return;
+    }
+
+    setShowPlanPicker(true);
+    setLoadingAvailable(true);
+    try {
+      const response = await fetch(`/api/sessions/${session.id}/available-plans`);
+      if (response.ok) {
+        const { plans: available } = await response.json();
+        setAvailablePlans(available || []);
+      }
+    } catch (error) {
+      console.error('Error fetching available plans:', error);
+    } finally {
+      setLoadingAvailable(false);
+    }
+  };
+
+  const handleAddPlan = async (planPath) => {
+    try {
+      const response = await fetch(`/api/sessions/${session.id}/plans`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planPath }),
+      });
+      if (response.ok) {
+        const { plans: updatedPlans } = await response.json();
+        setPlans(updatedPlans || []);
+        setShowPlanPicker(false);
+      }
+    } catch (error) {
+      console.error('Error adding plan:', error);
     }
   };
 
@@ -58,9 +166,11 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus }) {
       <div className="context-sidebar">
         <div className="context-sidebar-header">
           <h3>Context</h3>
-          <button className="sidebar-close-btn" onClick={onClose} title="Close (Ctrl+B)">
-            &times;
-          </button>
+          {!hideCloseButton && (
+            <button className="sidebar-close-btn" onClick={onClose} title="Close (Ctrl+B)">
+              &times;
+            </button>
+          )}
         </div>
         <div className="context-section">
           <p className="text-muted">Select a session to view context</p>
@@ -76,10 +186,61 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus }) {
     <div className="context-sidebar" onClick={onFocus}>
       <div className="context-sidebar-header">
         <h3>Context</h3>
-        <button className="sidebar-close-btn" onClick={onClose} title="Close (Ctrl+B)">
-          &times;
-        </button>
+        {!hideCloseButton && (
+          <button className="sidebar-close-btn" onClick={onClose} title="Close (Ctrl+B)">
+            &times;
+          </button>
+        )}
       </div>
+
+      {/* Claude Session Link Row */}
+      {session.cliType !== 'terminal' && (
+        <div className="claude-session-row" ref={sessionPickerRef}>
+          <span className="claude-session-label">Claude:</span>
+          <span className="claude-session-id" title={session.claudeSessionId || 'Not linked'}>
+            {session.claudeSessionId ? session.claudeSessionId.slice(0, 8) + '..' : 'Not linked'}
+          </span>
+          <button
+            className="claude-session-link-btn"
+            onClick={handleOpenSessionPicker}
+            title="Link to a Claude session"
+          >
+            {session.claudeSessionId ? 'Change' : 'Link'}
+          </button>
+          {showSessionPicker && (
+            <div className="claude-session-picker">
+              {loadingClaudeSessions ? (
+                <div className="claude-session-picker-empty">Loading...</div>
+              ) : availableClaudeSessions.length > 0 ? (
+                availableClaudeSessions.map((cs) => (
+                  <div
+                    key={cs.sessionId}
+                    className={`claude-session-picker-item ${cs.sessionId === session.claudeSessionId ? 'current' : ''}`}
+                    onClick={() => handleLinkClaudeSession(cs.sessionId)}
+                  >
+                    <div className="claude-session-picker-header">
+                      <span className="claude-session-picker-id">
+                        {cs.sessionId.slice(0, 8)}..
+                        {cs.sessionId === session.claudeSessionId && ' \u2713'}
+                      </span>
+                      <span className="claude-session-picker-meta">
+                        {cs.promptCount} prompt{cs.promptCount !== 1 ? 's' : ''} · {formatRelativeTime(cs.modified)}
+                      </span>
+                    </div>
+                    {cs.firstPrompt && (
+                      <div className="claude-session-picker-prompt">
+                        {cs.firstPrompt.length > 60 ? cs.firstPrompt.slice(0, 60) + '...' : cs.firstPrompt}
+                      </div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="claude-session-picker-empty">No Claude sessions found for this directory</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Notes + Recent Prompts (2 columns) */}
       <div className="context-section notes-prompts-row">
@@ -133,7 +294,40 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus }) {
             <span className="context-section-icon">&#128203;</span>
             <span className="context-section-title">Active Plans</span>
           </div>
-          {plans.length > 0 && <span className="section-count">{plans.length}</span>}
+          <div className="section-header-right">
+            {plans.length > 0 && <span className="section-count">{plans.length}</span>}
+            <div className="plan-picker-wrapper" ref={planPickerRef}>
+              <button
+                className="plan-picker-btn"
+                onClick={handleOpenPlanPicker}
+                title="Add existing plan"
+              >
+                +
+              </button>
+              {showPlanPicker && (
+                <div className="plan-picker-dropdown">
+                  {loadingAvailable ? (
+                    <div className="plan-picker-empty">Loading...</div>
+                  ) : availablePlans.length > 0 ? (
+                    availablePlans.map((plan) => (
+                      <div
+                        key={plan.path}
+                        className="plan-picker-item"
+                        onClick={() => handleAddPlan(plan.path)}
+                      >
+                        <span className="plan-picker-name">{plan.name}</span>
+                        {plan.modifiedAt && (
+                          <span className="plan-picker-date">{formatRelativeTime(plan.modifiedAt)}</span>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="plan-picker-empty">No other plans available</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
         <div className="plans-content-area">
           {loadingPlans ? (

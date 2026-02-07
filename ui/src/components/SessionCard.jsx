@@ -98,7 +98,15 @@ function SessionCard({
               autoFocus
             />
           ) : (
-            session.name
+            <>
+              {session.name}
+              {session.cliType === 'codex' && (
+                <span className="cli-type-badge codex">CDX</span>
+              )}
+              {session.cliType === 'terminal' && (
+                <span className="cli-type-badge terminal">TRM</span>
+              )}
+            </>
           )}
         </span>
         <span className={`session-status ${session.status}`}>

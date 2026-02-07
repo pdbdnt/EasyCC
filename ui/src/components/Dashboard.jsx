@@ -76,6 +76,18 @@ function Dashboard({
       groups.get(dirName).push({ session, globalIndex: index });
     });
 
+    // Within each group, show Claude sessions first and Codex sessions last.
+    for (const [, sessionsInGroup] of groups) {
+      sessionsInGroup.sort((a, b) => {
+        const aCodex = a.session.cliType === 'codex' ? 1 : 0;
+        const bCodex = b.session.cliType === 'codex' ? 1 : 0;
+        if (aCodex !== bCodex) {
+          return aCodex - bCodex;
+        }
+        return a.globalIndex - b.globalIndex;
+      });
+    }
+
     // Sort groups alphabetically (first gets priority for letter)
     const sortedGroups = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 

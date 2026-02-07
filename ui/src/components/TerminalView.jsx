@@ -18,7 +18,8 @@ const TerminalView = forwardRef(function TerminalView({
   hintModeActive = false,
   typedChars = '',
   hintCodes = {},
-  onFocus
+  onFocus,
+  hideHeader = false
 }, ref) {
   const terminalRef = useRef(null);
   const xtermRef = useRef(null);
@@ -28,6 +29,9 @@ const TerminalView = forwardRef(function TerminalView({
   const [sessionStatus, setSessionStatus] = useState(session?.status || 'active');
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(session?.name || '');
+  const ctrlCPendingRef = useRef(false);
+  const ctrlCTimerRef = useRef(null);
+  const keyboardSettingsRef = useRef(null);
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -102,6 +106,10 @@ const TerminalView = forwardRef(function TerminalView({
     clearKey: 'Ctrl+L'
   };
 
+  useEffect(() => {
+    keyboardSettingsRef.current = keyboardSettings;
+  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.cancelKey, keyboardSettings.clearKey]);
+
   // Initialize terminal
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -146,6 +154,67 @@ const TerminalView = forwardRef(function TerminalView({
     term.open(terminalRef.current);
     fitAddon.fit();
 
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') {
+        return true;
+      }
+
+      // Ctrl+Enter sends newline directly to the session.
+      if (event.ctrlKey && event.key === 'Enter') {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'input', data: '\n' }));
+        }
+        return false;
+      }
+
+      const cancelKey = keyboardSettingsRef.current?.cancelKey || 'Ctrl+C';
+      if (matchKeyCombo(event, cancelKey)) {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard?.writeText(selection).catch((error) => {
+            console.error('Failed to copy selection:', error);
+          });
+          return false;
+        }
+
+        if (ctrlCPendingRef.current) {
+          ctrlCPendingRef.current = false;
+          if (ctrlCTimerRef.current) {
+            clearTimeout(ctrlCTimerRef.current);
+            ctrlCTimerRef.current = null;
+          }
+          return true;
+        }
+
+        ctrlCPendingRef.current = true;
+        if (ctrlCTimerRef.current) {
+          clearTimeout(ctrlCTimerRef.current);
+        }
+        term.write('\r\n\x1b[33mPress Ctrl+C again within 2s to send SIGINT.\x1b[0m\r\n');
+        ctrlCTimerRef.current = setTimeout(() => {
+          ctrlCPendingRef.current = false;
+          ctrlCTimerRef.current = null;
+        }, 2000);
+        return false;
+      }
+
+      // Intercept app-level shortcuts so xterm doesn't consume them
+      // Session navigation: Ctrl+[ Ctrl+] Ctrl+; Ctrl+'
+      if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+        if (event.key === '[' || event.key === ']' || event.key === ';' || event.key === "'") {
+          return false;
+        }
+      }
+      // Panel resize: Ctrl+Alt+Arrow keys
+      if (event.ctrlKey && event.altKey) {
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -175,6 +244,11 @@ const TerminalView = forwardRef(function TerminalView({
     term.focus();
 
     return () => {
+      if (ctrlCTimerRef.current) {
+        clearTimeout(ctrlCTimerRef.current);
+        ctrlCTimerRef.current = null;
+      }
+      ctrlCPendingRef.current = false;
       resizeObserver.disconnect();
       term.dispose();
       if (wsRef.current) {
@@ -183,12 +257,10 @@ const TerminalView = forwardRef(function TerminalView({
     };
   }, []);
 
-  // Connect to session when session changes
+  // Connect to session when session ID changes
+  // Status updates come via WebSocket (line 66), not props
   useEffect(() => {
     if (!session?.id) return;
-
-    // Update status from session prop
-    setSessionStatus(session.status);
 
     // Only reconnect if session changed
     if (currentSessionId.current !== session.id) {
@@ -201,7 +273,7 @@ const TerminalView = forwardRef(function TerminalView({
 
       connect(session.id);
     }
-  }, [session?.id, session?.status, connect]);
+  }, [session?.id, connect]);
 
   // Update terminal settings when they change
   useEffect(() => {
@@ -256,7 +328,7 @@ const TerminalView = forwardRef(function TerminalView({
         return;
       }
 
-      // Note: cancelKey (Ctrl+C) is handled by the terminal itself
+      // cancelKey is handled by xterm's custom key handler (for confirmation).
     };
 
     const terminalElement = terminalRef.current;
@@ -312,7 +384,7 @@ const TerminalView = forwardRef(function TerminalView({
 
   return (
     <div className="terminal-container">
-      <div className="terminal-header">
+      {!hideHeader && <div className="terminal-header">
         <div className="terminal-title" onDoubleClick={handleNameDoubleClick}>
           <span className={`status-indicator ${sessionStatus}`} />
           {isEditingName ? (
@@ -365,7 +437,7 @@ const TerminalView = forwardRef(function TerminalView({
             {isPaused || isCompleted ? 'Delete' : 'Kill'}
           </button>
         </div>
-      </div>
+      </div>}
       <div className="terminal-wrapper-container">
         <div
           className={`terminal-wrapper ${isPaused ? 'paused' : ''}`}

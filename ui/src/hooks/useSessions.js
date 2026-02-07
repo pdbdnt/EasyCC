@@ -11,9 +11,12 @@ export function useSessions() {
       case 'init':
         setSessions(data.sessions || []);
         // Auto-select first session if none selected
-        if (data.sessions?.length > 0 && !selectedId) {
-          setSelectedId(data.sessions[0].id);
-        }
+        setSelectedId(prev => {
+          if (!prev && data.sessions?.length > 0) {
+            return data.sessions[0].id;
+          }
+          return prev;
+        });
         break;
 
       case 'statusChange':
@@ -62,7 +65,7 @@ export function useSessions() {
       default:
         break;
     }
-  }, [selectedId]);
+  }, []); // No dependencies - callback is stable
 
   const handleOpen = useCallback(() => {
     setConnectionStatus('connected');

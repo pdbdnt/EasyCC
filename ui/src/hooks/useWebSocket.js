@@ -12,6 +12,18 @@ export function useWebSocket(url, options = {}) {
   const reconnectTimeout = useRef(null);
   const unmountedRef = useRef(false);
 
+  // Store callbacks in refs to avoid reconnecting when they change
+  const onMessageRef = useRef(onMessage);
+  const onOpenRef = useRef(onOpen);
+  const onCloseRef = useRef(onClose);
+  const onErrorRef = useRef(onError);
+
+  // Update refs when callbacks change (without triggering reconnect)
+  useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
+  useEffect(() => { onOpenRef.current = onOpen; }, [onOpen]);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
+
   const connect = useCallback(() => {
     if (unmountedRef.current) return;
 
@@ -31,13 +43,13 @@ export function useWebSocket(url, options = {}) {
         }
         setReadyState(WebSocket.OPEN);
         reconnectAttempts.current = 0;
-        onOpen?.();
+        onOpenRef.current?.();
       };
 
       ws.onclose = (event) => {
         if (unmountedRef.current) return;
         setReadyState(WebSocket.CLOSED);
-        onClose?.(event);
+        onCloseRef.current?.(event);
 
         // Attempt to reconnect
         if (autoReconnect && reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS) {
@@ -52,14 +64,14 @@ export function useWebSocket(url, options = {}) {
 
       ws.onerror = (error) => {
         if (unmountedRef.current) return;
-        onError?.(error);
+        onErrorRef.current?.(error);
       };
 
       ws.onmessage = (event) => {
         if (unmountedRef.current) return;
         try {
           const data = JSON.parse(event.data);
-          onMessage?.(data);
+          onMessageRef.current?.(data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
         }
@@ -68,7 +80,7 @@ export function useWebSocket(url, options = {}) {
       console.error('Error creating WebSocket:', error);
       setReadyState(WebSocket.CLOSED);
     }
-  }, [url, onMessage, onOpen, onClose, onError, autoReconnect]);
+  }, [url, autoReconnect]); // Only reconnect when URL or autoReconnect changes
 
   const send = useCallback((data) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

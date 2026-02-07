@@ -100,6 +100,28 @@ class PlanManager extends EventEmitter {
   }
 
   /**
+   * Get the file path for a plan
+   * @param {string} filename - Plan filename
+   * @returns {string|null} Full file path or null if not found
+   */
+  getPlanPath(filename) {
+    try {
+      // Security: prevent directory traversal
+      const safeFilename = path.basename(filename);
+      const filePath = path.join(this.plansDir, safeFilename);
+
+      if (!fs.existsSync(filePath)) {
+        return null;
+      }
+
+      return filePath;
+    } catch (error) {
+      console.error('Error getting plan path:', error.message);
+      return null;
+    }
+  }
+
+  /**
    * Find plans that match a working directory
    * @param {string} workingDir - Working directory path
    * @returns {Array} Matching plans

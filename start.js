@@ -25,7 +25,7 @@ console.log('Starting Claude Manager server...');
 const server = spawn('node', ['server.js'], {
   cwd: backendPath,
   stdio: 'inherit',
-  env: { ...process.env, NODE_ENV: 'production' }
+  env: { ...process.env, NODE_ENV: 'production', PORT: '5010' }
 });
 
 server.on('error', (error) => {

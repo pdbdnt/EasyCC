@@ -6,6 +6,16 @@ const path = require('path');
 const os = require('os');
 const DataStore = require('./dataStore');
 const PlanManager = require('./planManager');
+const MAX_PROMPT_HISTORY_CHARS = 4000;
+
+// Debug logger that writes to file
+const DEBUG_LOG_FILE = path.join(__dirname, '..', 'data', 'debug.log');
+function debugLog(message) {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] ${message}\n`;
+  fs.appendFileSync(DEBUG_LOG_FILE, line);
+  console.log(`[DEBUG] ${message}`);
+}
 
 /**
  * Ring buffer for storing terminal output with a maximum size
@@ -69,8 +79,9 @@ class SessionManager extends EventEmitter {
       // Restore sessions that can be resumed:
       // - Claude sessions with claudeSessionId
       // - Codex sessions (which use 'resume --last' and don't need a session ID)
+      // - Terminal sessions (just re-launch a fresh shell)
       const cliType = sessionData.cliType || 'claude';
-      const canResume = cliType === 'codex' || sessionData.claudeSessionId;
+      const canResume = cliType === 'codex' || cliType === 'terminal' || sessionData.claudeSessionId;
 
       if (canResume) {
         const session = {
@@ -98,6 +109,7 @@ class SessionManager extends EventEmitter {
         this.sessions.set(id, session);
         // Update persisted status to paused
         this.dataStore.saveSession(session);
+        debugLog(`Session ${id} (${session.name}) marked PAUSED during server startup (loadSessions)`);
         const resumeInfo = cliType === 'codex' ? 'Codex (resume --last)' : `Claude session ${session.claudeSessionId}`;
         console.log(`Restored session: ${session.name} (${id}) - can be resumed with ${resumeInfo}`);
       } else {
@@ -362,7 +374,16 @@ class SessionManager extends EventEmitter {
 
     try {
       if (isWindows) {
-        if (cliType === 'codex') {
+        if (cliType === 'terminal') {
+          // Plain terminal - launch PowerShell
+          ptyProcess = pty.spawn('powershell.exe', ['-NoLogo'], {
+            name: 'xterm-color',
+            cols: 120,
+            rows: 30,
+            cwd: workingDir,
+            env: process.env
+          });
+        } else if (cliType === 'codex') {
           // Codex via WSL with path conversion - use bash -ic to load user's PATH
           const wslPath = this.convertToWslPath(workingDir);
           const codexCommand = `wsl bash -ic 'codex --dangerously-bypass-approvals-and-sandbox -C ${wslPath}'`;
@@ -385,7 +406,17 @@ class SessionManager extends EventEmitter {
         }
       } else {
         // Unix - spawn directly
-        if (cliType === 'codex') {
+        if (cliType === 'terminal') {
+          // Plain terminal - launch default shell
+          const shell = process.env.SHELL || '/bin/bash';
+          ptyProcess = pty.spawn(shell, [], {
+            name: 'xterm-color',
+            cols: 120,
+            rows: 30,
+            cwd: workingDir,
+            env: process.env
+          });
+        } else if (cliType === 'codex') {
           ptyProcess = pty.spawn('codex', [
             '--dangerously-bypass-approvals-and-sandbox',
             '-C', workingDir
@@ -407,7 +438,8 @@ class SessionManager extends EventEmitter {
         }
       }
     } catch (error) {
-      throw new Error(`Failed to spawn ${cliType === 'codex' ? 'Codex' : 'Claude'} CLI: ${error.message}`);
+      const cliName = cliType === 'codex' ? 'Codex' : cliType === 'terminal' ? 'Terminal' : 'Claude';
+      throw new Error(`Failed to spawn ${cliName} CLI: ${error.message}`);
     }
 
     const session = {
@@ -421,7 +453,7 @@ class SessionManager extends EventEmitter {
       pty: ptyProcess,
       workingDir,
       cliType,  // 'claude' or 'codex'
-      claudeSessionId: cliType === 'claude' ? claudeSessionId : null, // Only for Claude
+      claudeSessionId: cliType === 'claude' ? claudeSessionId : null, // Only for Claude sessions
       notes: '',
       tags: [],
       plans: [],
@@ -477,7 +509,9 @@ class SessionManager extends EventEmitter {
       // If session just started and immediately exited with error, keep it paused (don't delete)
       // This preserves sessions that fail to start
       const sessionAge = Date.now() - new Date(session.createdAt).getTime();
+      debugLog(`PTY onExit for session ${id}: exitCode=${exitCode}, signal=${signal}, sessionAge=${sessionAge}ms`);
       if (sessionAge < 10000 && exitCode !== 0) {
+        debugLog(`Session ${id} PAUSED due to early exit (age=${sessionAge}ms, exitCode=${exitCode})`);
         session.status = 'paused';
         session.pty = null;
         this.dataStore.saveSession(session);
@@ -658,6 +692,8 @@ class SessionManager extends EventEmitter {
     session.status = 'paused';
     session.lastActivity = new Date();
 
+    debugLog(`Session ${id} PAUSED via pauseSession(). Stack: ${new Error().stack}`);
+
     // Save to persistent storage
     this.dataStore.saveSession(session);
 
@@ -688,9 +724,173 @@ class SessionManager extends EventEmitter {
     const isWindows = process.platform === 'win32';
     const cliType = session.cliType || 'claude';
     let ptyProcess;
+    let fallbackAttempted = false;
+    let suppressNextExit = false;
+
+    const createFreshClaudeProcess = () => {
+      if (isWindows) {
+        return pty.spawn('cmd.exe', ['/c', 'claude --dangerously-skip-permissions'], {
+          name: 'xterm-color',
+          cols: 120,
+          rows: 30,
+          cwd: session.workingDir,
+          env: process.env
+        });
+      }
+
+      return pty.spawn('claude', ['--dangerously-skip-permissions'], {
+        name: 'xterm-color',
+        cols: 120,
+        rows: 30,
+        cwd: session.workingDir,
+        env: process.env
+      });
+    };
+
+    const handleResumeFallback = () => {
+      if (cliType !== 'claude' || fallbackAttempted) {
+        return;
+      }
+
+      fallbackAttempted = true;
+      const oldClaudeSessionId = session.claudeSessionId;
+      session.claudeSessionId = null;
+      session.claudeSessionName = null;
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', {
+        sessionId: id,
+        claudeSessionId: null,
+        claudeSessionName: null
+      });
+
+      this.emit('output', {
+        sessionId: id,
+        data: '\r\n\x1b[33mResume target not found. Starting a fresh Claude terminal so you can run /resume manually.\x1b[0m\r\n'
+      });
+      debugLog(`Session ${id}: Claude resume failed for ID ${oldClaudeSessionId || 'none'}, falling back to fresh Claude shell`);
+
+      try {
+        suppressNextExit = true;
+        if (session.pty) {
+          session.pty.kill();
+        }
+        const freshProcess = createFreshClaudeProcess();
+        wirePtyHandlers(freshProcess);
+      } catch (error) {
+        this.emit('output', {
+          sessionId: id,
+          data: `\r\n\x1b[31mFallback launch failed: ${error.message}\x1b[0m\r\n`
+        });
+      }
+    };
+
+    const wirePtyHandlers = (processRef) => {
+      session.pty = processRef;
+
+      processRef.onData((data) => {
+        session.outputBuffer.push(data);
+        session.lastActivity = new Date();
+
+        this.detectClaudeSessionId(data, session);
+
+        if (cliType === 'claude' && /No conversation found with session ID/i.test(data)) {
+          handleResumeFallback();
+          this.emit('output', { sessionId: id, data });
+          return;
+        }
+
+        // Detect status from output (debounced to avoid flickering)
+        const newStatus = this.detectStatus(data, session.status);
+        if (newStatus !== session.status && newStatus !== 'paused') {
+          this.updateSessionStatus(session, newStatus);
+        }
+
+        const task = this.detectTask(data);
+        if (task && task !== session.currentTask) {
+          session.currentTask = task;
+          this.dataStore.saveSession(session);
+          this.emit('statusChange', {
+            sessionId: id,
+            status: session.status,
+            currentTask: task
+          });
+        }
+
+        // Detect plan updates from terminal output
+        this.detectPlanActivity(data, session);
+
+        this.emit('output', { sessionId: id, data });
+      });
+
+      processRef.onExit(({ exitCode, signal }) => {
+        // Expected exit from fallback transition (old process killed intentionally)
+        if (suppressNextExit) {
+          suppressNextExit = false;
+          return;
+        }
+
+        // Don't process if shutting down (cleanup handles this)
+        if (this.isShuttingDown) return;
+
+        // Don't mark as completed if intentionally paused
+        if (session.status === 'paused') {
+          return;
+        }
+
+        // If session just started and immediately exited with error, keep it paused (don't delete)
+        // This preserves sessions that fail to resume (e.g., "Session ID already in use")
+        const sessionAge = Date.now() - new Date(session.lastActivity).getTime();
+        debugLog(`PTY onExit (resume) for session ${id}: exitCode=${exitCode}, signal=${signal}, sessionAge=${sessionAge}ms`);
+        if (sessionAge < 10000 && exitCode !== 0) {
+          debugLog(`Session ${id} PAUSED due to early exit after resume (age=${sessionAge}ms, exitCode=${exitCode})`);
+          session.status = 'paused';
+          session.pty = null;
+          this.dataStore.saveSession(session);
+          this.emit('statusChange', {
+            sessionId: id,
+            status: 'paused',
+            currentTask: session.currentTask,
+            error: 'Failed to resume session'
+          });
+          return;
+        }
+
+        debugLog(`Session ${id} marked COMPLETED (exitCode=${exitCode}, signal=${signal})`);
+        session.status = 'completed';
+        this.dataStore.deleteSession(id);
+        this.emit('statusChange', {
+          sessionId: id,
+          status: 'completed',
+          currentTask: session.currentTask,
+          exitCode,
+          signal
+        });
+        this.emit('sessionEnded', { sessionId: id, exitCode, signal });
+      });
+    };
 
     try {
-      if (cliType === 'codex') {
+      if (cliType === 'terminal') {
+        // Plain terminal - just launch a fresh shell
+        if (isWindows) {
+          ptyProcess = pty.spawn('powershell.exe', ['-NoLogo'], {
+            name: 'xterm-color',
+            cols: 120,
+            rows: 30,
+            cwd: session.workingDir,
+            env: process.env
+          });
+        } else {
+          const shell = process.env.SHELL || '/bin/bash';
+          ptyProcess = pty.spawn(shell, [], {
+            name: 'xterm-color',
+            cols: 120,
+            rows: 30,
+            cwd: session.workingDir,
+            env: process.env
+          });
+        }
+      } else if (cliType === 'codex') {
         // Codex uses `codex resume --last` to resume the most recent session
         if (isWindows) {
           ptyProcess = pty.spawn('cmd.exe', ['/c', "wsl bash -ic 'codex resume --last'"], {
@@ -740,76 +940,11 @@ class SessionManager extends EventEmitter {
       return false;
     }
 
-    session.pty = ptyProcess;
     session.status = 'active';
     session.lastActivity = new Date();
 
     // Re-setup PTY handlers
-    ptyProcess.onData((data) => {
-      session.outputBuffer.push(data);
-      session.lastActivity = new Date();
-
-      this.detectClaudeSessionId(data, session);
-
-      // Detect status from output (debounced to avoid flickering)
-      const newStatus = this.detectStatus(data, session.status);
-      if (newStatus !== session.status && newStatus !== 'paused') {
-        this.updateSessionStatus(session, newStatus);
-      }
-
-      const task = this.detectTask(data);
-      if (task && task !== session.currentTask) {
-        session.currentTask = task;
-        this.dataStore.saveSession(session);
-        this.emit('statusChange', {
-          sessionId: id,
-          status: session.status,
-          currentTask: task
-        });
-      }
-
-      // Detect plan updates from terminal output
-      this.detectPlanActivity(data, session);
-
-      this.emit('output', { sessionId: id, data });
-    });
-
-    ptyProcess.onExit(({ exitCode, signal }) => {
-      // Don't process if shutting down (cleanup handles this)
-      if (this.isShuttingDown) return;
-
-      // Don't mark as completed if intentionally paused
-      if (session.status === 'paused') {
-        return;
-      }
-
-      // If session just started and immediately exited with error, keep it paused (don't delete)
-      // This preserves sessions that fail to resume (e.g., "Session ID already in use")
-      const sessionAge = Date.now() - new Date(session.lastActivity).getTime();
-      if (sessionAge < 10000 && exitCode !== 0) {
-        session.status = 'paused';
-        session.pty = null;
-        this.dataStore.saveSession(session);
-        this.emit('statusChange', {
-          sessionId: id,
-          status: 'paused',
-          currentTask: session.currentTask,
-          error: 'Failed to resume session'
-        });
-        return;
-      }
-
-      session.status = 'completed';
-      this.dataStore.deleteSession(id);
-      this.emit('statusChange', {
-        sessionId: id,
-        status: 'completed',
-        currentTask: session.currentTask,
-        exitCode,
-        signal
-      });
-      this.emit('sessionEnded', { sessionId: id, exitCode, signal });
-    });
+    wirePtyHandlers(ptyProcess);
 
     // Save to persistent storage
     this.dataStore.saveSession(session);
@@ -1033,8 +1168,10 @@ class SessionManager extends EventEmitter {
     // Debounce: only emit after 500ms of stability
     session.statusDebounceTimer = setTimeout(() => {
       if (session.pendingStatus && session.pendingStatus !== session.status) {
+        const oldStatus = session.status;
         session.status = session.pendingStatus;
         session.pendingStatus = null;
+        debugLog(`Status change for session ${session.id}: ${oldStatus} -> ${session.status}`);
         this.dataStore.saveSession(session);
         this.emit('statusChange', {
           sessionId: session.id,
@@ -1107,11 +1244,32 @@ class SessionManager extends EventEmitter {
     }
 
     try {
-      session.pty.write(text);
+      // Filter out focus reporting sequences that xterm.js may send
+      // These can interfere with Claude CLI
+      const filteredText = text.replace(/\x1b\[[IO]/g, '');
+      if (!filteredText) {
+        return true; // Nothing left to send after filtering
+      }
+
+      session.pty.write(filteredText);
       session.lastActivity = new Date();
 
-      // Prompt detection - buffer until Enter
-      for (const char of text) {
+      // Prompt detection - buffer until Enter.
+      // Treat multiline paste chunks as a single prompt entry.
+      const hasNewline = filteredText.includes('\r') || filteredText.includes('\n');
+      const isMultilineChunk = hasNewline && filteredText.length > 1;
+
+      if (isMultilineChunk) {
+        const combined = `${session.promptBuffer}${filteredText}`
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .trim();
+        if (combined.length > 3) {
+          this.addPromptToHistory(session, combined);
+        }
+        session.promptBuffer = '';
+      } else {
+        for (const char of text) {
         const code = char.charCodeAt(0);
 
         // Detect start of escape sequence (ESC = 0x1b)
@@ -1143,6 +1301,7 @@ class SessionManager extends EventEmitter {
           session.promptBuffer += char;
         }
       }
+      }
 
       // Update status to active on input
       if (session.status === 'idle' || session.status === 'waiting') {
@@ -1171,12 +1330,20 @@ class SessionManager extends EventEmitter {
     const cleanText = promptText
       .replace(/\x1b\[[0-9;]*[A-Za-z~]/g, '')  // ANSI escape sequences
       .replace(/\[[A-Z]\]/g, '')                // Stray bracket sequences like [I] [O]
-      .replace(/[\x00-\x1f\x7f]/g, '')          // Control characters
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '') // Control chars except \n and \t
+      .replace(/\t/g, '  ')
       .trim();
 
     if (cleanText.length <= 3) return;  // Skip if too short after cleanup
 
-    const prompt = { text: cleanText, timestamp: new Date().toISOString() };
+    const truncatedText = cleanText.length > MAX_PROMPT_HISTORY_CHARS
+      ? `${cleanText.slice(0, MAX_PROMPT_HISTORY_CHARS)}\n...[truncated]`
+      : cleanText;
+
+    const prompt = { text: truncatedText, timestamp: new Date().toISOString() };
     session.promptHistory.push(prompt);
     if (session.promptHistory.length > 10) {
       session.promptHistory.shift();
@@ -1289,20 +1456,29 @@ class SessionManager extends EventEmitter {
       return [];
     }
 
-    // If we have a Claude session ID, get plans from Claude's tracking (authoritative source)
+    // If we have a Claude session ID, combine Claude-tracked plans with manually associated plans.
+    // Manual associations come from the "+" context flow and must appear immediately.
     if (session.claudeSessionId && session.workingDir) {
-      const planPaths = this.planManager.getPlansForClaudeSession(
+      const trackedPlanPaths = this.planManager.getPlansForClaudeSession(
         session.claudeSessionId,
         session.workingDir
       );
 
+      const allPlanRefs = [...trackedPlanPaths, ...(session.plans || [])];
+      const seen = new Set();
       const plans = [];
-      for (const planPath of planPaths) {
-        const plan = this.planManager.getPlanContent(planPath);
+
+      for (const planRef of allPlanRefs) {
+        const plan = this.planManager.getPlanContent(planRef);
         if (plan) {
-          plans.push(plan);
+          const key = plan.path || plan.filename;
+          if (!seen.has(key)) {
+            seen.add(key);
+            plans.push(plan);
+          }
         }
       }
+
       // Sort by modified time (newest first)
       plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
       return plans;
@@ -1326,6 +1502,121 @@ class SessionManager extends EventEmitter {
     // Sort by modified time (newest first)
     plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
     return plans;
+  }
+
+  /**
+   * Read a Claude session transcript (JSONL) and extract user prompts
+   * @param {string} claudeSessionId - The Claude session UUID
+   * @param {string} workingDir - Working directory to locate the project folder
+   * @returns {object|null} Transcript summary with user prompts
+   */
+  getClaudeSessionTranscript(claudeSessionId, workingDir) {
+    try {
+      const projectPath = this.getClaudeProjectPath(workingDir);
+      const jsonlPath = path.join(projectPath, `${claudeSessionId}.jsonl`);
+
+      if (!fs.existsSync(jsonlPath)) {
+        return null;
+      }
+
+      const data = fs.readFileSync(jsonlPath, 'utf8');
+      const lines = data.trim().split('\n');
+      const userPrompts = [];
+      let sessionInfo = {};
+
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+
+          // Extract session metadata from first user message
+          if (entry.type === 'user' && entry.message?.role === 'user') {
+            const content = entry.message.content;
+            const text = typeof content === 'string' ? content :
+              Array.isArray(content) ? content.filter(c => c.type === 'text').map(c => c.text).join('\n') :
+              '';
+
+            if (text) {
+              userPrompts.push({
+                text: text.length > 500 ? text.slice(0, 500) + '...' : text,
+                timestamp: entry.timestamp,
+                uuid: entry.uuid
+              });
+            }
+
+            if (!sessionInfo.cwd) {
+              sessionInfo.cwd = entry.cwd;
+              sessionInfo.version = entry.version;
+              sessionInfo.gitBranch = entry.gitBranch;
+            }
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      return {
+        claudeSessionId,
+        jsonlPath,
+        ...sessionInfo,
+        userPrompts,
+        totalLines: lines.length,
+        lastModified: fs.statSync(jsonlPath).mtime.toISOString()
+      };
+    } catch (error) {
+      console.error('Error reading Claude session transcript:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * List all Claude sessions available for a working directory
+   * Returns session IDs with summaries for manual linking
+   * @param {string} workingDir - Working directory
+   * @returns {Array} Array of session summaries
+   */
+  listClaudeSessionsForLinking(workingDir) {
+    const sessions = this.getClaudeSessions(workingDir);
+    const results = [];
+
+    for (const session of sessions) {
+      const sessionId = session.sessionId;
+      const transcript = this.getClaudeSessionTranscript(sessionId, workingDir);
+
+      results.push({
+        sessionId,
+        modified: session.modified,
+        created: session.created,
+        summary: session.summary || null,
+        firstPrompt: transcript?.userPrompts?.[0]?.text || null,
+        lastPrompt: transcript?.userPrompts?.slice(-1)[0]?.text || null,
+        promptCount: transcript?.userPrompts?.length || 0
+      });
+    }
+
+    // Sort by modified desc
+    results.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+    return results;
+  }
+
+  /**
+   * Manually link a Claude session ID to one of our sessions
+   * @param {string} sessionId - Our session ID
+   * @param {string} claudeSessionId - The Claude session UUID to link
+   * @returns {boolean} Success
+   */
+  linkClaudeSession(sessionId, claudeSessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    session.claudeSessionId = claudeSessionId;
+    this.dataStore.saveSession(session);
+
+    this.emit('sessionUpdated', {
+      sessionId,
+      claudeSessionId
+    });
+
+    return true;
   }
 
   /**
