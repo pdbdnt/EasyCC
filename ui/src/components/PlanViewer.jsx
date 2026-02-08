@@ -208,6 +208,21 @@ function MarkdownRenderer({ content, compact = false }) {
  * level 0 = preamble (content before any heading)
  */
 function parseIntoSections(content) {
+  // First check if content has any markdown headings
+  const hasMarkdownHeadings = /^#{1,6}\s+/m.test(content);
+
+  if (hasMarkdownHeadings) {
+    return parseMarkdownSections(content);
+  }
+
+  // Fallback: detect plain text sections (Codex format)
+  return parsePlainTextSections(content);
+}
+
+/**
+ * Parse markdown content with # headings
+ */
+function parseMarkdownSections(content) {
   const lines = content.split('\n');
   const root = [];
   const stack = [{ level: 0, children: root }];
@@ -227,7 +242,6 @@ function parseIntoSections(content) {
         children: []
       };
 
-      // Find parent: walk stack to find the nearest section with lower level
       while (stack.length > 1 && stack[stack.length - 1].level >= currentLevel) {
         stack.pop();
       }
@@ -255,9 +269,106 @@ function parseIntoSections(content) {
   return root;
 }
 
+/**
+ * Detect plain text section headers (Codex/generic format).
+ * A section header is a non-empty line that:
+ * - Is short (< 60 chars)
+ * - Does NOT start with a number, bullet, or whitespace
+ * - Is followed by a blank line or indented/list content
+ * - Contains mostly letters (Title Case or ALL CAPS)
+ */
+function isPlainTextHeading(line, nextLine) {
+  if (!line || line.length > 60) return false;
+  // Skip lines starting with bullets, numbers, whitespace
+  if (/^[\s\-*+\d]/.test(line)) return false;
+  // Skip lines that look like content (contain lots of punctuation or lowercase-heavy)
+  if (/[.;,!?]{2,}/.test(line)) return false;
+  // Must look like a title: mostly words, maybe with / or & or :
+  if (!/^[A-Za-z][\w\s/&:()\-]*$/.test(line.trim())) return false;
+  // Next line should be blank, indented, a list item, or a numbered item
+  if (nextLine !== undefined) {
+    const nl = nextLine.trim();
+    if (nl === '' || /^[-*+\d]/.test(nl) || nextLine.startsWith('  ')) return true;
+  }
+  return true;
+}
+
+function parsePlainTextSections(content) {
+  const lines = content.split('\n');
+  const root = [];
+  const stack = [{ level: 0, children: root }];
+
+  let currentLines = [];
+  let currentTitle = null;
+  let currentLevel = 0;
+  let currentLineIndex = 0;
+
+  const flushSection = () => {
+    if (currentTitle !== null || currentLines.length > 0) {
+      const section = {
+        level: currentLevel,
+        title: currentTitle,
+        lineIndex: currentLineIndex,
+        contentLines: [...currentLines],
+        children: []
+      };
+
+      while (stack.length > 1 && stack[stack.length - 1].level >= currentLevel) {
+        stack.pop();
+      }
+      stack[stack.length - 1].children.push(section);
+      stack.push(section);
+    }
+    currentLines = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+    const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
+
+    if (isPlainTextHeading(line, nextLine)) {
+      flushSection();
+      // First heading = h1, rest = h2
+      currentLevel = root.length === 0 && currentTitle === null ? 1 : 2;
+      currentTitle = line.trim();
+      currentLineIndex = i;
+    } else {
+      currentLines.push(line);
+    }
+  }
+  flushSection();
+
+  return root;
+}
+
 function MarkdownSection({ section }) {
-  // level >= 3 (### and deeper) collapsed by default
-  const [collapsed, setCollapsed] = useState(section.level >= 3);
+  // Auto-collapse rules:
+  // - level >= 3 (### and deeper) collapsed by default
+  // - Special section titles that should collapse regardless of level
+  // Auto-collapse keywords based on analysis of 100+ actual Claude plans
+  const autoCollapseTitles = [
+    'files to modify',
+    'file to modify',
+    'files to create',
+    'files to create/modify',
+    'files summary',
+    'file summary',
+    'critical files',
+    'implementation plan',
+    'implementation steps',
+    'implementation order',
+    'implementation',
+    'changes',
+    'summary of changes',
+    'prerequisites',
+    'dependencies'
+  ];
+
+  const titleLower = (section.title || '').toLowerCase();
+  const shouldAutoCollapse = section.level >= 3 ||
+    (section.title && autoCollapseTitles.some(t => titleLower === t || titleLower.startsWith(t + ' ')));
+
+  const [collapsed, setCollapsed] = useState(shouldAutoCollapse);
 
   const hasContent = section.contentLines.length > 0 || section.children.length > 0;
   const isCollapsible = section.title && hasContent;

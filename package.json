@@ -2,13 +2,18 @@
   "name": "claude-manager",
   "version": "1.0.0",
   "description": "Cross-platform CLI session manager with web UI for managing multiple Claude Code CLI sessions",
-  "main": "start.js",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:ui\"",
     "dev:backend": "cross-env PORT=5010 nodemon",
     "dev:ui": "cd ui && npm run dev",
+    "electron:dev": "cross-env NODE_ENV=development npx electron .",
+    "electron:dev:full": "concurrently -k \"npm run dev:backend\" \"npm run dev:ui\" \"wait-on http://localhost:5011 && npm run electron:dev\"",
     "build": "cd ui && npm run build",
-    "start": "node start.js",
+    "electron:build": "npm run build && electron-builder",
+    "start": "npx electron .",
+    "start:web": "node start.js",
+    "package": "npm run build && electron-builder --win --x64",
     "install:all": "npm install && cd backend && npm install && cd ../ui && npm install"
   },
   "keywords": [
@@ -23,7 +28,42 @@
   "devDependencies": {
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3",
     "nodemon": "^3.1.0",
-    "playwright": "^1.58.1"
+    "playwright": "^1.58.1",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.clioverlord.claudemanager",
+    "productName": "Claude Manager",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "backend/**/*",
+      "ui/dist/**/*",
+      "data/**/*",
+      "package.json",
+      "!backend/node_modules",
+      "!ui/node_modules"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "electron/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Claude Manager"
+    }
   }
 }

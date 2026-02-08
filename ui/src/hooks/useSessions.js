@@ -85,8 +85,9 @@ export function useSessions() {
     setSelectedId(id);
   }, []);
 
-  const createSession = useCallback(async (name, workingDir, cliType = 'claude') => {
+  const createSession = useCallback(async (name, workingDir, cliType = 'claude', options = {}) => {
     try {
+      const { select = true } = options;
       const response = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -100,17 +101,20 @@ export function useSessions() {
 
       const { session } = await response.json();
       setSessions(prev => [...prev, session]);
-      setSelectedId(session.id);
-      return true;
+      if (select) {
+        setSelectedId(session.id);
+      }
+      return session;
     } catch (error) {
       console.error('Error creating session:', error);
       alert(`Error: ${error.message}`);
-      return false;
+      return null;
     }
   }, []);
 
-  const killSession = useCallback(async (id) => {
-    if (!confirm('Are you sure you want to delete this session?')) {
+  const killSession = useCallback(async (id, options = {}) => {
+    const { skipConfirm = false } = options;
+    if (!skipConfirm && !confirm('Are you sure you want to delete this session?')) {
       return false;
     }
 

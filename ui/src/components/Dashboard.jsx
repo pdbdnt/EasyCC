@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import SessionCard from './SessionCard';
 import HintBadge from './HintBadge';
 
@@ -60,6 +60,8 @@ function Dashboard({
   hintCodes = {},
   onGroupedSessionsChange
 }) {
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+
   // Get hint codes from settings or use defaults
   const newSessionHint = hintCodes.newSession || 'ns';
   const settingsHint = hintCodes.settings || 'st';
@@ -113,6 +115,48 @@ function Dashboard({
     }
   }, [groupedSessions, onGroupedSessionsChange]);
 
+  // Keep collapse state in sync with active groups
+  useEffect(() => {
+    setCollapsedGroups((prev) => {
+      const activeGroupNames = new Set(groupedSessions.map(([dirName]) => dirName));
+      const next = new Set();
+      for (const dirName of prev) {
+        if (activeGroupNames.has(dirName)) {
+          next.add(dirName);
+        }
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [groupedSessions]);
+
+  // Ensure selected session remains visible
+  useEffect(() => {
+    if (!selectedId) return;
+    const selectedGroup = groupedSessions.find(([, sessionsInGroup]) =>
+      sessionsInGroup.some(({ session }) => session.id === selectedId)
+    );
+    if (!selectedGroup) return;
+    const [dirName] = selectedGroup;
+    setCollapsedGroups((prev) => {
+      if (!prev.has(dirName)) return prev;
+      const next = new Set(prev);
+      next.delete(dirName);
+      return next;
+    });
+  }, [groupedSessions, selectedId]);
+
+  const toggleGroupCollapsed = (dirName) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(dirName)) {
+        next.delete(dirName);
+      } else {
+        next.add(dirName);
+      }
+      return next;
+    });
+  };
+
   return (
     <>
       <div className="sidebar-header">
@@ -150,15 +194,22 @@ function Dashboard({
         ) : (
           groupedSessions.map(([dirName, sessionsInGroup, hintLetter]) => (
             <div key={dirName} className="session-group">
-              <div className="session-group-header">
+              <button
+                type="button"
+                className="session-group-header"
+                onClick={() => toggleGroupCollapsed(dirName)}
+                aria-expanded={!collapsedGroups.has(dirName)}
+                aria-label={`${collapsedGroups.has(dirName) ? 'Expand' : 'Collapse'} ${dirName} (${sessionsInGroup.length} sessions)`}
+              >
+                <span className={`session-group-chevron ${collapsedGroups.has(dirName) ? 'collapsed' : ''}`}>▾</span>
                 <span className="session-group-icon">📁</span>
                 <span className="session-group-name">{dirName}</span>
                 <span className="session-group-count">{sessionsInGroup.length}</span>
                 {hintModeActive && (
                   <span className="session-group-hint">{hintLetter}</span>
                 )}
-              </div>
-              {sessionsInGroup.map(({ session, globalIndex, hintCode }) => (
+              </button>
+              {!collapsedGroups.has(dirName) && sessionsInGroup.map(({ session, globalIndex, hintCode }) => (
                 <SessionCard
                   key={session.id}
                   session={session}

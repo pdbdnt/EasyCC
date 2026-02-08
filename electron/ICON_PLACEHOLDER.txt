@@ -1,0 +1,26 @@
+ICON PLACEHOLDER
+================
+
+You need to create or place an icon file here:
+  electron/icon.ico
+
+Requirements:
+- Format: .ico (Windows icon format)
+- Minimum size: 256x256 pixels
+- Recommended: Include multiple sizes (16x16, 32x32, 48x48, 256x256)
+
+Tools to create .ico files:
+1. Online: https://www.icoconverter.com/ (upload PNG, converts to ICO)
+2. GIMP: Export as .ico with multiple sizes
+3. ImageMagick: convert icon.png -define icon:auto-resize=256,128,64,48,32,16 icon.ico
+
+Temporary workaround:
+- You can use any existing .ico file from your system temporarily
+- Or copy from C:\Windows\System32\imageres.dll (extract with ResourceHacker)
+- The app will run but won't have an icon in taskbar/tray
+
+Icon design suggestions:
+- Simple "CM" monogram (Claude Manager)
+- Terminal or command prompt symbol
+- Something related to CLI/developer tools
+- High contrast for visibility in system tray

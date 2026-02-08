@@ -201,7 +201,8 @@ const TerminalView = forwardRef(function TerminalView({
       // Intercept app-level shortcuts so xterm doesn't consume them
       // Session navigation: Ctrl+[ Ctrl+] Ctrl+; Ctrl+'
       if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
-        if (event.key === '[' || event.key === ']' || event.key === ';' || event.key === "'" || event.key.toLowerCase() === 'w') {
+        if (event.code === 'BracketLeft' || event.code === 'BracketRight' ||
+            event.key === ';' || event.key === "'" || event.key.toLowerCase() === 'w') {
           return false;
         }
       }

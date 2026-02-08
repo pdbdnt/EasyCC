@@ -724,7 +724,8 @@ class SessionManager extends EventEmitter {
     const isWindows = process.platform === 'win32';
     const cliType = session.cliType || 'claude';
     let ptyProcess;
-    let fallbackAttempted = false;
+    let claudeFallbackAttempted = false;
+    let codexFallbackAttempted = false;
     let suppressNextExit = false;
 
     const createFreshClaudeProcess = () => {
@@ -747,12 +748,36 @@ class SessionManager extends EventEmitter {
       });
     };
 
-    const handleResumeFallback = () => {
-      if (cliType !== 'claude' || fallbackAttempted) {
+    const createFreshCodexProcess = () => {
+      if (isWindows) {
+        const wslPath = this.convertToWslPath(session.workingDir);
+        const codexCommand = `wsl bash -ic 'codex --dangerously-bypass-approvals-and-sandbox -C \"${wslPath}\"'`;
+        return pty.spawn('cmd.exe', ['/c', codexCommand], {
+          name: 'xterm-color',
+          cols: 120,
+          rows: 30,
+          env: process.env
+        });
+      }
+
+      return pty.spawn('codex', [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-C', session.workingDir
+      ], {
+        name: 'xterm-color',
+        cols: 120,
+        rows: 30,
+        cwd: session.workingDir,
+        env: process.env
+      });
+    };
+
+    const handleClaudeResumeFallback = () => {
+      if (cliType !== 'claude' || claudeFallbackAttempted) {
         return;
       }
 
-      fallbackAttempted = true;
+      claudeFallbackAttempted = true;
       const oldClaudeSessionId = session.claudeSessionId;
       session.claudeSessionId = null;
       session.claudeSessionName = null;
@@ -784,6 +809,32 @@ class SessionManager extends EventEmitter {
       }
     };
 
+    const handleCodexResumeFallback = () => {
+      if (cliType !== 'codex' || codexFallbackAttempted) {
+        return false;
+      }
+
+      codexFallbackAttempted = true;
+
+      this.emit('output', {
+        sessionId: id,
+        data: '\r\n\x1b[33mScoped Codex resume failed. Starting a fresh Codex session in this folder.\x1b[0m\r\n'
+      });
+      debugLog(`Session ${id}: Codex scoped resume failed, falling back to fresh Codex shell in ${session.workingDir}`);
+
+      try {
+        const freshProcess = createFreshCodexProcess();
+        wirePtyHandlers(freshProcess);
+        return true;
+      } catch (error) {
+        this.emit('output', {
+          sessionId: id,
+          data: `\r\n\x1b[31mFallback launch failed: ${error.message}\x1b[0m\r\n`
+        });
+        return false;
+      }
+    };
+
     const wirePtyHandlers = (processRef) => {
       session.pty = processRef;
 
@@ -794,7 +845,7 @@ class SessionManager extends EventEmitter {
         this.detectClaudeSessionId(data, session);
 
         if (cliType === 'claude' && /No conversation found with session ID/i.test(data)) {
-          handleResumeFallback();
+          handleClaudeResumeFallback();
           this.emit('output', { sessionId: id, data });
           return;
         }
@@ -841,6 +892,10 @@ class SessionManager extends EventEmitter {
         // This preserves sessions that fail to resume (e.g., "Session ID already in use")
         const sessionAge = Date.now() - new Date(session.lastActivity).getTime();
         debugLog(`PTY onExit (resume) for session ${id}: exitCode=${exitCode}, signal=${signal}, sessionAge=${sessionAge}ms`);
+        if (cliType === 'codex' && sessionAge < 10000 && exitCode !== 0 && handleCodexResumeFallback()) {
+          return;
+        }
+
         if (sessionAge < 10000 && exitCode !== 0) {
           debugLog(`Session ${id} PAUSED due to early exit after resume (age=${sessionAge}ms, exitCode=${exitCode})`);
           session.status = 'paused';
@@ -891,16 +946,18 @@ class SessionManager extends EventEmitter {
           });
         }
       } else if (cliType === 'codex') {
-        // Codex uses `codex resume --last` to resume the most recent session
+        // Resume Codex in the same working directory to avoid cross-project jumps.
         if (isWindows) {
-          ptyProcess = pty.spawn('cmd.exe', ['/c', "wsl bash -ic 'codex resume --last'"], {
+          const wslPath = this.convertToWslPath(session.workingDir);
+          const codexResumeCommand = `wsl bash -ic 'codex -C \"${wslPath}\" resume --last'`;
+          ptyProcess = pty.spawn('cmd.exe', ['/c', codexResumeCommand], {
             name: 'xterm-color',
             cols: 120,
             rows: 30,
             env: process.env
           });
         } else {
-          ptyProcess = pty.spawn('codex', ['resume', '--last'], {
+          ptyProcess = pty.spawn('codex', ['-C', session.workingDir, 'resume', '--last'], {
             name: 'xterm-color',
             cols: 120,
             rows: 30,
@@ -1596,6 +1653,38 @@ class SessionManager extends EventEmitter {
     // Sort by modified desc
     results.sort((a, b) => new Date(b.modified) - new Date(a.modified));
     return results;
+  }
+
+  /**
+   * Generate a new Claude session ID, link it, auto-tag, and inject the launch command into the terminal
+   * Used for terminal sessions where the user wants to launch Claude Code CLI with a known session ID
+   * @param {string} sessionId - Our session ID
+   * @returns {string|null} The generated Claude session ID, or null if session not found
+   */
+  generateAndInjectClaudeSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const claudeSessionId = uuidv4();
+
+    // Link it
+    session.claudeSessionId = claudeSessionId;
+
+    // Auto-tag
+    if (!session.tags) session.tags = [];
+    if (!session.tags.includes('claude-code')) session.tags.push('claude-code');
+
+    // Inject command into terminal (no Enter — user confirms)
+    this.sendInput(sessionId, `cc --session-id ${claudeSessionId}`);
+
+    // Persist & notify
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', { sessionId, claudeSessionId, tags: session.tags });
+
+    // Start watching for Claude session updates
+    this.watchClaudeSessionForUpdates(session);
+
+    return claudeSessionId;
   }
 
   /**

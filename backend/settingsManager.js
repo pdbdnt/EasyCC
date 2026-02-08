@@ -46,7 +46,8 @@ class SettingsManager {
       },
       ui: {
         defaultView: 'list',
-        theme: 'dark'
+        theme: 'dark',
+        confirmBeforeLeave: true
       },
       session: {
         defaultWorkingDir: '',

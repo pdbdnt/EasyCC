@@ -485,11 +485,11 @@ function App() {
 
       // Session navigation: Ctrl+[ ] ; ' (works even when terminal is focused)
       if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
-        if (e.key === ']') {
+        if (e.code === 'BracketRight' || e.key === ']') {
           e.preventDefault();
           navigateSession('next');
         }
-        if (e.key === '[') {
+        if (e.code === 'BracketLeft' || e.key === '[') {
           e.preventDefault();
           navigateSession('prev');
         }

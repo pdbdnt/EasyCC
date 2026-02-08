@@ -1,6 +1,28 @@
 # Claude Manager
 
-A cross-platform CLI session manager with a web UI for managing multiple Claude Code CLI sessions. Users can create, monitor, and interact with concurrent CLI sessions from a browser.
+A cross-platform session manager for multiple Claude Code CLI sessions. Available as both a **Windows desktop application** and a **web-based UI** accessible from any browser.
+
+## 🖥️ Desktop App (NEW!)
+
+CLIOverlord now runs as a standalone Windows desktop application:
+- Native taskbar icon
+- System tray integration (minimize to tray)
+- No browser tab needed
+- Professional desktop experience
+
+**Quick Start:**
+```bash
+npm run build
+npm start
+```
+
+See **[ELECTRON.md](ELECTRON.md)** for full desktop app documentation.
+
+---
+
+## 🌐 Web Version
+
+The original web-based interface is still fully supported for browser access.
 
 ## Features
 
@@ -28,25 +50,44 @@ npm run install:all
 
 ## Usage
 
-### Production Mode (Recommended)
+### Desktop App Mode (Recommended)
 
-Build and run the production server:
+Run as a Windows desktop application:
+
+```bash
+npm run build           # Build UI (first time only)
+npm start               # Launch desktop app
+```
+
+Creates a window with taskbar icon and system tray integration.
+
+**Development with hot-reload:**
+```bash
+npm run electron:dev:full
+```
+
+**Create installer:**
+```bash
+npm run package         # Builds installer in dist-electron/
+```
+
+See **[ELECTRON.md](ELECTRON.md)** for detailed desktop app guide.
+
+### Web Mode
+
+Run in browser (original mode):
 
 ```bash
 npm run build
-npm start
+npm run start:web
 ```
 
 Access at: http://localhost:5010
 
-### Development Mode
-
-For UI development with hot-reload:
-
+**Development:**
 ```bash
 npm run dev
 ```
-
 - Frontend: http://localhost:5011 (Vite dev server with HMR)
 - Backend: http://localhost:5010
 

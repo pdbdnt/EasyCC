@@ -47,6 +47,14 @@ function isPathWithinRoot(targetPath, rootPath) {
   return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}\\`);
 }
 
+function generateSessionName(cliType = 'claude') {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toTimeString().slice(0, 5).replace(':', '');
+  const prefix = cliType === 'terminal' ? 'Terminal' : cliType === 'codex' ? 'Codex' : 'Session';
+  return `${prefix} ${date}-${time}`;
+}
+
 async function start() {
   // Register plugins
   await app.register(fastifyCors, {
@@ -85,16 +93,14 @@ async function start() {
   app.post('/api/sessions', async (request, reply) => {
     const { name, workingDir, cliType } = request.body || {};
 
-    if (!name || typeof name !== 'string' || name.trim() === '') {
-      return reply.status(400).send({ error: 'Session name is required' });
-    }
-
     // Validate cliType
     const validCliTypes = ['claude', 'codex', 'terminal'];
     const normalizedCliType = cliType && validCliTypes.includes(cliType) ? cliType : 'claude';
+    const normalizedName = typeof name === 'string' ? name.trim() : '';
+    const resolvedName = normalizedName || generateSessionName(normalizedCliType);
 
     try {
-      const session = sessionManager.createSession(name.trim(), workingDir, normalizedCliType);
+      const session = sessionManager.createSession(resolvedName, workingDir, normalizedCliType);
       return reply.status(201).send({ session });
     } catch (error) {
       return reply.status(500).send({ error: error.message });
@@ -274,6 +280,56 @@ async function start() {
     }
 
     return { success: true, claudeSessionId };
+  });
+
+  // Generate a Claude session ID and inject launch command into terminal
+  app.post('/api/sessions/:id/generate-claude-session', async (request, reply) => {
+    const { id } = request.params;
+    const claudeSessionId = sessionManager.generateAndInjectClaudeSession(id);
+
+    if (!claudeSessionId) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    return { claudeSessionId };
+  });
+
+  // Create a new plan from pasted content
+  app.post('/api/plans', async (request, reply) => {
+    const { content, name, sessionId } = request.body || {};
+
+    if (!content || !content.trim()) {
+      return reply.status(400).send({ error: 'Plan content is required' });
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safeName = (name || 'pasted-plan').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 40);
+    const filename = `${safeName}-${timestamp}.md`;
+    const plansDir = path.join(os.homedir(), '.claude', 'plans');
+
+    if (!fs.existsSync(plansDir)) {
+      fs.mkdirSync(plansDir, { recursive: true });
+    }
+
+    const planPath = path.join(plansDir, filename);
+    fs.writeFileSync(planPath, content, 'utf8');
+
+    if (sessionId) {
+      const session = sessionManager.getSession(sessionId);
+      if (session) {
+        if (!session.plans) session.plans = [];
+        if (!session.plans.includes(planPath)) {
+          session.plans.push(planPath);
+        }
+        dataStore.saveSession(session);
+      }
+    }
+
+    return { success: true, path: planPath, filename };
   });
 
   // List plans not yet associated with a session
@@ -1461,4 +1517,10 @@ function getLocalIP() {
   return '0.0.0.0';
 }
 
-start();
+// Only auto-start if not running in Electron
+if (!process.versions.electron) {
+  start();
+}
+
+// Export for Electron main process
+module.exports = { start };

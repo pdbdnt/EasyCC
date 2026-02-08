@@ -325,6 +325,20 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                 </label>
               </div>
 
+              <div className="form-group checkbox-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={localSettings.ui?.confirmBeforeLeave ?? true}
+                    onChange={e => updateSetting('ui', 'confirmBeforeLeave', e.target.checked)}
+                  />
+                  Confirm before closing or reloading this tab
+                </label>
+                <p className="settings-description">
+                  Browser shows a native confirmation dialog. Custom text is not supported.
+                </p>
+              </div>
+
               <div className="form-group">
                 <label>Theme</label>
                 <select

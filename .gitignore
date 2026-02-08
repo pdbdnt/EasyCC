@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 ui/dist/
+dist-electron/
 
 # Data/sessions (may contain sensitive info)
 data/

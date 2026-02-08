@@ -2,6 +2,13 @@ import { useState, useEffect } from 'react';
 
 const BASE_DIR = 'C:\\Users\\denni\\apps';
 
+function generateDefaultSessionName() {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toTimeString().slice(0, 5).replace(':', '');
+  return `Session ${date}-${time}`;
+}
+
 function normalizeWindowsPath(input) {
   if (!input || typeof input !== 'string') return '';
   const normalized = input.replace(/\//g, '\\').trim();
@@ -50,8 +57,9 @@ function getBreadcrumbSegments(path) {
   return segments;
 }
 
-function NewSessionModal({ onClose, onCreate }) {
-  const [name, setName] = useState('');
+function NewSessionModal({ onClose, onCreate, defaultWorkingDir = '' }) {
+  const normalizedDefaultWorkingDir = normalizeWindowsPath(defaultWorkingDir);
+  const [name, setName] = useState(() => generateDefaultSessionName());
   const [cliType, setCliType] = useState('claude');
   const [folders, setFolders] = useState([]);
   const [starredFolders, setStarredFolders] = useState(() => {
@@ -64,9 +72,10 @@ function NewSessionModal({ onClose, onCreate }) {
       return [];
     }
   });
-  const [selectedPath, setSelectedPath] = useState('');
+  const [selectedPath, setSelectedPath] = useState(() => normalizedDefaultWorkingDir);
   const [customPath, setCustomPath] = useState('');
-  const [currentBase, setCurrentBase] = useState(BASE_DIR);
+  const [customPathConfirmed, setCustomPathConfirmed] = useState(false);
+  const [currentBase, setCurrentBase] = useState(() => normalizedDefaultWorkingDir || BASE_DIR);
   const [browseRoot, setBrowseRoot] = useState(BASE_DIR);
   const [loading, setLoading] = useState(false);
   const [loadingFolders, setLoadingFolders] = useState(true);
@@ -111,6 +120,15 @@ function NewSessionModal({ onClose, onCreate }) {
     };
   }, [currentBase]);
 
+  // Initialize from focused session working directory when modal opens.
+  useEffect(() => {
+    if (!normalizedDefaultWorkingDir) return;
+    setCurrentBase(normalizedDefaultWorkingDir);
+    setSelectedPath(normalizedDefaultWorkingDir);
+    setCustomPath('');
+    setCustomPathConfirmed(false);
+  }, [normalizedDefaultWorkingDir]);
+
   // Close on ESC key
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -136,6 +154,7 @@ function NewSessionModal({ onClose, onCreate }) {
     if (!normalized) return;
     setCurrentBase(normalized);
     setSelectedPath('');
+    setCustomPathConfirmed(true);
   };
 
   const handleGoUp = () => {
@@ -148,24 +167,24 @@ function NewSessionModal({ onClose, onCreate }) {
   const handleSelectCurrentFolder = () => {
     setSelectedPath(currentBase);
     setCustomPath('');
+    setCustomPathConfirmed(false);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!name.trim()) {
-      alert('Session name is required');
-      return;
-    }
-
-    // Determine final working directory
-    const workingDir = normalizeWindowsPath(customPath.trim()) ||
-      normalizeWindowsPath(selectedPath) ||
+    // Determine final working directory.
+    // Selected folder wins over custom text unless custom was explicitly confirmed via Browse.
+    const normalizedSelectedPath = normalizeWindowsPath(selectedPath);
+    const normalizedCustomPath = normalizeWindowsPath(customPath.trim());
+    const workingDir = normalizedSelectedPath ||
+      ((customPathConfirmed || !normalizedSelectedPath) ? normalizedCustomPath : '') ||
       undefined;
 
     setLoading(true);
     try {
-      await onCreate(name.trim(), workingDir, cliType);
+      const finalName = name.trim() || generateDefaultSessionName();
+      await onCreate(finalName, workingDir, cliType);
     } finally {
       setLoading(false);
     }
@@ -197,13 +216,13 @@ function NewSessionModal({ onClose, onCreate }) {
         <h2>New Session</h2>
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label htmlFor="name">Session Name *</label>
+            <label htmlFor="name">Session Name</label>
             <input
               type="text"
               id="name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="My Session"
+              placeholder="Auto-generated"
               autoFocus
               disabled={loading}
             />
@@ -282,6 +301,7 @@ function NewSessionModal({ onClose, onCreate }) {
                         setCurrentBase(folderPath);
                         setCustomPath('');
                         setSelectedPath('');
+                        setCustomPathConfirmed(false);
                       }}
                       title={`Browse ${folderPath}`}
                     >
@@ -313,6 +333,7 @@ function NewSessionModal({ onClose, onCreate }) {
                     if (e.target.value) {
                       setSelectedPath('');
                     }
+                    setCustomPathConfirmed(false);
                   }}
                   disabled={loading}
                   className="custom-path-input"
@@ -329,7 +350,7 @@ function NewSessionModal({ onClose, onCreate }) {
             </div>
             {(selectedPath || customPath) && (
               <div className="selected-path">
-                Selected: {normalizeWindowsPath(customPath) || selectedPath}
+                Selected: {selectedPath || normalizeWindowsPath(customPath)}
               </div>
             )}
           </div>

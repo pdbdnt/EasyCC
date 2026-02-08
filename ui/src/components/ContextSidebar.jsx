@@ -2,11 +2,40 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import PlanViewer from './PlanViewer';
 import PromptsModal from './PromptsModal';
 
+const ARCHIVED_PLANS_STORAGE_KEY = 'archivedPlansBySession';
+
+function getPlanKey(plan, index) {
+  return plan.path || plan.filename || `${plan.name || 'plan'}-${index}`;
+}
+
+function loadArchivedPlanKeys(sessionId) {
+  if (!sessionId) return [];
+  try {
+    const raw = JSON.parse(localStorage.getItem(ARCHIVED_PLANS_STORAGE_KEY) || '{}');
+    const archived = raw[sessionId];
+    return Array.isArray(archived) ? archived : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveArchivedPlanKeys(sessionId, keys) {
+  if (!sessionId) return;
+  try {
+    const raw = JSON.parse(localStorage.getItem(ARCHIVED_PLANS_STORAGE_KEY) || '{}');
+    raw[sessionId] = keys;
+    localStorage.setItem(ARCHIVED_PLANS_STORAGE_KEY, JSON.stringify(raw));
+  } catch {
+    // Ignore localStorage failures
+  }
+}
+
 function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseButton = false }) {
   const [plans, setPlans] = useState([]);
   const [loadingPlans, setLoadingPlans] = useState(false);
   const [notes, setNotes] = useState(session?.notes || '');
-  const [expandedPlanIndex, setExpandedPlanIndex] = useState(0); // Default expand first (latest) plan
+  const [expandedPlanIndex, setExpandedPlanIndex] = useState(null);
+  const [archivedPlanKeys, setArchivedPlanKeys] = useState([]);
   const [showPromptsModal, setShowPromptsModal] = useState(false);
   const [showPlanPicker, setShowPlanPicker] = useState(false);
   const [availablePlans, setAvailablePlans] = useState([]);
@@ -16,6 +45,10 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
   const [availableClaudeSessions, setAvailableClaudeSessions] = useState([]);
   const [loadingClaudeSessions, setLoadingClaudeSessions] = useState(false);
   const sessionPickerRef = useRef(null);
+  const [showPastePlan, setShowPastePlan] = useState(false);
+  const [pastedPlanContent, setPastedPlanContent] = useState('');
+  const [pastedPlanName, setPastedPlanName] = useState('');
+  const [savingPlan, setSavingPlan] = useState(false);
 
   // Create a stable key to detect plan changes via WebSocket
   // Reacts to: new plans (array change) or updated plans (plansUpdatedAt change)
@@ -35,10 +68,6 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
         if (response.ok) {
           const { plans: planData } = await response.json();
           setPlans(planData || []);
-          // Auto-expand latest plan when plans load
-          if (planData && planData.length > 0) {
-            setExpandedPlanIndex(0);
-          }
         }
       } catch (error) {
         console.error('Error fetching plans:', error);
@@ -54,6 +83,51 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
   useEffect(() => {
     setNotes(session?.notes || '');
   }, [session?.id, session?.notes]);
+
+  // Load archived plans for current session.
+  useEffect(() => {
+    if (!session?.id) {
+      setArchivedPlanKeys([]);
+      return;
+    }
+    setArchivedPlanKeys(loadArchivedPlanKeys(session.id));
+  }, [session?.id]);
+
+  // Persist archived plans for current session.
+  useEffect(() => {
+    if (!session?.id) return;
+    saveArchivedPlanKeys(session.id, archivedPlanKeys);
+  }, [session?.id, archivedPlanKeys]);
+
+  // Keep expansion state consistent with archived state and plan list.
+  useEffect(() => {
+    if (plans.length === 0) {
+      if (expandedPlanIndex !== null) {
+        setExpandedPlanIndex(null);
+      }
+      return;
+    }
+
+    if (expandedPlanIndex !== null) {
+      const expandedPlan = plans[expandedPlanIndex];
+      if (!expandedPlan) {
+        setExpandedPlanIndex(null);
+        return;
+      }
+      const expandedKey = getPlanKey(expandedPlan, expandedPlanIndex);
+      if (archivedPlanKeys.includes(expandedKey)) {
+        setExpandedPlanIndex(null);
+      }
+      return;
+    }
+
+    const firstUnarchivedIndex = plans.findIndex(
+      (plan, index) => !archivedPlanKeys.includes(getPlanKey(plan, index))
+    );
+    if (firstUnarchivedIndex >= 0) {
+      setExpandedPlanIndex(firstUnarchivedIndex);
+    }
+  }, [plans, archivedPlanKeys, expandedPlanIndex]);
 
   // Close plan picker on click outside
   useEffect(() => {
@@ -117,6 +191,51 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
     }
   };
 
+  const handleGenerateClaudeSession = async () => {
+    try {
+      const response = await fetch(`/api/sessions/${session.id}/generate-claude-session`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        console.error('Failed to generate Claude session');
+      }
+      // Session state updates automatically via WebSocket sessionUpdated event
+    } catch (error) {
+      console.error('Error generating Claude session:', error);
+    }
+  };
+
+  const handleSavePastedPlan = async () => {
+    if (!pastedPlanContent.trim()) return;
+    setSavingPlan(true);
+    try {
+      const response = await fetch('/api/plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: pastedPlanContent,
+          name: pastedPlanName || 'pasted-plan',
+          sessionId: session.id
+        }),
+      });
+      if (response.ok) {
+        setShowPastePlan(false);
+        setPastedPlanContent('');
+        setPastedPlanName('');
+        // Refresh plans
+        const plansRes = await fetch(`/api/sessions/${session.id}/plans`);
+        if (plansRes.ok) {
+          const { plans: planData } = await plansRes.json();
+          setPlans(planData || []);
+        }
+      }
+    } catch (error) {
+      console.error('Error saving pasted plan:', error);
+    } finally {
+      setSavingPlan(false);
+    }
+  };
+
   const handleNotesBlur = () => {
     if (notes !== (session?.notes || '')) {
       onUpdateSession?.(session.id, { notes });
@@ -161,6 +280,21 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
     }
   };
 
+  const handleTogglePlanArchive = (index) => {
+    const plan = plans[index];
+    if (!plan) return;
+    const planKey = getPlanKey(plan, index);
+    setArchivedPlanKeys((prev) => (
+      prev.includes(planKey)
+        ? prev.filter((key) => key !== planKey)
+        : [...prev, planKey]
+    ));
+
+    if (expandedPlanIndex === index) {
+      setExpandedPlanIndex(null);
+    }
+  };
+
   if (!session) {
     return (
       <div className="context-sidebar">
@@ -194,12 +328,20 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
       </div>
 
       {/* Claude Session Link Row */}
-      {session.cliType !== 'terminal' && (
-        <div className="claude-session-row" ref={sessionPickerRef}>
-          <span className="claude-session-label">Claude:</span>
-          <span className="claude-session-id" title={session.claudeSessionId || 'Not linked'}>
-            {session.claudeSessionId ? session.claudeSessionId.slice(0, 8) + '..' : 'Not linked'}
-          </span>
+      <div className="claude-session-row" ref={sessionPickerRef}>
+        <span className="claude-session-label">Claude:</span>
+        <span className="claude-session-id" title={session.claudeSessionId || 'Not linked'}>
+          {session.claudeSessionId ? session.claudeSessionId.slice(0, 8) + '..' : 'Not linked'}
+        </span>
+        {session.cliType === 'terminal' && !session.claudeSessionId ? (
+          <button
+            className="claude-session-link-btn"
+            onClick={handleGenerateClaudeSession}
+            title="Generate session ID and inject cc command into terminal"
+          >
+            Generate
+          </button>
+        ) : (
           <button
             className="claude-session-link-btn"
             onClick={handleOpenSessionPicker}
@@ -207,6 +349,7 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
           >
             {session.claudeSessionId ? 'Change' : 'Link'}
           </button>
+        )}
           {showSessionPicker && (
             <div className="claude-session-picker">
               {loadingClaudeSessions ? (
@@ -240,7 +383,6 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
             </div>
           )}
         </div>
-      )}
 
       {/* Notes + Recent Prompts (2 columns) */}
       <div className="context-section notes-prompts-row">
@@ -296,6 +438,13 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
           </div>
           <div className="section-header-right">
             {plans.length > 0 && <span className="section-count">{plans.length}</span>}
+            <button
+              className="plan-picker-btn"
+              onClick={() => setShowPastePlan(!showPastePlan)}
+              title="Paste a plan"
+            >
+              Paste
+            </button>
             <div className="plan-picker-wrapper" ref={planPickerRef}>
               <button
                 className="plan-picker-btn"
@@ -330,29 +479,81 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
           </div>
         </div>
         <div className="plans-content-area">
+          {showPastePlan && (
+            <div className="paste-plan-form">
+              <input
+                type="text"
+                className="paste-plan-name"
+                placeholder="Plan name (optional)"
+                value={pastedPlanName}
+                onChange={e => setPastedPlanName(e.target.value)}
+              />
+              <textarea
+                className="paste-plan-textarea"
+                placeholder="Paste plan content here..."
+                value={pastedPlanContent}
+                onChange={e => setPastedPlanContent(e.target.value)}
+                rows={8}
+                autoFocus
+              />
+              <div className="paste-plan-actions">
+                <button
+                  className="btn btn-secondary btn-small"
+                  onClick={() => { setShowPastePlan(false); setPastedPlanContent(''); setPastedPlanName(''); }}
+                  disabled={savingPlan}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary btn-small"
+                  onClick={handleSavePastedPlan}
+                  disabled={savingPlan || !pastedPlanContent.trim()}
+                >
+                  {savingPlan ? 'Saving...' : 'Save Plan'}
+                </button>
+              </div>
+            </div>
+          )}
           {loadingPlans ? (
             <p className="text-muted">Loading plans...</p>
           ) : plans.length > 0 ? (
             <div className="plans-mini-list">
-              {plans.slice(0, 5).map((plan, index) => (
-                <div key={plan.path || index} className="plan-item-expandable">
+              {plans.slice(0, 5).map((plan, index) => {
+                const planKey = getPlanKey(plan, index);
+                const isArchived = archivedPlanKeys.includes(planKey);
+                const isExpanded = expandedPlanIndex === index;
+                return (
+                <div key={plan.path || plan.filename || index} className="plan-item-expandable">
                   <div
-                    className="plan-item-header"
-                    onClick={() => setExpandedPlanIndex(expandedPlanIndex === index ? null : index)}
+                    className={`plan-item-header ${isArchived ? 'archived' : ''}`}
+                    onClick={() => setExpandedPlanIndex(isExpanded ? null : index)}
                   >
-                    <span className="expand-icon">{expandedPlanIndex === index ? '\u25BC' : '\u25B6'}</span>
+                    <span className="expand-icon">{isExpanded ? '\u25BC' : '\u25B6'}</span>
                     <span className="plan-name">{plan.name || `Plan ${index + 1}`}</span>
-                    {plan.modifiedAt && (
-                      <span className="plan-date">{formatRelativeTime(plan.modifiedAt)}</span>
-                    )}
+                    <div className="plan-item-meta">
+                      {plan.modifiedAt && (
+                        <span className="plan-date">{formatRelativeTime(plan.modifiedAt)}</span>
+                      )}
+                      <button
+                        type="button"
+                        className="plan-archive-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleTogglePlanArchive(index);
+                        }}
+                      >
+                        {isArchived ? 'Restore' : 'Archive'}
+                      </button>
+                    </div>
                   </div>
-                  {expandedPlanIndex === index && (
+                  {isExpanded && (
                     <div className="plan-content-expanded">
                       <PlanViewer plan={plan} compact={true} />
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
               {plans.length > 5 && (
                 <p className="text-muted plans-more">+{plans.length - 5} more plan(s)</p>
               )}

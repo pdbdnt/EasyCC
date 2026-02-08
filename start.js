@@ -1,5 +1,11 @@
 #!/usr/bin/env node
 
+// Don't run if inside Electron (main process will start backend)
+if (process.versions.electron) {
+  console.log('Running inside Electron - backend will be started by main process');
+  process.exit(0);
+}
+
 const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
