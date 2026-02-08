@@ -108,6 +108,13 @@ function createWindow() {
     }
   });
 
+  // When quitting, bypass the beforeunload dialog from the web page
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    if (app.isQuitting) {
+      event.preventDefault();
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
