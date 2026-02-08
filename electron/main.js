@@ -15,6 +15,7 @@ const path = require('path');
 let mainWindow = null;
 let tray = null;
 let backendStarted = false;
+const BACKEND_PORT = 5010;
 
 /**
  * Start the Fastify backend server
@@ -26,10 +27,12 @@ async function startBackend() {
   }
 
   try {
+    // Force the port so it doesn't inherit a random PORT from the environment
+    process.env.PORT = String(BACKEND_PORT);
     const serverModule = require('../backend/server.js');
     await serverModule.start();
     backendStarted = true;
-    console.log('[Electron] Backend started successfully on port 5010');
+    console.log(`[Electron] Backend started successfully on port ${BACKEND_PORT}`);
   } catch (error) {
     console.error('[Electron] Failed to start backend:', error);
     // Show error dialog and quit
@@ -65,7 +68,7 @@ function createWindow() {
 
   // Determine the URL to load
   const isDev = process.env.NODE_ENV === 'development';
-  const startURL = isDev ? 'http://localhost:5011' : 'http://localhost:5010';
+  const startURL = isDev ? 'http://localhost:5011' : `http://localhost:${BACKEND_PORT}`;
 
   console.log(`[Electron] Loading UI from: ${startURL}`);
   console.log(`[Electron] Mode: ${isDev ? 'development' : 'production'}`);

@@ -303,6 +303,7 @@ body {
   flex: 1;
   padding: 8px;
   overflow: hidden;
+  min-height: 0;
 }
 
 .terminal-wrapper .xterm {
@@ -603,6 +604,7 @@ body {
   flex-direction: column;
   position: relative;
   overflow: hidden;
+  min-height: 0;
 }
 
 .terminal-wrapper.paused {

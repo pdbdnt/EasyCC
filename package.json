@@ -14,7 +14,9 @@
     "start": "npx electron .",
     "start:web": "node start.js",
     "package": "npm run build && electron-builder --win --x64",
-    "install:all": "npm install && cd backend && npm install && cd ../ui && npm install"
+    "install:all": "npm install && cd backend && npm install && cd ../ui && npm install",
+    "rebuild": "electron-rebuild -f -w node-pty",
+    "postinstall": "electron-rebuild -f -w node-pty"
   },
   "keywords": [
     "claude",
@@ -26,6 +28,8 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "@playwright/test": "^1.58.2",
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
     "electron": "^28.3.3",
@@ -53,7 +57,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "electron/icon.ico"

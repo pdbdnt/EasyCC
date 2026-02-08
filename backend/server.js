@@ -285,13 +285,13 @@ async function start() {
   // Generate a Claude session ID and inject launch command into terminal
   app.post('/api/sessions/:id/generate-claude-session', async (request, reply) => {
     const { id } = request.params;
-    const claudeSessionId = sessionManager.generateAndInjectClaudeSession(id);
+    const result = sessionManager.generateAndInjectClaudeSession(id);
 
-    if (!claudeSessionId) {
+    if (!result) {
       return reply.status(404).send({ error: 'Session not found' });
     }
 
-    return { claudeSessionId };
+    return { claudeSessionId: result.claudeSessionId, command: result.command };
   });
 
   // Create a new plan from pasted content

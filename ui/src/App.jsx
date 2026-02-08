@@ -421,6 +421,9 @@ function App() {
       // Skip if hint mode is active (let hint mode handle keys)
       if (hintModeActive) return;
 
+      // Skip if terminal override mode is active (let terminal handle keys)
+      if (window.__terminalOverrideKeys) return;
+
       const target = e.target;
       const isEditableTarget = target instanceof HTMLElement && (
         target.tagName === 'INPUT' ||

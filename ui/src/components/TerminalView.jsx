@@ -32,6 +32,8 @@ const TerminalView = forwardRef(function TerminalView({
   const ctrlCPendingRef = useRef(false);
   const ctrlCTimerRef = useRef(null);
   const keyboardSettingsRef = useRef(null);
+  const [overrideKeys, setOverrideKeys] = useState(false);
+  const overrideKeysRef = useRef(false);
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -109,6 +111,11 @@ const TerminalView = forwardRef(function TerminalView({
   useEffect(() => {
     keyboardSettingsRef.current = keyboardSettings;
   }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.cancelKey, keyboardSettings.clearKey]);
+
+  useEffect(() => {
+    overrideKeysRef.current = overrideKeys;
+    window.__terminalOverrideKeys = overrideKeys;
+  }, [overrideKeys]);
 
   // Initialize terminal
   useEffect(() => {
@@ -198,6 +205,12 @@ const TerminalView = forwardRef(function TerminalView({
         return false;
       }
 
+      // When override mode is ON, let the terminal handle all keys
+      // (except Ctrl+C cancel which is always handled above)
+      if (overrideKeysRef.current) {
+        return true;
+      }
+
       // Intercept app-level shortcuts so xterm doesn't consume them
       // Session navigation: Ctrl+[ Ctrl+] Ctrl+; Ctrl+'
       if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
@@ -275,6 +288,7 @@ const TerminalView = forwardRef(function TerminalView({
         ctrlCTimerRef.current = null;
       }
       ctrlCPendingRef.current = false;
+      window.__terminalOverrideKeys = false;
       resizeObserver.disconnect();
       term.dispose();
       if (wsRef.current) {
@@ -436,6 +450,13 @@ const TerminalView = forwardRef(function TerminalView({
           )}
         </div>
         <div className="terminal-actions">
+          <button
+            className={`btn btn-small ${overrideKeys ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setOverrideKeys(v => !v)}
+            title="When ON, keyboard shortcuts are sent to the terminal instead of the app"
+          >
+            {overrideKeys ? 'KS: Terminal' : 'KS: App'}
+          </button>
           <button
             className={`btn btn-secondary btn-small sidebar-toggle-btn ${sidebarVisible ? 'active' : ''}`}
             onClick={onToggleSidebar}

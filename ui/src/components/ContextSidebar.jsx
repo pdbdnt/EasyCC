@@ -196,8 +196,12 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
       const response = await fetch(`/api/sessions/${session.id}/generate-claude-session`, {
         method: 'POST',
       });
-      if (!response.ok) {
-        console.error('Failed to generate Claude session');
+      if (response.ok) {
+        const data = await response.json();
+        await navigator.clipboard.writeText(data.command);
+      } else {
+        const errorText = await response.text();
+        console.error('Failed to generate Claude session:', response.status, errorText);
       }
       // Session state updates automatically via WebSocket sessionUpdated event
     } catch (error) {

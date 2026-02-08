@@ -1674,8 +1674,7 @@ class SessionManager extends EventEmitter {
     if (!session.tags) session.tags = [];
     if (!session.tags.includes('claude-code')) session.tags.push('claude-code');
 
-    // Inject command into terminal (no Enter — user confirms)
-    this.sendInput(sessionId, `cc --session-id ${claudeSessionId}`);
+    const command = `cc --session-id ${claudeSessionId}`;
 
     // Persist & notify
     this.dataStore.saveSession(session);
@@ -1684,7 +1683,7 @@ class SessionManager extends EventEmitter {
     // Start watching for Claude session updates
     this.watchClaudeSessionForUpdates(session);
 
-    return claudeSessionId;
+    return { claudeSessionId, command };
   }
 
   /**
