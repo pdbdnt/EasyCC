@@ -1519,6 +1519,30 @@ textarea::placeholder {
   margin-left: 4px;
 }
 
+.group-kill-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.session-group-header:hover .group-kill-btn {
+  opacity: 0.6;
+}
+
+.group-kill-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent-red);
+  background: rgba(255, 68, 68, 0.15);
+}
+
 /* Session Info Grid (Summary + Notes 2-column) */
 .session-info-grid {
   display: grid;

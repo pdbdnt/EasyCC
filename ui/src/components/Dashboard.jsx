@@ -54,6 +54,7 @@ function Dashboard({
   onShowDetails,
   onOpenSettings,
   onUpdateSession,
+  onKillSession,
   connectionStatus,
   hintModeActive = false,
   typedChars = '',
@@ -61,6 +62,7 @@ function Dashboard({
   onGroupedSessionsChange
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
 
   // Get hint codes from settings or use defaults
   const newSessionHint = hintCodes.newSession || 'ns';
@@ -208,6 +210,21 @@ function Dashboard({
                 {hintModeActive && (
                   <span className="session-group-hint">{hintLetter}</span>
                 )}
+                {onKillSession && (
+                  <button
+                    className="group-kill-btn"
+                    title={`Kill all sessions in ${dirName}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setKillGroupTarget({
+                        dirName,
+                        sessionIds: sessionsInGroup.map(s => s.session.id)
+                      });
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
               </button>
               {!collapsedGroups.has(dirName) && sessionsInGroup.map(({ session, globalIndex, hintCode }) => (
                 <SessionCard
@@ -233,6 +250,32 @@ function Dashboard({
          connectionStatus === 'connecting' ? 'Connecting...' :
          'Disconnected'}
       </div>
+      {killGroupTarget && (
+        <div className="modal-overlay" onClick={() => setKillGroupTarget(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Kill All Sessions?</h2>
+            <p className="settings-description">
+              This will kill <strong>{killGroupTarget.sessionIds.length}</strong> session{killGroupTarget.sessionIds.length > 1 ? 's' : ''} in <strong>{killGroupTarget.dirName}</strong>.
+            </p>
+            <div className="modal-actions">
+              <button className="btn btn-secondary" onClick={() => setKillGroupTarget(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={async () => {
+                  for (const id of killGroupTarget.sessionIds) {
+                    await onKillSession(id, { skipConfirm: true });
+                  }
+                  setKillGroupTarget(null);
+                }}
+              >
+                Kill {killGroupTarget.sessionIds.length} Session{killGroupTarget.sessionIds.length > 1 ? 's' : ''}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

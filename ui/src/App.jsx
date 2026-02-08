@@ -424,7 +424,7 @@ function App() {
       const target = e.target;
       const isEditableTarget = target instanceof HTMLElement && (
         target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
+        (target.tagName === 'TEXTAREA' && !target.closest('.xterm')) ||
         target.tagName === 'SELECT' ||
         target.isContentEditable
       );
@@ -600,6 +600,7 @@ function App() {
           onShowDetails={handleShowDetails}
           onOpenSettings={() => setShowSettingsModal(true)}
           onUpdateSession={updateSession}
+          onKillSession={killSession}
           connectionStatus={connectionStatus}
           hintModeActive={hintModeActive}
           typedChars={typedChars}
