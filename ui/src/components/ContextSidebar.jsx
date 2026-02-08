@@ -331,6 +331,30 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
         )}
       </div>
 
+      {/* CLI Type Selector */}
+      <div className="cli-type-selector-row">
+        <span className="cli-type-selector-label">Type:</span>
+        <div className="cli-type-selector">
+          {[
+            { value: 'claude', label: 'CC' },
+            { value: 'codex', label: 'CDX' },
+            { value: 'terminal', label: 'TRM' },
+          ].map(({ value, label }) => (
+            <button
+              key={value}
+              className={`cli-type-btn ${value}${session.cliType === value ? ' active' : ''}`}
+              onClick={() => {
+                if (session.cliType !== value) {
+                  onUpdateSession(session.id, { cliType: value });
+                }
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Claude Session Link Row */}
       <div className="claude-session-row" ref={sessionPickerRef}>
         <span className="claude-session-label">Claude:</span>

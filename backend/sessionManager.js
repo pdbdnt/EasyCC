@@ -1037,6 +1037,9 @@ class SessionManager extends EventEmitter {
     if (meta.name !== undefined) session.name = meta.name;
     if (meta.notes !== undefined) session.notes = meta.notes;
     if (meta.tags !== undefined) session.tags = meta.tags;
+    if (meta.cliType !== undefined && ['claude', 'codex', 'terminal'].includes(meta.cliType)) {
+      session.cliType = meta.cliType;
+    }
 
     session.lastActivity = new Date();
 
@@ -1067,7 +1070,8 @@ class SessionManager extends EventEmitter {
       }
 
       const idleTime = Date.now() - session.lastActivity.getTime();
-      if (idleTime > 5000 && session.status === 'active') {
+      const canGoIdle = ['active', 'thinking', 'editing', 'waiting'].includes(session.status);
+      if (idleTime > 5000 && canGoIdle) {
         session.status = 'idle';
         this.emit('statusChange', {
           sessionId: session.id,

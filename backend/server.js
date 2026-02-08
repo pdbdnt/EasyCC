@@ -147,9 +147,9 @@ async function start() {
   // Update session metadata
   app.patch('/api/sessions/:id', async (request, reply) => {
     const { id } = request.params;
-    const { name, notes, tags } = request.body || {};
+    const { name, notes, tags, cliType } = request.body || {};
 
-    const session = sessionManager.updateSessionMeta(id, { name, notes, tags });
+    const session = sessionManager.updateSessionMeta(id, { name, notes, tags, cliType });
 
     if (!session) {
       return reply.status(404).send({ error: 'Session not found' });
