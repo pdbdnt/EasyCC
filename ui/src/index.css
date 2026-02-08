@@ -9,9 +9,9 @@
   --bg-secondary: #16213e;
   --bg-active: #0f3460;
   --bg-terminal: #0d0d0d;
-  --text-primary: #e4e4e4;
-  --text-secondary: #a0a0a0;
-  --text-muted: #6c6c6c;
+  --text-primary: #f0f0f0;
+  --text-secondary: #b8b8b8;
+  --text-muted: #808080;
   --accent-green: #00ff00;
   --accent-blue: #4a9eff;
   --accent-yellow: #ffcc00;
@@ -224,7 +224,7 @@ body {
 }
 
 .session-task {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -233,7 +233,7 @@ body {
 }
 
 .session-time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -307,6 +307,37 @@ body {
 
 .terminal-wrapper .xterm {
   height: 100%;
+}
+
+.terminal-panes {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  min-height: 0;
+}
+
+.terminal-panes-row {
+  flex-direction: row;
+}
+
+.terminal-panes-column {
+  flex-direction: column;
+}
+
+.terminal-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-terminal);
+}
+
+.terminal-pane.active {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 1px rgba(74, 158, 255, 0.35);
 }
 
 .terminal-placeholder {
@@ -1256,7 +1287,7 @@ textarea::placeholder {
 }
 
 .column-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -1270,7 +1301,7 @@ textarea::placeholder {
 }
 
 .prompt-mini-item {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   padding: 4px 6px;
   background: var(--bg-primary);
@@ -1425,13 +1456,37 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 8px 12px;
   background: var(--bg-active);
+  border: 1px solid transparent;
   border-radius: 6px;
   margin-bottom: 6px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.session-group-header:hover {
+  background: var(--bg-hover);
+}
+
+.session-group-header:focus-visible {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.session-group-chevron {
+  font-size: 11px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.session-group-chevron.collapsed {
+  transform: rotate(-90deg);
 }
 
 .session-group-icon {
@@ -1461,7 +1516,7 @@ textarea::placeholder {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  margin-left: auto;
+  margin-left: 4px;
 }
 
 /* Session Info Grid (Summary + Notes 2-column) */
@@ -1799,11 +1854,31 @@ textarea::placeholder {
 
 /* Resize Handle */
 .resize-handle {
-  width: 4px;
-  cursor: col-resize;
   background: var(--border-color);
   transition: background 0.2s;
   flex-shrink: 0;
+}
+
+.resize-handle-vertical,
+.resize-handle-horizontal:not(.resize-handle-horizontal) {
+  /* Default: vertical divider (col-resize) */
+}
+
+.resize-handle-vertical {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resize-handle-horizontal {
+  width: 4px;
+  cursor: col-resize;
+}
+
+/* When used between panes in column layout, resize handle is horizontal */
+.terminal-panes-column > .resize-handle {
+  width: auto;
+  height: 4px;
+  cursor: row-resize;
 }
 
 .resize-handle:hover,
@@ -1904,9 +1979,42 @@ textarea::placeholder {
   text-overflow: ellipsis;
 }
 
+.plan-item-header.archived .plan-name {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.plan-item-header.archived .expand-icon {
+  opacity: 0.7;
+}
+
+.plan-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .plan-item-header .plan-date {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.plan-archive-btn {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.plan-archive-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+  background: var(--bg-active);
 }
 
 .plan-content-expanded {
@@ -2114,6 +2222,54 @@ textarea::placeholder {
   font-size: 12px;
   color: var(--text-muted);
   text-align: center;
+}
+
+/* Paste Plan Form */
+.paste-plan-form {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.paste-plan-name {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.paste-plan-name:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.paste-plan-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 8px;
+  font-size: 13px;
+  font-family: monospace;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  resize: vertical;
+}
+
+.paste-plan-textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.paste-plan-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 /* Sessions sidebar (left column) */

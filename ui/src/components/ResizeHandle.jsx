@@ -1,18 +1,20 @@
 import { useCallback, useRef } from 'react';
 
 function ResizeHandle({ onResize, direction = 'horizontal' }) {
-  const startXRef = useRef(0);
+  const startRef = useRef(0);
   const isDraggingRef = useRef(false);
+  const isVertical = direction === 'vertical';
 
   const handleMouseDown = useCallback((e) => {
     e.preventDefault();
-    startXRef.current = e.clientX;
+    startRef.current = isVertical ? e.clientX : e.clientY;
     isDraggingRef.current = true;
 
     const handleMouseMove = (e) => {
       if (!isDraggingRef.current) return;
-      const delta = e.clientX - startXRef.current;
-      startXRef.current = e.clientX;
+      const current = isVertical ? e.clientX : e.clientY;
+      const delta = current - startRef.current;
+      startRef.current = current;
       onResize(delta);
     };
 
@@ -26,9 +28,9 @@ function ResizeHandle({ onResize, direction = 'horizontal' }) {
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
+    document.body.style.cursor = isVertical ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
-  }, [onResize]);
+  }, [isVertical, onResize]);
 
   return (
     <div

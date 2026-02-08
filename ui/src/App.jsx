@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Dashboard from './components/Dashboard';
 import TerminalView from './components/TerminalView';
 import NewSessionModal from './components/NewSessionModal';
@@ -13,6 +13,51 @@ import { useContextSidebar } from './hooks/useContextSidebar';
 import { useSettings } from './hooks/useSettings';
 import { useHintMode } from './hooks/useHintMode';
 import { registerHint, unregisterHint } from './utils/hintRegistry';
+
+const makePaneId = () => `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const PANE_LAYOUT_KEY = 'claude-manager-pane-layout';
+
+function loadPaneLayout() {
+  try {
+    const stored = localStorage.getItem(PANE_LAYOUT_KEY);
+    if (!stored) return null;
+    return JSON.parse(stored);
+  } catch { return null; }
+}
+
+function savePaneLayout(panes, layout, sizes) {
+  try {
+    localStorage.setItem(PANE_LAYOUT_KEY, JSON.stringify({
+      panes: panes.map(p => ({ id: p.id, sessionId: p.sessionId })),
+      layout,
+      sizes
+    }));
+  } catch { /* ignore */ }
+}
+
+function isSplitRightShortcut(e) {
+  return e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey &&
+    (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd');
+}
+
+function isSplitBottomShortcut(e) {
+  return e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey &&
+    (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract');
+}
+
+function isCloseSessionShortcut(e) {
+  return (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'w';
+}
+
+function isClosePaneShortcut(e) {
+  return e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'w';
+}
+
+function isPaneFocusShortcut(e) {
+  return e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey &&
+    (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown');
+}
 
 function App() {
   const [currentView, setCurrentView] = useState('sessions'); // 'sessions' | 'kanban'
@@ -36,10 +81,17 @@ function App() {
   const [contextWidth, setContextWidth] = useState(320);
   const [focusedPanel, setFocusedPanel] = useState(null); // 'terminal' | 'context' | null
   const [groupedSessions, setGroupedSessions] = useState([]);
+  const [terminalPanes, setTerminalPanes] = useState([]);
+  const [activePaneId, setActivePaneId] = useState(null);
+  const [paneLayout, setPaneLayout] = useState('row'); // row: split right, column: split down
+  const [showCloseSessionModal, setShowCloseSessionModal] = useState(false);
+  const [pendingCloseSessionId, setPendingCloseSessionId] = useState(null);
+  const [paneSizes, setPaneSizes] = useState([]); // flex ratios for each pane
 
   // Refs for focus management
-  const terminalRef = useRef(null);
   const contextRef = useRef(null);
+  const paneRefs = useRef(new Map());
+  const closingSessionRef = useRef(false);
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -47,8 +99,229 @@ function App() {
     enabled: hintModeSettings.enabled,
     triggerKey: hintModeSettings.triggerKey
   });
+  const confirmBeforeLeave = settings?.ui?.confirmBeforeLeave ?? true;
 
   const selectedSession = sessions.find(s => s.id === selectedId);
+  const pendingCloseSession = sessions.find(s => s.id === pendingCloseSessionId);
+
+  const focusActiveTerminal = useCallback(() => {
+    if (activePaneId) {
+      paneRefs.current.get(activePaneId)?.focus?.();
+      return;
+    }
+    const firstPaneId = terminalPanes[0]?.id;
+    if (firstPaneId) {
+      paneRefs.current.get(firstPaneId)?.focus?.();
+    }
+  }, [activePaneId, terminalPanes]);
+
+  // Save pane layout on changes
+  useEffect(() => {
+    if (terminalPanes.length > 0) {
+      savePaneLayout(terminalPanes, paneLayout, paneSizes);
+    }
+  }, [terminalPanes, paneLayout, paneSizes]);
+
+  // Restore pane layout from localStorage on mount
+  useEffect(() => {
+    const stored = loadPaneLayout();
+    if (stored && stored.panes?.length > 0) {
+      // Will be filtered to valid sessions in the sync effect below
+      setTerminalPanes(stored.panes);
+      if (stored.layout) setPaneLayout(stored.layout);
+      if (stored.sizes?.length > 0) setPaneSizes(stored.sizes);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keep paneSizes in sync with pane count
+  useEffect(() => {
+    setPaneSizes(prev => {
+      if (prev.length === terminalPanes.length && terminalPanes.length > 0) return prev;
+      // Equal distribution
+      return terminalPanes.map(() => 1 / (terminalPanes.length || 1));
+    });
+  }, [terminalPanes.length]);
+
+  const handlePaneResize = useCallback((index, delta) => {
+    setPaneSizes(prev => {
+      if (prev.length < 2 || index >= prev.length - 1) return prev;
+      const next = [...prev];
+      const total = next[index] + next[index + 1];
+      // Convert pixel delta to ratio delta (assume container is available)
+      const containerSize = paneLayout === 'row'
+        ? document.querySelector('.terminal-panes')?.clientWidth || 800
+        : document.querySelector('.terminal-panes')?.clientHeight || 400;
+      const ratioDelta = delta / containerSize;
+      next[index] = Math.max(0.1, Math.min(total - 0.1, next[index] + ratioDelta));
+      next[index + 1] = total - next[index];
+      return next;
+    });
+  }, [paneLayout]);
+
+  // Keep pane session references in sync with selected session list.
+  useEffect(() => {
+    if (currentView !== 'sessions') return;
+    const validSessionIds = new Set(sessions.map(s => s.id));
+    setTerminalPanes(prev => {
+      const next = prev.filter(pane => validSessionIds.has(pane.sessionId));
+      if (next.length > 0) {
+        return next;
+      }
+      if (selectedId && validSessionIds.has(selectedId)) {
+        return [{ id: makePaneId(), sessionId: selectedId }];
+      }
+      if (sessions.length > 0) {
+        return [{ id: makePaneId(), sessionId: sessions[0].id }];
+      }
+      return [];
+    });
+  }, [sessions, selectedId, currentView]);
+
+  // Keep selected session visible in a pane.
+  useEffect(() => {
+    if (currentView !== 'sessions' || !selectedId) return;
+    setTerminalPanes(prev => {
+      if (prev.length === 0) return prev;
+      if (prev.some(pane => pane.sessionId === selectedId)) return prev;
+      const targetPaneId = activePaneId && prev.some(p => p.id === activePaneId)
+        ? activePaneId
+        : prev[0].id;
+      return prev.map(pane =>
+        pane.id === targetPaneId ? { ...pane, sessionId: selectedId } : pane
+      );
+    });
+  }, [selectedId, activePaneId, currentView]);
+
+  useEffect(() => {
+    if (terminalPanes.length === 0) {
+      if (activePaneId !== null) setActivePaneId(null);
+      return;
+    }
+    if (!activePaneId || !terminalPanes.some(p => p.id === activePaneId)) {
+      setActivePaneId(terminalPanes[0].id);
+    }
+  }, [terminalPanes, activePaneId]);
+
+  const createSplitPane = useCallback(async (direction) => {
+    if (currentView !== 'sessions') return;
+    const sourceSession = sessions.find(s => s.id === selectedId) || sessions[0];
+    const workingDir = sourceSession?.workingDir || settings?.session?.defaultWorkingDir || '';
+    const now = new Date();
+    const timeStamp = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const name = `Terminal ${timeStamp}`;
+    const createdSession = await createSession(name, workingDir, 'terminal', { select: false });
+    if (!createdSession) return;
+
+    const newPaneId = makePaneId();
+    setPaneLayout(direction === 'right' ? 'row' : 'column');
+    setTerminalPanes(prev => {
+      if (prev.length === 0) {
+        return [{ id: newPaneId, sessionId: createdSession.id }];
+      }
+      const activeIndex = activePaneId
+        ? prev.findIndex(pane => pane.id === activePaneId)
+        : -1;
+      const insertAt = activeIndex >= 0 ? activeIndex + 1 : prev.length;
+      const next = [...prev];
+      next.splice(insertAt, 0, { id: newPaneId, sessionId: createdSession.id });
+      return next;
+    });
+    setActivePaneId(newPaneId);
+    selectSession(createdSession.id);
+    setFocusedPanel('terminal');
+  }, [activePaneId, createSession, currentView, selectSession, selectedId, sessions, settings?.session?.defaultWorkingDir]);
+
+  const requestCloseCurrentSession = useCallback(() => {
+    if (currentView !== 'sessions') return;
+
+    let targetSessionId = selectedId;
+    if (activePaneId) {
+      const activePane = terminalPanes.find(pane => pane.id === activePaneId);
+      if (activePane?.sessionId) {
+        targetSessionId = activePane.sessionId;
+      }
+    }
+
+    if (!targetSessionId) return;
+
+    setPendingCloseSessionId(targetSessionId);
+    setShowCloseSessionModal(true);
+  }, [activePaneId, currentView, selectedId, terminalPanes]);
+
+  const closeFocusedPane = useCallback(async () => {
+    if (currentView !== 'sessions' || terminalPanes.length <= 1) return;
+    const pane = terminalPanes.find(p => p.id === activePaneId);
+    if (!pane) return;
+    const paneIndex = terminalPanes.findIndex(p => p.id === activePaneId);
+    // Kill the pane's session
+    await killSession(pane.sessionId, { skipConfirm: true });
+    // Remove the pane
+    setTerminalPanes(prev => prev.filter(p => p.id !== activePaneId));
+    setPaneSizes(prev => {
+      if (prev.length <= 1) return [];
+      const next = prev.filter((_, i) => i !== paneIndex);
+      // Redistribute removed pane's space
+      const total = next.reduce((a, b) => a + b, 0);
+      return total > 0 ? next.map(s => s / total) : [];
+    });
+    // Focus adjacent pane
+    const remaining = terminalPanes.filter(p => p.id !== activePaneId);
+    if (remaining.length > 0) {
+      const newIndex = Math.min(paneIndex, remaining.length - 1);
+      setActivePaneId(remaining[newIndex].id);
+      selectSession(remaining[newIndex].sessionId);
+    }
+  }, [activePaneId, currentView, killSession, selectSession, terminalPanes]);
+
+  const navigatePanes = useCallback((direction) => {
+    if (terminalPanes.length <= 1) return;
+    const currentIndex = terminalPanes.findIndex(p => p.id === activePaneId);
+    if (currentIndex === -1) return;
+    let newIndex;
+    if (direction === 'ArrowRight' || direction === 'ArrowDown') {
+      newIndex = (currentIndex + 1) % terminalPanes.length;
+    } else {
+      newIndex = (currentIndex - 1 + terminalPanes.length) % terminalPanes.length;
+    }
+    const newPane = terminalPanes[newIndex];
+    setActivePaneId(newPane.id);
+    selectSession(newPane.sessionId);
+    setFocusedPanel('terminal');
+    setTimeout(() => paneRefs.current.get(newPane.id)?.focus?.(), 0);
+  }, [activePaneId, selectSession, terminalPanes]);
+
+  const handleConfirmCloseCurrentSession = useCallback(async () => {
+    if (!pendingCloseSessionId) return;
+    const success = await killSession(pendingCloseSessionId, { skipConfirm: true });
+    closingSessionRef.current = false;
+    if (success) {
+      setShowCloseSessionModal(false);
+      setPendingCloseSessionId(null);
+    }
+  }, [killSession, pendingCloseSessionId]);
+
+  const handleCancelCloseCurrentSession = useCallback(() => {
+    closingSessionRef.current = false;
+    setShowCloseSessionModal(false);
+    setPendingCloseSessionId(null);
+  }, []);
+
+  // Protect against accidental tab/window close (e.g. Ctrl+W)
+  useEffect(() => {
+    if (!confirmBeforeLeave) {
+      return undefined;
+    }
+
+    const handleBeforeUnload = (event) => {
+      if (closingSessionRef.current) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [confirmBeforeLeave]);
 
   // Blur active element when hint mode activates (prevent terminal from capturing keys)
   useEffect(() => {
@@ -62,7 +335,7 @@ function App() {
     registerHint('tm', {
       action: () => {
         setFocusedPanel('terminal');
-        terminalRef.current?.focus();
+        focusActiveTerminal();
       },
       label: 'Focus Terminal'
     });
@@ -78,7 +351,7 @@ function App() {
       unregisterHint('tm');
       unregisterHint('cx');
     };
-  }, []);
+  }, [focusActiveTerminal]);
 
   // Session navigation functions
   const navigateSession = useCallback((direction) => {
@@ -157,6 +430,41 @@ function App() {
       );
       if (isEditableTarget) return;
 
+      if (isSplitRightShortcut(e)) {
+        e.preventDefault();
+        createSplitPane('right');
+        return;
+      }
+
+      if (isSplitBottomShortcut(e)) {
+        e.preventDefault();
+        createSplitPane('down');
+        return;
+      }
+
+      // Ctrl+Shift+W closes focused pane (before Ctrl+W check)
+      if (isClosePaneShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeFocusedPane();
+        return;
+      }
+
+      // Alt+Arrow navigates between panes
+      if (isPaneFocusShortcut(e)) {
+        e.preventDefault();
+        navigatePanes(e.key);
+        return;
+      }
+
+      if (isCloseSessionShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        closingSessionRef.current = true;
+        requestCloseCurrentSession();
+        return;
+      }
+
       if (e.ctrlKey && e.altKey) {
         const resizeStep = 50;
         const maxWidth = Math.floor(window.innerWidth * 0.7);
@@ -196,9 +504,9 @@ function App() {
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [hintModeActive, focusedPanel, navigateSession, navigateGroup]);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [closeFocusedPane, createSplitPane, hintModeActive, focusedPanel, navigatePanes, navigateSession, navigateGroup, requestCloseCurrentSession]);
 
   const handleSessionsResize = useCallback((delta) => {
     setSessionsWidth(w => Math.max(200, Math.min(400, w + delta)));
@@ -211,11 +519,11 @@ function App() {
   }, []);
 
   const handleCreateSession = async (name, workingDir, cliType) => {
-    const success = await createSession(name, workingDir, cliType);
-    if (success) {
+    const createdSession = await createSession(name, workingDir, cliType);
+    if (createdSession) {
       setShowNewSessionModal(false);
     }
-    return success;
+    return !!createdSession;
   };
 
   const handleShowDetails = (session) => {
@@ -346,22 +654,55 @@ function App() {
           position="top-left"
           typedChars={typedChars}
         />
-        {selectedSession ? (
-          <TerminalView
-            ref={terminalRef}
-            session={selectedSession}
-            onKillSession={() => killSession(selectedId)}
-            onPauseSession={pauseSession}
-            onResumeSession={resumeSession}
-            onToggleSidebar={toggleSidebar}
-            sidebarVisible={sidebarVisible}
-            settings={settings}
-            onUpdateSession={updateSession}
-            hintModeActive={hintModeActive}
-            typedChars={typedChars}
-            hintCodes={settings?.keyboard?.hintMode?.hints || {}}
-            onFocus={() => setFocusedPanel('terminal')}
-          />
+        {terminalPanes.length > 0 ? (
+          <div className={`terminal-panes terminal-panes-${paneLayout}`}>
+            {terminalPanes.map((pane, index) => {
+              const paneSession = sessions.find(s => s.id === pane.sessionId);
+              if (!paneSession) return null;
+              const flexValue = paneSizes[index] || (1 / terminalPanes.length);
+
+              return (
+                <React.Fragment key={pane.id}>
+                  {index > 0 && (
+                    <ResizeHandle
+                      direction={paneLayout === 'row' ? 'vertical' : 'horizontal'}
+                      onResize={(delta) => handlePaneResize(index - 1, delta)}
+                    />
+                  )}
+                  <div
+                    className={`terminal-pane ${activePaneId === pane.id ? 'active' : ''}`}
+                    style={{ flex: flexValue }}
+                  >
+                    <TerminalView
+                      ref={(instance) => {
+                        if (instance) {
+                          paneRefs.current.set(pane.id, instance);
+                        } else {
+                          paneRefs.current.delete(pane.id);
+                        }
+                      }}
+                      session={paneSession}
+                      onKillSession={() => killSession(paneSession.id)}
+                      onPauseSession={pauseSession}
+                      onResumeSession={resumeSession}
+                      onToggleSidebar={toggleSidebar}
+                      sidebarVisible={sidebarVisible}
+                      settings={settings}
+                      onUpdateSession={updateSession}
+                      hintModeActive={hintModeActive}
+                      typedChars={typedChars}
+                      hintCodes={settings?.keyboard?.hintMode?.hints || {}}
+                      onFocus={() => {
+                        setActivePaneId(pane.id);
+                        setFocusedPanel('terminal');
+                        selectSession(paneSession.id);
+                      }}
+                    />
+                  </div>
+                </React.Fragment>
+              );
+            })}
+          </div>
         ) : (
           <div className="terminal-placeholder">
             <div className="terminal-placeholder-icon">🖥️</div>
@@ -375,6 +716,7 @@ function App() {
         <NewSessionModal
           onClose={() => setShowNewSessionModal(false)}
           onCreate={handleCreateSession}
+          defaultWorkingDir={selectedSession?.workingDir}
         />
       )}
       {showSettingsModal && (
@@ -399,6 +741,24 @@ function App() {
         <div className="hint-mode-indicator">
           <span>Hint Mode</span>
           <span className="typed-chars">{typedChars || '_'}</span>
+        </div>
+      )}
+      {showCloseSessionModal && pendingCloseSession && (
+        <div className="modal-overlay" onClick={handleCancelCloseCurrentSession}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Close Current Session?</h2>
+            <p className="settings-description">
+              This will kill session <strong>{pendingCloseSession.name}</strong> and keep this browser tab open.
+            </p>
+            <div className="modal-actions">
+              <button className="btn btn-secondary" onClick={handleCancelCloseCurrentSession}>
+                Cancel
+              </button>
+              <button className="btn btn-danger" onClick={handleConfirmCloseCurrentSession}>
+                Kill Session
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

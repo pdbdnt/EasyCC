@@ -201,15 +201,40 @@ const TerminalView = forwardRef(function TerminalView({
       // Intercept app-level shortcuts so xterm doesn't consume them
       // Session navigation: Ctrl+[ Ctrl+] Ctrl+; Ctrl+'
       if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
-        if (event.key === '[' || event.key === ']' || event.key === ';' || event.key === "'") {
+        if (event.key === '[' || event.key === ']' || event.key === ';' || event.key === "'" || event.key.toLowerCase() === 'w') {
           return false;
         }
+      }
+      if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
+        return false;
       }
       // Panel resize: Ctrl+Alt+Arrow keys
       if (event.ctrlKey && event.altKey) {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
           return false;
         }
+      }
+
+      // Pane split shortcuts are handled at app level.
+      if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        if (event.key === '+' || event.key === '=' || event.key === '-' || event.key === '_' ||
+            event.code === 'NumpadAdd' || event.code === 'NumpadSubtract') {
+          return false;
+        }
+      }
+
+      // Alt+Arrow: pane focus navigation (handled at app level)
+      if (event.altKey && !event.ctrlKey && !event.shiftKey && !event.metaKey) {
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' ||
+            event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          return false;
+        }
+      }
+
+      // Ctrl+Shift+W: close focused pane (handled at app level)
+      if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey &&
+          event.key.toLowerCase() === 'w') {
+        return false;
       }
 
       return true;
