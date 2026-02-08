@@ -100,6 +100,9 @@ function SessionCard({
           ) : (
             <>
               {session.name}
+              {(!session.cliType || session.cliType === 'claude-code') && (
+                <span className="cli-type-badge claude-code">CC</span>
+              )}
               {session.cliType === 'codex' && (
                 <span className="cli-type-badge codex">CDX</span>
               )}

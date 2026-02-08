@@ -180,6 +180,12 @@ body {
   border: 1px solid #7c4dff;
 }
 
+.cli-type-badge.claude-code {
+  background: #1b2d3a;
+  color: #a8d4ff;
+  border: 1px solid #4d9fff;
+}
+
 .cli-type-badge.terminal {
   background: #1b3a2d;
   color: #a8ffc5;
