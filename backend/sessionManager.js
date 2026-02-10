@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const DataStore = require('./dataStore');
 const PlanManager = require('./planManager');
+const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStatusToStage } = require('./stagesConfig');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 
 // Debug logger that writes to file
@@ -51,7 +52,14 @@ class SessionManager extends EventEmitter {
     this.sessions = new Map();
     this.dataStore = new DataStore();
     this.planManager = new PlanManager();
+    this.stages = [...DEFAULT_STAGES];
     this.isShuttingDown = false;  // Prevents onExit handlers from deleting sessions during shutdown
+
+    // Load persisted stages
+    const savedStages = this.dataStore.loadStages();
+    if (savedStages && savedStages.length > 0) {
+      this.stages = savedStages;
+    }
 
     // Load persisted sessions on startup
     this.loadPersistedSessions();
@@ -103,7 +111,19 @@ class SessionManager extends EventEmitter {
           plans: sessionData.plans || [],
           promptBuffer: '',
           promptHistory: sessionData.promptHistory || [],
-          inEscapeSeq: false
+          inEscapeSeq: false,
+          // Kanban stage fields
+          stage: sessionData.stage || 'todo',
+          priority: sessionData.priority || 0,
+          description: sessionData.description || '',
+          blockedBy: sessionData.blockedBy || [],
+          blocks: sessionData.blocks || [],
+          manuallyPlaced: sessionData.manuallyPlaced || false,
+          manualPlacedAt: sessionData.manualPlacedAt || null,
+          rejectionHistory: sessionData.rejectionHistory || [],
+          completedAt: sessionData.completedAt || null,
+          updatedAt: sessionData.updatedAt || null,
+          comments: sessionData.comments || []
         };
 
         this.sessions.set(id, session);
@@ -363,7 +383,7 @@ class SessionManager extends EventEmitter {
    * @param {string} cliType - CLI type ('claude' or 'codex')
    * @returns {object} Session snapshot
    */
-  createSession(name, workingDir = process.cwd(), cliType = 'claude') {
+  createSession(name, workingDir = process.cwd(), cliType = 'claude', stageOpts = {}) {
     const id = uuidv4();
     const claudeSessionId = uuidv4(); // Generate Claude session ID upfront
     const now = new Date();
@@ -461,7 +481,19 @@ class SessionManager extends EventEmitter {
       promptHistory: [],     // Last 10 prompts [{text, timestamp}]
       inEscapeSeq: false,    // Track if we're inside an escape sequence
       statusDebounceTimer: null,  // Timer for debouncing status changes
-      pendingStatus: null         // Status waiting to be applied
+      pendingStatus: null,        // Status waiting to be applied
+      // Kanban stage fields
+      stage: stageOpts.stage || 'todo',
+      priority: stageOpts.priority || 0,
+      description: stageOpts.description || '',
+      blockedBy: stageOpts.blockedBy || [],
+      blocks: stageOpts.blocks || [],
+      manuallyPlaced: false,
+      manualPlacedAt: null,
+      rejectionHistory: [],
+      completedAt: null,
+      updatedAt: now.toISOString(),
+      comments: []
     };
 
     // Handle PTY output
@@ -1040,6 +1072,8 @@ class SessionManager extends EventEmitter {
     if (meta.cliType !== undefined && ['claude', 'codex', 'terminal'].includes(meta.cliType)) {
       session.cliType = meta.cliType;
     }
+    if (meta.priority !== undefined) session.priority = meta.priority;
+    if (meta.description !== undefined) session.description = meta.description;
 
     session.lastActivity = new Date();
 
@@ -1094,12 +1128,33 @@ class SessionManager extends EventEmitter {
       return 'paused';
     }
 
+    // Skip trivial output (escape sequences, cursor movements, single chars)
+    const stripped = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').trim();
+    if (stripped.length < 3) {
+      return currentStatus;
+    }
+
     // Detect thinking/processing indicators
     const thinkingPatterns = [
+      // Claude Code patterns
       /Thinking/i,
       /Processing/i,
-      /\u280B|\u2819|\u2839|\u2838|\u283C|\u2834|\u2826|\u2827|\u2807|\u280F/,  // Spinner characters
-      /\u280B|\u2819|\u2839|\u2838|\u283C|\u2834|\u2826|\u2827|\u2807|\u280F/  // Unicode spinners
+      /\u2726/,                        // ✦ Claude Code thinking icon
+      /Scampering/i,
+      /Pondering/i,
+      /Reasoning/i,
+      /Contemplating/i,
+      /Analyzing/i,
+      /Researching/i,
+      /Investigating/i,
+      /Examining/i,
+      /Considering/i,
+      /\(thought for \d+/i,            // "(thought for 2s)" pattern
+      /\u280B|\u2819|\u2839|\u2838|\u283C|\u2834|\u2826|\u2827|\u2807|\u280F/,  // Braille spinners
+      // Codex CLI patterns
+      /\u2022\s*Working\s*\(/,         // • Working (Xs . esc to interrupt)
+      /esc to interrupt/i,             // Generic Codex working indicator
+      /\u2022\s*\w+ing\s.*\(\d+s/     // • Investigating... (0s — contextual thinking
     ];
 
     for (const pattern of thinkingPatterns) {
@@ -1110,12 +1165,18 @@ class SessionManager extends EventEmitter {
 
     // Detect editing patterns
     const editingPatterns = [
+      // Claude Code patterns
       /Writing to/i,
       /Editing/i,
       /Creating file/i,
       /Updating/i,
       /^\s*\+\s+/m,  // Diff additions
-      /^\s*-\s+/m    // Diff removals
+      /^\s*-\s+/m,   // Diff removals
+      // Codex CLI patterns
+      /\u2022\s*Edited/i,             // • Edited <file> (+N -N)
+      /\u2022\s*Added/i,              // • Added <file>
+      /\u2022\s*Deleted/i,            // • Deleted <file>
+      /\u2714.*approved.*to run/i     // ✔ You approved codex to run
     ];
 
     for (const pattern of editingPatterns) {
@@ -1131,7 +1192,12 @@ class SessionManager extends EventEmitter {
       /Enter.*:/i,
       /Press.*to continue/i,
       /\[Y\/n\]/i,
-      /\[y\/N\]/i
+      /\[y\/N\]/i,
+      // Codex CLI patterns
+      /Ask Codex to do anything/i,    // Codex idle prompt
+      /\?\s*for shortcuts/i,          // Codex footer when idle
+      /Would you like to run/i,       // Codex approval prompt
+      /Implement this plan\?/i        // Codex plan mode prompt
     ];
 
     for (const pattern of waitingPatterns) {
@@ -1501,7 +1567,19 @@ class SessionManager extends EventEmitter {
       notes: session.notes || '',
       tags: session.tags || [],
       plans: session.plans || [],
-      promptHistory: session.promptHistory || []
+      promptHistory: session.promptHistory || [],
+      // Kanban stage fields
+      stage: session.stage || 'todo',
+      priority: session.priority || 0,
+      description: session.description || '',
+      blockedBy: session.blockedBy || [],
+      blocks: session.blocks || [],
+      manuallyPlaced: session.manuallyPlaced || false,
+      manualPlacedAt: session.manualPlacedAt || null,
+      rejectionHistory: session.rejectionHistory || [],
+      completedAt: session.completedAt || null,
+      updatedAt: session.updatedAt || null,
+      comments: session.comments || []
     };
   }
 
@@ -1709,6 +1787,231 @@ class SessionManager extends EventEmitter {
     });
 
     return true;
+  }
+
+  // ============================================
+  // Kanban Stage Methods
+  // ============================================
+
+  /**
+   * Move a session to a different stage
+   */
+  moveSession(id, targetStageId, { reason = null, source = 'system' } = {}) {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session not found: ${id}`);
+
+    // Auto-sync must not override manual placement
+    if (source === 'auto' && session.manuallyPlaced) return this.getSessionSnapshot(session);
+
+    const targetStage = this.stages.find(s => s.id === targetStageId);
+    if (!targetStage) throw new Error(`Stage not found: ${targetStageId}`);
+
+    if (session.stage === targetStageId) return this.getSessionSnapshot(session);
+
+    const previousStage = session.stage;
+    const currentOrder = this.stages.find(s => s.id === session.stage)?.order ?? 0;
+    const targetOrder = targetStage.order;
+
+    // Record rejection history for backward moves
+    if (targetOrder < currentOrder && reason) {
+      session.rejectionHistory.push({
+        from: previousStage,
+        to: targetStageId,
+        reason,
+        at: new Date().toISOString()
+      });
+    }
+
+    session.stage = targetStageId;
+    session.updatedAt = new Date().toISOString();
+    if (targetStageId === 'done') {
+      session.completedAt = new Date().toISOString();
+    }
+
+    if (source === 'manual') {
+      session.manuallyPlaced = true;
+      session.manualPlacedAt = new Date().toISOString();
+    }
+
+    this.dataStore.saveSession(session);
+    this.emit('sessionMoved', {
+      sessionId: id,
+      fromStage: previousStage,
+      toStage: targetStageId,
+      reason
+    });
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+
+    return this.getSessionSnapshot(session);
+  }
+
+  /**
+   * Advance session to next stage
+   */
+  advanceSession(id) {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session not found: ${id}`);
+
+    const nextStage = getNextStage(this.stages, session.stage);
+    if (!nextStage) throw new Error(`No next stage from: ${session.stage}`);
+
+    return this.moveSession(id, nextStage.id);
+  }
+
+  /**
+   * Reject session back to previous stage
+   */
+  rejectSession(id, reason, targetStageId = null) {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session not found: ${id}`);
+
+    let targetStage;
+    if (targetStageId) {
+      targetStage = this.stages.find(s => s.id === targetStageId);
+    } else {
+      targetStage = getPreviousStage(this.stages, session.stage);
+    }
+
+    if (!targetStage) throw new Error(`No valid rejection target from: ${session.stage}`);
+
+    return this.moveSession(id, targetStage.id, { reason });
+  }
+
+  /**
+   * Add a dependency between sessions
+   */
+  addDependency(sessionId, blockerId) {
+    const session = this.sessions.get(sessionId);
+    const blocker = this.sessions.get(blockerId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    if (!blocker) throw new Error(`Blocker session not found: ${blockerId}`);
+
+    if (!session.blockedBy.includes(blockerId)) {
+      session.blockedBy.push(blockerId);
+    }
+    if (!blocker.blocks.includes(sessionId)) {
+      blocker.blocks.push(sessionId);
+    }
+
+    session.updatedAt = new Date().toISOString();
+    blocker.updatedAt = new Date().toISOString();
+
+    this.dataStore.saveSession(session);
+    this.dataStore.saveSession(blocker);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    this.emit('sessionUpdated', this.getSessionSnapshot(blocker));
+
+    return this.getSessionSnapshot(session);
+  }
+
+  /**
+   * Remove a dependency between sessions
+   */
+  removeDependency(sessionId, blockerId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+
+    session.blockedBy = session.blockedBy.filter(id => id !== blockerId);
+    const blocker = this.sessions.get(blockerId);
+    if (blocker) {
+      blocker.blocks = blocker.blocks.filter(id => id !== sessionId);
+      blocker.updatedAt = new Date().toISOString();
+      this.dataStore.saveSession(blocker);
+    }
+
+    session.updatedAt = new Date().toISOString();
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+
+    return this.getSessionSnapshot(session);
+  }
+
+  /**
+   * Reset manual placement lock
+   */
+  resetManualPlacement(id) {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session not found: ${id}`);
+
+    session.manuallyPlaced = false;
+    session.manualPlacedAt = null;
+    session.updatedAt = new Date().toISOString();
+
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    return this.getSessionSnapshot(session);
+  }
+
+  /**
+   * Add a comment to a session
+   */
+  addComment(sessionId, text, author = 'user') {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+
+    const comment = {
+      id: uuidv4().slice(0, 8),
+      text,
+      author,
+      createdAt: new Date().toISOString()
+    };
+
+    session.comments.push(comment);
+    session.updatedAt = new Date().toISOString();
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+
+    return comment;
+  }
+
+  /**
+   * Get sessions grouped by stage
+   */
+  getSessionsByStage() {
+    const grouped = {};
+    for (const stage of this.stages) {
+      grouped[stage.id] = [];
+    }
+    for (const session of this.sessions.values()) {
+      const stageId = session.stage || 'todo';
+      if (!grouped[stageId]) grouped[stageId] = [];
+      grouped[stageId].push(this.getSessionSnapshot(session));
+    }
+    return grouped;
+  }
+
+  /**
+   * Get stage statistics
+   */
+  getStageStats() {
+    const stats = {};
+    for (const stage of this.stages) {
+      const stageSessions = [...this.sessions.values()].filter(s => s.stage === stage.id);
+      stats[stage.id] = {
+        total: stageSessions.length,
+        active: stageSessions.filter(s => ['active', 'thinking', 'editing'].includes(s.status)).length,
+        paused: stageSessions.filter(s => s.status === 'paused').length,
+        idle: stageSessions.filter(s => s.status === 'idle').length
+      };
+    }
+    return stats;
+  }
+
+  /**
+   * Get all stages
+   */
+  getStages() {
+    return [...this.stages].sort((a, b) => a.order - b.order);
+  }
+
+  /**
+   * Update stages configuration
+   */
+  updateStages(stages) {
+    this.stages = [...stages];
+    this.dataStore.saveStages(this.stages);
+    this.emit('stagesUpdated', this.stages);
+    return this.stages;
   }
 
   /**

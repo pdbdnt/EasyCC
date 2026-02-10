@@ -43,7 +43,7 @@ class TaskManager extends EventEmitter {
     title,
     description = '',
     project,
-    stage = 'backlog',
+    stage = 'todo',
     priority = 0,
     blockedBy = [],
     tags = []
@@ -74,6 +74,10 @@ class TaskManager extends EventEmitter {
 
       // Rejection history for backwards flow
       rejectionHistory: [],
+
+      // Manual placement lock
+      manuallyPlaced: false,
+      manualPlacedAt: null,
 
       // Context preserved between stages
       context: {
@@ -182,7 +186,7 @@ class TaskManager extends EventEmitter {
 
     const allowedFields = [
       'title', 'description', 'priority', 'tags', 'status',
-      'assignedAgent', 'assignedSessionId', 'context'
+      'assignedAgent', 'assignedSessionId', 'context', 'manuallyPlaced'
     ];
 
     for (const field of allowedFields) {
@@ -212,15 +216,25 @@ class TaskManager extends EventEmitter {
    * @param {Object} options - Move options
    * @returns {Object} - Updated task
    */
-  moveTask(taskId, targetStageId, { reason = null, preserveAgent = false } = {}) {
+  moveTask(taskId, targetStageId, { reason = null, preserveAgent = false, source = 'system' } = {}) {
     const task = this.tasks.get(taskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
     }
 
+    // Auto-sync must not override manual placement
+    if (source === 'auto' && task.manuallyPlaced) {
+      return task; // no-op
+    }
+
     const targetStage = this.stages.find(s => s.id === targetStageId);
     if (!targetStage) {
       throw new Error(`Stage not found: ${targetStageId}`);
+    }
+
+    // Skip if already in target stage
+    if (task.stage === targetStageId) {
+      return task;
     }
 
     const previousStage = task.stage;
@@ -245,6 +259,12 @@ class TaskManager extends EventEmitter {
       task.completedAt = new Date().toISOString();
     }
 
+    // Set manual placement lock on manual moves
+    if (source === 'manual') {
+      task.manuallyPlaced = true;
+      task.manualPlacedAt = new Date().toISOString();
+    }
+
     // Clear agent assignment unless preserving
     if (!preserveAgent) {
       task.assignedAgent = null;
@@ -261,6 +281,28 @@ class TaskManager extends EventEmitter {
       reason
     });
 
+    return task;
+  }
+
+  /**
+   * Reset manual placement lock, re-enabling auto-sync
+   * @param {string} taskId - Task ID
+   * @returns {Object} - Updated task
+   */
+  resetManualPlacement(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+
+    task.manuallyPlaced = false;
+    task.manualPlacedAt = null;
+    task.updatedAt = new Date().toISOString();
+
+    this.tasks.set(taskId, task);
+    this._persist();
+
+    this.emit('taskUpdated', task);
     return task;
   }
 

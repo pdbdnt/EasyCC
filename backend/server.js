@@ -7,26 +7,21 @@ const fs = require('fs');
 const SessionManager = require('./sessionManager');
 const PlanManager = require('./planManager');
 const SettingsManager = require('./settingsManager');
-const TaskManager = require('./taskManager');
 const DataStore = require('./dataStore');
 const PlanVersionStore = require('./planVersionStore');
-const AgentPoolManager = require('./agentPoolManager');
-const CompletionDetector = require('./completionDetector');
-const MetricsManager = require('./metricsManager');
-const WebhooksManager = require('./webhooksManager');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
 const sessionManager = new SessionManager();
 const planManager = new PlanManager();
 const settingsManager = new SettingsManager();
-const taskManager = new TaskManager(dataStore, sessionManager);
 const planVersionStore = new PlanVersionStore();
-const agentPoolManager = new AgentPoolManager(sessionManager, taskManager);
-const completionDetector = new CompletionDetector(sessionManager, taskManager, agentPoolManager);
-const metricsManager = new MetricsManager(taskManager, dataStore);
-const webhooksManager = new WebhooksManager(taskManager, sessionManager);
+const { sessionStatusToStage } = require('./stagesConfig');
+
 const DEFAULT_FOLDERS_ROOT = 'C:\\Users\\denni\\apps';
+
+// Per-session debounce timers for kanban stage sync (3s stability)
+const kanbanSyncTimers = new Map();
 
 // Track WebSocket connections
 const dashboardClients = new Set();
@@ -91,7 +86,7 @@ async function start() {
 
   // Create a new session
   app.post('/api/sessions', async (request, reply) => {
-    const { name, workingDir, cliType } = request.body || {};
+    const { name, workingDir, cliType, stage, priority, description } = request.body || {};
 
     // Validate cliType
     const validCliTypes = ['claude', 'codex', 'terminal'];
@@ -100,7 +95,12 @@ async function start() {
     const resolvedName = normalizedName || generateSessionName(normalizedCliType);
 
     try {
-      const session = sessionManager.createSession(resolvedName, workingDir, normalizedCliType);
+      const session = sessionManager.createSession(resolvedName, workingDir, normalizedCliType, {
+        stage: stage || 'todo',
+        priority: priority || 0,
+        description: description || ''
+      });
+
       return reply.status(201).send({ session });
     } catch (error) {
       return reply.status(500).send({ error: error.message });
@@ -523,106 +523,21 @@ async function start() {
   });
 
   // ============================================
-  // Tasks API
+  // Session Kanban / Stage Routes
   // ============================================
 
-  // Initialize task manager
-  await taskManager.initialize();
-
-  // List all tasks
-  app.get('/api/tasks', async (request) => {
-    const { stage, project, status } = request.query;
-    const tasks = taskManager.getTasks({ stage, project, status });
-    return { tasks };
+  // Get sessions grouped by stage
+  app.get('/api/sessions/by-stage', async () => {
+    return { sessionsByStage: sessionManager.getSessionsByStage() };
   });
 
-  // Get task statistics
-  app.get('/api/tasks/stats', async () => {
-    return { stats: taskManager.getStageStats() };
+  // Get session stage stats
+  app.get('/api/sessions/stats', async () => {
+    return { stats: sessionManager.getStageStats() };
   });
 
-  // Get unique projects
-  app.get('/api/tasks/projects', async () => {
-    return { projects: taskManager.getProjects() };
-  });
-
-  // Get assignable tasks for a stage
-  app.get('/api/tasks/assignable/:stageId', async (request) => {
-    const { stageId } = request.params;
-    const tasks = taskManager.getAssignableTasks(stageId);
-    return { tasks };
-  });
-
-  // Create a new task
-  app.post('/api/tasks', async (request, reply) => {
-    const { title, description, project, stage, priority, blockedBy, tags } = request.body || {};
-
-    if (!title || typeof title !== 'string' || title.trim() === '') {
-      return reply.status(400).send({ error: 'Task title is required' });
-    }
-
-    if (!project || typeof project !== 'string' || project.trim() === '') {
-      return reply.status(400).send({ error: 'Project is required' });
-    }
-
-    try {
-      const task = taskManager.createTask({
-        title: title.trim(),
-        description: description || '',
-        project: project.trim(),
-        stage: stage || 'backlog',
-        priority: priority || 0,
-        blockedBy: blockedBy || [],
-        tags: tags || []
-      });
-      return reply.status(201).send({ task });
-    } catch (error) {
-      return reply.status(500).send({ error: error.message });
-    }
-  });
-
-  // Get a single task
-  app.get('/api/tasks/:id', async (request, reply) => {
-    const { id } = request.params;
-    const task = taskManager.getTask(id);
-
-    if (!task) {
-      return reply.status(404).send({ error: 'Task not found' });
-    }
-
-    return { task };
-  });
-
-  // Update task metadata
-  app.patch('/api/tasks/:id', async (request, reply) => {
-    const { id } = request.params;
-    const updates = request.body || {};
-
-    try {
-      const task = taskManager.updateTask(id, updates);
-      return { task };
-    } catch (error) {
-      if (error.message.includes('not found')) {
-        return reply.status(404).send({ error: error.message });
-      }
-      return reply.status(500).send({ error: error.message });
-    }
-  });
-
-  // Delete a task
-  app.delete('/api/tasks/:id', async (request, reply) => {
-    const { id } = request.params;
-    const success = taskManager.deleteTask(id);
-
-    if (!success) {
-      return reply.status(404).send({ error: 'Task not found' });
-    }
-
-    return { success: true };
-  });
-
-  // Move task to a stage
-  app.post('/api/tasks/:id/move', async (request, reply) => {
+  // Move session to a stage
+  app.post('/api/sessions/:id/move', async (request, reply) => {
     const { id } = request.params;
     const { stage, reason } = request.body || {};
 
@@ -631,8 +546,8 @@ async function start() {
     }
 
     try {
-      const task = taskManager.moveTask(id, stage, { reason });
-      return { task };
+      const session = sessionManager.moveSession(id, stage, { reason, source: 'manual' });
+      return { session };
     } catch (error) {
       if (error.message.includes('not found')) {
         return reply.status(404).send({ error: error.message });
@@ -641,13 +556,13 @@ async function start() {
     }
   });
 
-  // Advance task to next stage
-  app.post('/api/tasks/:id/advance', async (request, reply) => {
+  // Advance session to next stage
+  app.post('/api/sessions/:id/advance', async (request, reply) => {
     const { id } = request.params;
 
     try {
-      const task = taskManager.advanceTask(id);
-      return { task };
+      const session = sessionManager.advanceSession(id);
+      return { session };
     } catch (error) {
       if (error.message.includes('not found')) {
         return reply.status(404).send({ error: error.message });
@@ -656,8 +571,8 @@ async function start() {
     }
   });
 
-  // Reject task to previous stage
-  app.post('/api/tasks/:id/reject', async (request, reply) => {
+  // Reject session to previous stage
+  app.post('/api/sessions/:id/reject', async (request, reply) => {
     const { id } = request.params;
     const { reason, targetStage } = request.body || {};
 
@@ -666,8 +581,8 @@ async function start() {
     }
 
     try {
-      const task = taskManager.rejectTask(id, reason, targetStage);
-      return { task };
+      const session = sessionManager.rejectSession(id, reason, targetStage);
+      return { session };
     } catch (error) {
       if (error.message.includes('not found')) {
         return reply.status(404).send({ error: error.message });
@@ -676,63 +591,8 @@ async function start() {
     }
   });
 
-  // Assign agent to task
-  app.post('/api/tasks/:id/assign', async (request, reply) => {
-    const { id } = request.params;
-    const { agentId, sessionId } = request.body || {};
-
-    if (!agentId || !sessionId) {
-      return reply.status(400).send({ error: 'agentId and sessionId are required' });
-    }
-
-    try {
-      const task = taskManager.assignAgent(id, agentId, sessionId);
-      return { task };
-    } catch (error) {
-      if (error.message.includes('not found')) {
-        return reply.status(404).send({ error: error.message });
-      }
-      return reply.status(400).send({ error: error.message });
-    }
-  });
-
-  // Unassign agent from task
-  app.post('/api/tasks/:id/unassign', async (request, reply) => {
-    const { id } = request.params;
-
-    try {
-      const task = taskManager.unassignAgent(id);
-      return { task };
-    } catch (error) {
-      if (error.message.includes('not found')) {
-        return reply.status(404).send({ error: error.message });
-      }
-      return reply.status(400).send({ error: error.message });
-    }
-  });
-
-  // Block a task
-  app.post('/api/tasks/:id/block', async (request, reply) => {
-    const { id } = request.params;
-    const { reason } = request.body || {};
-
-    if (!reason) {
-      return reply.status(400).send({ error: 'Block reason is required' });
-    }
-
-    try {
-      const task = taskManager.blockTask(id, reason);
-      return { task };
-    } catch (error) {
-      if (error.message.includes('not found')) {
-        return reply.status(404).send({ error: error.message });
-      }
-      return reply.status(400).send({ error: error.message });
-    }
-  });
-
-  // Add dependency
-  app.post('/api/tasks/:id/dependencies', async (request, reply) => {
+  // Add dependency between sessions
+  app.post('/api/sessions/:id/dependencies', async (request, reply) => {
     const { id } = request.params;
     const { blockerId } = request.body || {};
 
@@ -741,8 +601,8 @@ async function start() {
     }
 
     try {
-      const task = taskManager.addDependency(id, blockerId);
-      return { task };
+      const session = sessionManager.addDependency(id, blockerId);
+      return { session };
     } catch (error) {
       if (error.message.includes('not found')) {
         return reply.status(404).send({ error: error.message });
@@ -752,12 +612,12 @@ async function start() {
   });
 
   // Remove dependency
-  app.delete('/api/tasks/:id/dependencies/:blockerId', async (request, reply) => {
+  app.delete('/api/sessions/:id/dependencies/:blockerId', async (request, reply) => {
     const { id, blockerId } = request.params;
 
     try {
-      const task = taskManager.removeDependency(id, blockerId);
-      return { task };
+      const session = sessionManager.removeDependency(id, blockerId);
+      return { session };
     } catch (error) {
       if (error.message.includes('not found')) {
         return reply.status(404).send({ error: error.message });
@@ -766,54 +626,51 @@ async function start() {
     }
   });
 
-  // ============================================
-  // Transitions & Completion Patterns API
-  // ============================================
-
-  // Get recent transitions (for analytics/audit)
-  app.get('/api/transitions', async (request, reply) => {
-    const limit = parseInt(request.query.limit || '100', 10);
-    return { transitions: dataStore.getRecentTransitions(limit) };
-  });
-
-  // Get completion patterns for a stage
-  app.get('/api/completion-patterns/:stageId', async (request, reply) => {
-    const { stageId } = request.params;
-    return { patterns: completionDetector.getPatterns(stageId) };
-  });
-
-  // Set completion patterns for a stage
-  app.put('/api/completion-patterns/:stageId', async (request, reply) => {
-    const { stageId } = request.params;
-    const { patterns } = request.body || {};
-
-    if (!patterns || !Array.isArray(patterns)) {
-      return reply.status(400).send({ error: 'patterns array is required' });
-    }
+  // Reset manual placement
+  app.post('/api/sessions/:id/reset-placement', async (request, reply) => {
+    const { id } = request.params;
 
     try {
-      completionDetector.setPatterns(stageId, patterns);
-      return { success: true, stageId, patterns };
+      const session = sessionManager.resetManualPlacement(id);
+      return { session };
     } catch (error) {
+      if (error.message.includes('not found')) {
+        return reply.status(404).send({ error: error.message });
+      }
       return reply.status(500).send({ error: error.message });
     }
   });
 
-  // Add a completion pattern to a stage
-  app.post('/api/completion-patterns/:stageId', async (request, reply) => {
-    const { stageId } = request.params;
-    const pattern = request.body || {};
+  // Add comment to session
+  app.post('/api/sessions/:id/comments', async (request, reply) => {
+    const { id } = request.params;
+    const { text, author } = request.body || {};
 
-    if (!pattern.type || !pattern.pattern || !pattern.description) {
-      return reply.status(400).send({ error: 'pattern must have type, pattern, and description' });
+    if (!text || !text.trim()) {
+      return reply.status(400).send({ error: 'Comment text is required' });
     }
 
     try {
-      completionDetector.addPattern(stageId, pattern);
-      return { success: true, stageId, pattern };
+      const comment = sessionManager.addComment(id, text.trim(), author);
+      return { comment };
     } catch (error) {
+      if (error.message.includes('not found')) {
+        return reply.status(404).send({ error: error.message });
+      }
       return reply.status(500).send({ error: error.message });
     }
+  });
+
+  // Get comments for session
+  app.get('/api/sessions/:id/comments', async (request, reply) => {
+    const { id } = request.params;
+    const session = sessionManager.getSession(id);
+
+    if (!session) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    return { comments: session.comments || [] };
   });
 
   // ============================================
@@ -822,7 +679,7 @@ async function start() {
 
   // Get all stages
   app.get('/api/stages', async () => {
-    return { stages: taskManager.getStages() };
+    return { stages: sessionManager.getStages() };
   });
 
   // Update stages configuration
@@ -834,7 +691,7 @@ async function start() {
     }
 
     try {
-      const updatedStages = taskManager.updateStages(stages);
+      const updatedStages = sessionManager.updateStages(stages);
       return { stages: updatedStages };
     } catch (error) {
       return reply.status(500).send({ error: error.message });
@@ -842,227 +699,13 @@ async function start() {
   });
 
   // ============================================
-  // Agent Pool API
+  // Transitions API
   // ============================================
 
-  // Get pool status for all stages
-  app.get('/api/pools', async () => {
-    return { pools: agentPoolManager.getPoolStatus() };
-  });
-
-  // Get agent info for a specific session
-  app.get('/api/pools/agents/:sessionId', async (request, reply) => {
-    const { sessionId } = request.params;
-    const agentInfo = agentPoolManager.getAgentInfo(sessionId);
-
-    if (!agentInfo) {
-      return reply.status(404).send({ error: 'Agent not found' });
-    }
-
-    return { agent: agentInfo };
-  });
-
-  // Update pool configuration for a stage
-  app.put('/api/pools/:stageId', async (request, reply) => {
-    const { stageId } = request.params;
-    const config = request.body || {};
-
-    try {
-      agentPoolManager.updatePoolConfig(stageId, config);
-      return { success: true, stageId, config };
-    } catch (error) {
-      return reply.status(500).send({ error: error.message });
-    }
-  });
-
-  // ============================================
-  // Metrics API
-  // ============================================
-
-  // Get dashboard metrics
-  app.get('/api/metrics/dashboard', async (request, reply) => {
-    const options = {};
-    if (request.query.project) options.project = request.query.project;
-    return { metrics: metricsManager.getDashboardMetrics(options) };
-  });
-
-  // Get project metrics
-  app.get('/api/metrics/projects/:project', async (request, reply) => {
-    const { project } = request.params;
-    return { metrics: metricsManager.getProjectMetrics(project) };
-  });
-
-  // Get metrics trend
-  app.get('/api/metrics/trend', async (request, reply) => {
-    const days = parseInt(request.query.days || '30', 10);
-    return { trend: metricsManager.getMetricsTrend(days) };
-  });
-
-  // Get bottlenecks
-  app.get('/api/metrics/bottlenecks', async () => {
-    return { bottlenecks: metricsManager.detectBottlenecks() };
-  });
-
-  // ============================================
-  // Bulk Operations API
-  // ============================================
-
-  // Bulk move tasks to a stage
-  app.post('/api/tasks/bulk/move', async (request, reply) => {
-    const { taskIds, toStage, reason } = request.body || {};
-
-    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
-      return reply.status(400).send({ error: 'taskIds array is required' });
-    }
-
-    if (!toStage) {
-      return reply.status(400).send({ error: 'toStage is required' });
-    }
-
-    const results = {
-      success: [],
-      failed: []
-    };
-
-    for (const taskId of taskIds) {
-      try {
-        const task = await taskManager.moveTask(taskId, toStage, reason || 'Bulk move');
-        results.success.push({ taskId, task });
-      } catch (error) {
-        results.failed.push({ taskId, error: error.message });
-      }
-    }
-
-    return { results };
-  });
-
-  // Bulk update tasks
-  app.patch('/api/tasks/bulk', async (request, reply) => {
-    const { taskIds, updates } = request.body || {};
-
-    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
-      return reply.status(400).send({ error: 'taskIds array is required' });
-    }
-
-    if (!updates || typeof updates !== 'object') {
-      return reply.status(400).send({ error: 'updates object is required' });
-    }
-
-    const results = {
-      success: [],
-      failed: []
-    };
-
-    for (const taskId of taskIds) {
-      try {
-        const task = taskManager.updateTask(taskId, updates);
-        results.success.push({ taskId, task });
-      } catch (error) {
-        results.failed.push({ taskId, error: error.message });
-      }
-    }
-
-    return { results };
-  });
-
-  // Bulk delete tasks
-  app.delete('/api/tasks/bulk', async (request, reply) => {
-    const { taskIds } = request.body || {};
-
-    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
-      return reply.status(400).send({ error: 'taskIds array is required' });
-    }
-
-    const results = {
-      success: [],
-      failed: []
-    };
-
-    for (const taskId of taskIds) {
-      try {
-        taskManager.deleteTask(taskId);
-        results.success.push({ taskId });
-      } catch (error) {
-        results.failed.push({ taskId, error: error.message });
-      }
-    }
-
-    return { results };
-  });
-
-  // ============================================
-  // Webhooks API
-  // ============================================
-
-  // Get all webhooks
-  app.get('/api/webhooks', async () => {
-    return { webhooks: webhooksManager.getAllWebhooks() };
-  });
-
-  // Register a new webhook
-  app.post('/api/webhooks', async (request, reply) => {
-    const config = request.body || {};
-
-    try {
-      const id = webhooksManager.registerWebhook(config);
-      const webhook = webhooksManager.getWebhook(id);
-      return { webhook };
-    } catch (error) {
-      return reply.status(400).send({ error: error.message });
-    }
-  });
-
-  // Get a webhook
-  app.get('/api/webhooks/:id', async (request, reply) => {
-    const { id } = request.params;
-    const webhook = webhooksManager.getWebhook(id);
-
-    if (!webhook) {
-      return reply.status(404).send({ error: 'Webhook not found' });
-    }
-
-    return { webhook };
-  });
-
-  // Update a webhook
-  app.put('/api/webhooks/:id', async (request, reply) => {
-    const { id } = request.params;
-    const updates = request.body || {};
-
-    try {
-      webhooksManager.updateWebhook(id, updates);
-      const webhook = webhooksManager.getWebhook(id);
-      return { webhook };
-    } catch (error) {
-      if (error.message.includes('not found')) {
-        return reply.status(404).send({ error: error.message });
-      }
-      return reply.status(400).send({ error: error.message });
-    }
-  });
-
-  // Delete a webhook
-  app.delete('/api/webhooks/:id', async (request, reply) => {
-    const { id } = request.params;
-    const deleted = webhooksManager.unregisterWebhook(id);
-
-    if (!deleted) {
-      return reply.status(404).send({ error: 'Webhook not found' });
-    }
-
-    return { success: true };
-  });
-
-  // Test a webhook
-  app.post('/api/webhooks/:id/test', async (request, reply) => {
-    const { id } = request.params;
-
-    try {
-      await webhooksManager.testWebhook(id);
-      return { success: true, message: 'Webhook test sent' };
-    } catch (error) {
-      return reply.status(400).send({ error: error.message });
-    }
+  // Get recent transitions (for analytics/audit)
+  app.get('/api/transitions', async (request, reply) => {
+    const limit = parseInt(request.query.limit || '100', 10);
+    return { transitions: dataStore.getRecentTransitions(limit) };
   });
 
   // WebSocket: Dashboard updates
@@ -1286,6 +929,77 @@ async function start() {
         console.error('Error sending to dashboard client:', error.message);
       }
     }
+
+    // Clear debounce timer
+    if (kanbanSyncTimers.has(sessionId)) {
+      clearTimeout(kanbanSyncTimers.get(sessionId));
+      kanbanSyncTimers.delete(sessionId);
+    }
+  });
+
+  // Clear debounce timer on session kill
+  sessionManager.on('sessionKilled', ({ sessionId }) => {
+    if (kanbanSyncTimers.has(sessionId)) {
+      clearTimeout(kanbanSyncTimers.get(sessionId));
+      kanbanSyncTimers.delete(sessionId);
+    }
+  });
+
+  // Broadcast sessionMoved events to dashboard clients
+  sessionManager.on('sessionMoved', (data) => {
+    const message = JSON.stringify({ type: 'sessionMoved', ...data });
+    for (const client of dashboardClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error('Error sending to dashboard client:', error.message);
+      }
+    }
+  });
+
+  // Broadcast stagesUpdated events
+  sessionManager.on('stagesUpdated', (stages) => {
+    const message = JSON.stringify({ type: 'stagesUpdated', stages });
+    for (const client of dashboardClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error('Error sending to dashboard client:', error.message);
+      }
+    }
+  });
+
+  // Debounced auto-sync: session status → session's own stage (3s stability)
+  sessionManager.on('statusChange', ({ sessionId, status }) => {
+    // Clear previous timer
+    if (kanbanSyncTimers.has(sessionId)) {
+      clearTimeout(kanbanSyncTimers.get(sessionId));
+    }
+
+    // Codex mid-work approvals: don't auto-move to in_review
+    const session = sessionManager.getSession(sessionId);
+    if (session?.cliType === 'codex' && status === 'waiting') {
+      kanbanSyncTimers.delete(sessionId);
+      return;
+    }
+
+    const targetStage = sessionStatusToStage(status);
+    if (!targetStage) {
+      kanbanSyncTimers.delete(sessionId);
+      return;
+    }
+
+    // Set 3s debounce timer
+    const timer = setTimeout(() => {
+      kanbanSyncTimers.delete(sessionId);
+      try {
+        sessionManager.moveSession(sessionId, targetStage, { source: 'auto' });
+      } catch (err) {
+        console.error(`Auto-sync stage failed for session ${sessionId}:`, err.message);
+      }
+    }, 3000);
+
+    kanbanSyncTimers.set(sessionId, timer);
   });
 
   // ============================================
@@ -1336,136 +1050,6 @@ async function start() {
     }
   });
 
-  // ============================================
-  // Task Manager Event Handlers
-  // ============================================
-
-  // Helper to broadcast task events to dashboard clients
-  const broadcastTaskEvent = (type, data) => {
-    const message = JSON.stringify({ type, ...data });
-    for (const client of dashboardClients) {
-      try {
-        client.send(message);
-      } catch (error) {
-        console.error('Error sending task event to dashboard client:', error.message);
-      }
-    }
-  };
-
-  taskManager.on('taskCreated', (task) => {
-    broadcastTaskEvent('taskCreated', { task });
-  });
-
-  taskManager.on('taskUpdated', (task) => {
-    broadcastTaskEvent('taskUpdated', { task });
-  });
-
-  taskManager.on('taskMoved', ({ task, fromStage, toStage, reason }) => {
-    broadcastTaskEvent('taskMoved', { task, fromStage, toStage, reason });
-  });
-
-  taskManager.on('taskAssigned', ({ task, agentId, sessionId }) => {
-    broadcastTaskEvent('taskAssigned', { task, agentId, sessionId });
-  });
-
-  taskManager.on('taskUnassigned', (task) => {
-    broadcastTaskEvent('taskUnassigned', { task });
-  });
-
-  taskManager.on('taskBlocked', ({ task, reason }) => {
-    broadcastTaskEvent('taskBlocked', { task, reason });
-  });
-
-  taskManager.on('taskDeleted', ({ id }) => {
-    broadcastTaskEvent('taskDeleted', { taskId: id });
-  });
-
-  taskManager.on('stagesUpdated', (stages) => {
-    broadcastTaskEvent('stagesUpdated', { stages });
-  });
-
-  taskManager.on('dependencyAdded', ({ task, blocker }) => {
-    broadcastTaskEvent('dependencyAdded', { task, blocker });
-  });
-
-  taskManager.on('dependencyRemoved', ({ task, blockerId }) => {
-    broadcastTaskEvent('dependencyRemoved', { task, blockerId });
-  });
-
-  // ============================================
-  // Agent Pool Manager Event Handlers
-  // ============================================
-
-  agentPoolManager.on('agentSpawned', ({ sessionId, stageId, poolType }) => {
-    broadcastTaskEvent('agentSpawned', { sessionId, stageId, poolType });
-    console.log(`[AgentPool] Agent spawned: ${sessionId} for stage ${stageId}`);
-  });
-
-  agentPoolManager.on('taskAssigned', ({ taskId, sessionId, stageId }) => {
-    broadcastTaskEvent('agentTaskAssigned', { taskId, sessionId, stageId });
-    console.log(`[AgentPool] Task ${taskId} assigned to agent ${sessionId}`);
-  });
-
-  agentPoolManager.on('agentIdle', ({ sessionId, taskId }) => {
-    broadcastTaskEvent('agentIdle', { sessionId, taskId });
-    console.log(`[AgentPool] Agent ${sessionId} completed task ${taskId}, now idle`);
-  });
-
-  agentPoolManager.on('agentRemoved', ({ sessionId }) => {
-    broadcastTaskEvent('agentRemoved', { sessionId });
-    console.log(`[AgentPool] Agent ${sessionId} removed from pool`);
-  });
-
-  agentPoolManager.on('poolConfigUpdated', ({ stageId, config }) => {
-    broadcastTaskEvent('poolConfigUpdated', { stageId, config });
-    console.log(`[AgentPool] Pool config updated for stage ${stageId}`);
-  });
-
-  // ============================================
-  // Completion Detector Event Handlers
-  // ============================================
-
-  completionDetector.on('completionDetected', async ({ sessionId, taskId, stageId, signal, data }) => {
-    console.log(`[CompletionDetector] Task ${taskId} completion detected in stage ${stageId}: ${signal}`);
-
-    try {
-      // Auto-advance task to next stage
-      const result = await taskManager.advanceTask(taskId);
-
-      if (result) {
-        broadcastTaskEvent('taskAutoAdvanced', {
-          taskId,
-          fromStage: stageId,
-          toStage: result.task.stage,
-          signal,
-          sessionId
-        });
-
-        console.log(`[CompletionDetector] Task ${taskId} auto-advanced from ${stageId} to ${result.task.stage}`);
-
-        // Log the transition
-        await dataStore.logTransition({
-          taskId,
-          fromStage: stageId,
-          toStage: result.task.stage,
-          trigger: 'auto',
-          signal,
-          sessionId,
-          timestamp: new Date().toISOString()
-        });
-      }
-    } catch (error) {
-      console.error(`[CompletionDetector] Error auto-advancing task ${taskId}:`, error.message);
-
-      // Broadcast error
-      broadcastTaskEvent('taskAutoAdvanceFailed', {
-        taskId,
-        stageId,
-        signal,
-        error: error.message
-      });
-    }
-  });
 
   // Fallback route for SPA
   app.setNotFoundHandler((request, reply) => {

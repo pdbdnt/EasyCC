@@ -68,7 +68,19 @@ class DataStore {
         tags: session.tags || [],
         plans: session.plans || [],
         currentTask: session.currentTask || '',
-        promptHistory: session.promptHistory || []
+        promptHistory: session.promptHistory || [],
+        // Kanban stage fields
+        stage: session.stage || 'todo',
+        priority: session.priority || 0,
+        description: session.description || '',
+        blockedBy: session.blockedBy || [],
+        blocks: session.blocks || [],
+        manuallyPlaced: session.manuallyPlaced || false,
+        manualPlacedAt: session.manualPlacedAt || null,
+        rejectionHistory: session.rejectionHistory || [],
+        completedAt: session.completedAt || null,
+        updatedAt: session.updatedAt || null,
+        comments: session.comments || []
       };
 
       this.writeSessionsFile(sessions);
@@ -114,7 +126,9 @@ class DataStore {
       }
 
       // Update allowed metadata fields
-      const allowedFields = ['name', 'notes', 'tags', 'plans', 'claudeSessionId', 'status', 'lastActivity'];
+      const allowedFields = ['name', 'notes', 'tags', 'plans', 'claudeSessionId', 'status', 'lastActivity',
+        'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt',
+        'rejectionHistory', 'completedAt', 'updatedAt', 'comments'];
 
       for (const field of allowedFields) {
         if (meta[field] !== undefined) {

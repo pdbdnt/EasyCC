@@ -1,199 +1,115 @@
 import { useState, useMemo } from 'react';
 import KanbanColumn from './KanbanColumn';
-import TaskModal from './TaskModal';
 import TaskViewModal from './TaskViewModal';
-import useTasks from '../hooks/useTasks';
 
-function KanbanBoard({ sessions, settings, onUpdateSession }) {
-  const {
-    tasks,
-    stages,
-    tasksByStage,
-    loading,
-    error,
-    createTask,
-    updateTask,
-    deleteTask,
-    moveTask,
-    advanceTask,
-    rejectTask,
-    unassignAgent
-  } = useTasks();
+function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSession, rejectSession, settings, onUpdateSession, onSessionSelect, onCreateSession, selectedSessionId, onPauseSession, onResumeSession, onKillSession }) {
+  const [draggingSessionId, setDraggingSessionId] = useState(null);
+  const [viewingSession, setViewingSession] = useState(null);
+  const [selectedProjects, setSelectedProjects] = useState(new Set());
 
-  const [draggingTaskId, setDraggingTaskId] = useState(null);
-  const [showTaskModal, setShowTaskModal] = useState(false);
-  const [editingTask, setEditingTask] = useState(null);
-  const [viewingTask, setViewingTask] = useState(null);
-  const [selectedProjects, setSelectedProjects] = useState(new Set()); // Empty = all
-
-  // Get unique projects from tasks
+  // Get unique projects from sessions
   const projects = useMemo(() => {
-    const projectSet = new Set(tasks.map(t => t.project));
+    const projectSet = new Set(sessions.map(s => s.workingDir).filter(Boolean));
     return Array.from(projectSet).sort();
-  }, [tasks]);
+  }, [sessions]);
 
-  // Filter tasks by selected projects (empty set = show all)
-  const filteredTasksByStage = useMemo(() => {
+  // Filter sessions by selected projects
+  const filteredSessionsByStage = useMemo(() => {
     if (selectedProjects.size === 0) {
-      return tasksByStage;
+      return sessionsByStage;
     }
     const filtered = {};
     stages.forEach(stage => {
-      filtered[stage.id] = (tasksByStage[stage.id] || []).filter(
-        task => selectedProjects.has(task.project)
+      filtered[stage.id] = (sessionsByStage[stage.id] || []).filter(
+        s => selectedProjects.has(s.workingDir)
       );
     });
     return filtered;
-  }, [tasksByStage, selectedProjects, stages]);
+  }, [sessionsByStage, selectedProjects, stages]);
 
-  // Get session for a task (by assignedSessionId)
-  const getTaskSession = (task) => {
-    if (!task.assignedSessionId) return null;
-    return sessions?.find(s => s.id === task.assignedSessionId) || null;
-  };
-
-  // Toggle project selection
   const toggleProject = (project) => {
     setSelectedProjects(prev => {
       const next = new Set(prev);
-      if (next.has(project)) {
-        next.delete(project);
-      } else {
-        next.add(project);
-      }
+      if (next.has(project)) next.delete(project);
+      else next.add(project);
       return next;
     });
   };
 
-  // Select all / none
-  const toggleAllProjects = () => {
-    if (selectedProjects.size === projects.length) {
-      setSelectedProjects(new Set());
-    } else {
-      setSelectedProjects(new Set(projects));
-    }
-  };
-
-  const handleDragStart = (task) => {
-    setDraggingTaskId(task.id);
+  const handleDragStart = (session) => {
+    setDraggingSessionId(session.id);
   };
 
   const handleDragEnd = () => {
-    setDraggingTaskId(null);
+    setDraggingSessionId(null);
   };
 
-  const handleTaskDrop = async (taskId, targetStageId) => {
-    setDraggingTaskId(null);
-    const task = tasks.find(t => t.id === taskId);
-    if (task && task.stage !== targetStageId) {
+  const handleSessionDrop = async (sessionId, targetStageId) => {
+    setDraggingSessionId(null);
+    const session = sessions.find(s => s.id === sessionId);
+    if (session && session.stage !== targetStageId) {
       try {
-        await moveTask(taskId, targetStageId);
+        await moveSession(sessionId, targetStageId);
       } catch (err) {
-        alert(`Failed to move task: ${err.message}`);
+        alert(`Failed to move session: ${err.message}`);
       }
     }
   };
 
-  const handleAddTask = (stageId) => {
-    setEditingTask(null);
-    setShowTaskModal(true);
-  };
-
-  const handleEditTask = (task) => {
-    setEditingTask(task);
-    setShowTaskModal(true);
-  };
-
-  const handleViewTask = (task) => {
-    setViewingTask(task);
-  };
-
-  const handleDeleteTask = async (taskId) => {
-    try {
-      await deleteTask(taskId);
-    } catch (err) {
-      alert(`Failed to delete task: ${err.message}`);
+  const handleAddSession = (stageId) => {
+    if (onCreateSession) {
+      onCreateSession(stageId);
     }
   };
 
-  const handleSaveTask = async (taskData) => {
+  const handleResetPlacement = async (sessionId) => {
     try {
-      if (editingTask) {
-        await updateTask(editingTask.id, taskData);
-      } else {
-        await createTask(taskData);
-      }
-      setShowTaskModal(false);
-      setEditingTask(null);
+      await fetch(`/api/sessions/${sessionId}/reset-placement`, { method: 'POST' });
     } catch (err) {
-      alert(`Failed to save task: ${err.message}`);
+      console.error('Failed to reset placement:', err);
     }
   };
 
-  const handleCloseModal = () => {
-    setShowTaskModal(false);
-    setEditingTask(null);
+  const handleViewSession = (session) => {
+    setViewingSession(session);
   };
 
   const handleCloseViewModal = () => {
-    setViewingTask(null);
+    setViewingSession(null);
   };
 
-  const handleAdvanceTask = async (taskId) => {
+  const handleAdvanceSession = async (sessionId) => {
     try {
-      await advanceTask(taskId);
-      // Close modal - WebSocket will update the task in the list
-      setViewingTask(null);
+      await advanceSession(sessionId);
+      setViewingSession(null);
     } catch (err) {
-      alert(`Failed to advance task: ${err.message}`);
+      alert(`Failed to advance: ${err.message}`);
     }
   };
 
-  const handleRejectTask = async (taskId, reason, targetStage) => {
+  const handleRejectSession = async (sessionId, reason, targetStage) => {
     try {
-      await rejectTask(taskId, reason, targetStage);
-      // Close modal - WebSocket will update the task in the list
-      setViewingTask(null);
+      await rejectSession(sessionId, reason, targetStage);
+      setViewingSession(null);
     } catch (err) {
-      alert(`Failed to reject task: ${err.message}`);
-    }
-  };
-
-  const handleUnassignTask = async (taskId) => {
-    try {
-      await unassignAgent(taskId);
-      if (viewingTask?.id === taskId) {
-        const updated = tasks.find(t => t.id === taskId);
-        if (updated) setViewingTask(updated);
-      }
-    } catch (err) {
-      alert(`Failed to unassign task: ${err.message}`);
+      alert(`Failed to reject: ${err.message}`);
     }
   };
 
   // Calculate stats
   const stats = useMemo(() => {
-    const total = tasks.length;
-    const inProgress = tasks.filter(t => t.status === 'in_progress').length;
-    const blocked = tasks.filter(t => t.status === 'blocked').length;
-    const done = tasks.filter(t => t.stage === 'done').length;
-    return { total, inProgress, blocked, done };
-  }, [tasks]);
+    const total = sessions.length;
+    const active = sessions.filter(s => ['active', 'thinking', 'editing'].includes(s.status)).length;
+    const paused = sessions.filter(s => s.status === 'paused').length;
+    const done = sessions.filter(s => s.stage === 'done').length;
+    return { total, active, paused, done };
+  }, [sessions]);
 
-  if (loading) {
+  if (!stages || stages.length === 0) {
     return (
       <div className="kanban-loading">
         <div className="loading-spinner"></div>
         <span>Loading kanban board...</span>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="kanban-error">
-        <span>Error loading kanban: {error}</span>
-        <button onClick={() => window.location.reload()}>Retry</button>
       </div>
     );
   }
@@ -203,14 +119,14 @@ function KanbanBoard({ sessions, settings, onUpdateSession }) {
       <div className="kanban-toolbar">
         <div className="kanban-stats">
           <span className="stat">
-            <strong>{stats.total}</strong> tasks
+            <strong>{stats.total}</strong> sessions
           </span>
           <span className="stat stat-active">
-            <strong>{stats.inProgress}</strong> active
+            <strong>{stats.active}</strong> active
           </span>
-          {stats.blocked > 0 && (
+          {stats.paused > 0 && (
             <span className="stat stat-blocked">
-              <strong>{stats.blocked}</strong> blocked
+              <strong>{stats.paused}</strong> paused
             </span>
           )}
           <span className="stat stat-done">
@@ -236,13 +152,6 @@ function KanbanBoard({ sessions, settings, onUpdateSession }) {
               </button>
             ))}
           </div>
-
-          <button
-            className="btn-primary"
-            onClick={() => handleAddTask('backlog')}
-          >
-            + New Task
-          </button>
         </div>
       </div>
 
@@ -251,41 +160,33 @@ function KanbanBoard({ sessions, settings, onUpdateSession }) {
           <KanbanColumn
             key={stage.id}
             stage={stage}
-            tasks={filteredTasksByStage[stage.id] || []}
-            onTaskClick={handleViewTask}
-            onTaskEdit={handleEditTask}
-            onTaskDelete={handleDeleteTask}
-            onTaskDrop={handleTaskDrop}
-            onAddTask={handleAddTask}
+            sessions={filteredSessionsByStage[stage.id] || []}
+            onSessionClick={handleViewSession}
+            onSessionDrop={handleSessionDrop}
+            onAddSession={handleAddSession}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
-            draggingTaskId={draggingTaskId}
+            draggingSessionId={draggingSessionId}
+            onSessionSelect={onSessionSelect}
+            selectedSessionId={selectedSessionId}
+            onResetPlacement={handleResetPlacement}
           />
         ))}
       </div>
 
-      {showTaskModal && (
-        <TaskModal
-          task={editingTask}
-          projects={projects}
-          sessions={sessions}
-          onSave={handleSaveTask}
-          onClose={handleCloseModal}
-        />
-      )}
-
-      {viewingTask && (
+      {viewingSession && (
         <TaskViewModal
-          task={viewingTask}
-          session={getTaskSession(viewingTask)}
+          session={viewingSession}
           stages={stages}
           onClose={handleCloseViewModal}
-          onUpdateTask={updateTask}
           onUpdateSession={onUpdateSession}
-          onAdvance={handleAdvanceTask}
-          onReject={handleRejectTask}
-          onUnassign={handleUnassignTask}
+          onAdvance={handleAdvanceSession}
+          onReject={handleRejectSession}
+          onSessionSelect={onSessionSelect}
           settings={settings}
+          onPauseSession={onPauseSession}
+          onResumeSession={onResumeSession}
+          onKillSession={onKillSession}
         />
       )}
     </div>

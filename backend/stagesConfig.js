@@ -15,57 +15,40 @@ const POOL_TYPES = {
 // Default stage definitions
 const DEFAULT_STAGES = [
   {
-    id: 'backlog',
-    name: 'Backlog',
+    id: 'todo',
+    name: 'To Do',
     agentPool: 0,
     poolType: POOL_TYPES.NONE,
-    description: 'Tasks waiting to be started',
+    description: 'Tasks/sessions queued up, not yet started',
     order: 0,
     color: '#6b7280' // gray
   },
   {
-    id: 'planning',
-    name: 'Planning',
-    agentPool: 2,
-    poolType: POOL_TYPES.SPECIALIZED,
-    description: 'Agents creating implementation plans',
+    id: 'in_progress',
+    name: 'In Progress',
+    agentPool: 0,
+    poolType: POOL_TYPES.NONE,
+    description: 'Agent actively working',
     order: 1,
-    color: '#8b5cf6', // purple
-    completionSignal: 'plan_approved',
-    nextStage: 'coding'
+    color: '#3b82f6' // blue
   },
   {
-    id: 'coding',
-    name: 'Coding',
-    agentPool: 3,
-    poolType: POOL_TYPES.SPECIALIZED,
-    description: 'Agents implementing features',
+    id: 'in_review',
+    name: 'In Review',
+    agentPool: 0,
+    poolType: POOL_TYPES.NONE,
+    description: 'Agent finished, awaiting human review',
     order: 2,
-    color: '#3b82f6', // blue
-    completionSignal: 'code_complete',
-    nextStage: 'testing'
+    color: '#f59e0b' // amber
   },
   {
     id: 'testing',
     name: 'Testing',
-    agentPool: 2,
-    poolType: POOL_TYPES.SHARED,
-    description: 'Agents running and fixing tests',
-    order: 3,
-    color: '#f59e0b', // amber
-    completionSignal: 'tests_pass',
-    nextStage: 'review'
-  },
-  {
-    id: 'review',
-    name: 'Review',
     agentPool: 0,
-    poolType: POOL_TYPES.HUMAN,
-    description: 'Human review and approval required',
-    order: 4,
-    color: '#10b981', // emerald
-    completionSignal: 'human_approved',
-    nextStage: 'done'
+    poolType: POOL_TYPES.NONE,
+    description: 'Manual testing stage (never auto-mapped)',
+    order: 3,
+    color: '#8b5cf6' // purple
   },
   {
     id: 'done',
@@ -73,7 +56,7 @@ const DEFAULT_STAGES = [
     agentPool: 0,
     poolType: POOL_TYPES.NONE,
     description: 'Completed tasks',
-    order: 5,
+    order: 4,
     color: '#22c55e' // green
   }
 ];
@@ -220,6 +203,32 @@ function hasAgentPool(stage) {
   return stage.agentPool > 0 && stage.poolType !== POOL_TYPES.NONE && stage.poolType !== POOL_TYPES.HUMAN;
 }
 
+/**
+ * Maps session status to kanban stage ID.
+ * 'testing' is manual-only and never auto-mapped.
+ * @param {string} sessionStatus - Session status string
+ * @returns {string|null} Stage ID or null if no mapping
+ */
+function sessionStatusToStage(sessionStatus) {
+  switch (sessionStatus) {
+    case 'created':
+    case 'paused':
+      return 'todo';
+    case 'active':
+    case 'thinking':
+    case 'editing':
+      return 'in_progress';
+    case 'waiting':
+      return 'in_review';
+    case 'idle':
+      return null; // Idle is ambiguous — don't auto-move
+    case 'completed':
+      return 'done';
+    default:
+      return null;
+  }
+}
+
 module.exports = {
   POOL_TYPES,
   DEFAULT_STAGES,
@@ -230,5 +239,6 @@ module.exports = {
   getNextStage,
   getPreviousStage,
   isHumanStage,
-  hasAgentPool
+  hasAgentPool,
+  sessionStatusToStage
 };

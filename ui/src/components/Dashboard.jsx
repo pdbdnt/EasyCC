@@ -59,7 +59,9 @@ function Dashboard({
   hintModeActive = false,
   typedChars = '',
   hintCodes = {},
-  onGroupedSessionsChange
+  onGroupedSessionsChange,
+  kanbanColumnFilter = null,
+  onClearKanbanFilter
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
@@ -68,11 +70,17 @@ function Dashboard({
   const newSessionHint = hintCodes.newSession || 'ns';
   const settingsHint = hintCodes.settings || 'st';
 
+  // Filter sessions by kanban column if active
+  const filteredSessions = useMemo(() => {
+    if (!kanbanColumnFilter) return sessions;
+    return sessions.filter(s => s.stage === kanbanColumnFilter);
+  }, [sessions, kanbanColumnFilter]);
+
   // Group sessions by their working directory with directory-based hint codes
   const groupedSessions = useMemo(() => {
     const groups = new Map();
 
-    sessions.forEach((session, index) => {
+    filteredSessions.forEach((session, index) => {
       const dirName = getDirectoryName(session.workingDir);
       if (!groups.has(dirName)) {
         groups.set(dirName, []);
@@ -108,7 +116,7 @@ function Dashboard({
     });
 
     return groupsWithHints;
-  }, [sessions]);
+  }, [filteredSessions]);
 
   // Notify parent about grouped sessions for navigation
   useEffect(() => {
@@ -186,8 +194,14 @@ function Dashboard({
           </button>
         </div>
       </div>
+      {kanbanColumnFilter && (
+        <div className="kanban-filter-chip">
+          <span>Filtered: {kanbanColumnFilter.replace('_', ' ')}</span>
+          <button onClick={onClearKanbanFilter} title="Clear filter">&times;</button>
+        </div>
+      )}
       <div className="sessions-list">
-        {sessions.length === 0 ? (
+        {filteredSessions.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state-icon">📭</div>
             <p>No active sessions</p>

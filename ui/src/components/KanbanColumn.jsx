@@ -3,15 +3,16 @@ import TaskCard from './TaskCard';
 
 function KanbanColumn({
   stage,
-  tasks,
-  onTaskClick,
-  onTaskEdit,
-  onTaskDelete,
-  onTaskDrop,
-  onAddTask,
+  sessions = [],
+  onSessionClick,
+  onSessionDrop,
+  onAddSession,
   onDragStart,
   onDragEnd,
-  draggingTaskId
+  draggingSessionId,
+  onSessionSelect,
+  selectedSessionId,
+  onResetPlacement
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -24,7 +25,6 @@ function KanbanColumn({
   };
 
   const handleDragLeave = (e) => {
-    // Only set false if we're leaving the column entirely
     if (!e.currentTarget.contains(e.relatedTarget)) {
       setIsDragOver(false);
     }
@@ -33,9 +33,9 @@ function KanbanColumn({
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragOver(false);
-    const taskId = e.dataTransfer.getData('text/plain');
-    if (taskId) {
-      onTaskDrop?.(taskId, stage.id);
+    const sessionId = e.dataTransfer.getData('text/plain');
+    if (sessionId) {
+      onSessionDrop?.(sessionId, stage.id);
     }
   };
 
@@ -59,10 +59,9 @@ function KanbanColumn({
     }
   };
 
-  // Count tasks by status
-  const inProgress = tasks.filter(t => t.status === 'in_progress').length;
-  const blocked = tasks.filter(t => t.status === 'blocked').length;
-  const queued = tasks.filter(t => t.status === 'queued').length;
+  // Count sessions by status
+  const active = sessions.filter(s => ['active', 'thinking', 'editing'].includes(s.status)).length;
+  const paused = sessions.filter(s => s.status === 'paused').length;
 
   return (
     <div
@@ -75,7 +74,7 @@ function KanbanColumn({
         <div className="column-title-row">
           <span className="column-icon">{getPoolTypeIcon(stage.poolType)}</span>
           <h3 className="column-title">{stage.name}</h3>
-          <span className="column-count">{tasks.length}</span>
+          <span className="column-count">{sessions.length}</span>
         </div>
         <div className="column-meta">
           <span className="column-pool-type">{getPoolTypeLabel(stage.poolType)}</span>
@@ -85,51 +84,68 @@ function KanbanColumn({
             </span>
           )}
         </div>
-        {(inProgress > 0 || blocked > 0) && (
+        {(active > 0 || paused > 0) && (
           <div className="column-status-summary">
-            {inProgress > 0 && <span className="status-in-progress">{inProgress} active</span>}
-            {blocked > 0 && <span className="status-blocked">{blocked} blocked</span>}
+            {active > 0 && <span className="status-in-progress">{active} active</span>}
+            {paused > 0 && <span className="status-blocked">{paused} paused</span>}
           </div>
         )}
       </div>
 
       <div className="kanban-column-body">
-        {tasks.length === 0 ? (
+        {sessions.length === 0 ? (
           <div className="column-empty">
-            {isDragOver ? 'Drop here' : 'No tasks'}
+            {isDragOver ? 'Drop here' : 'No sessions'}
           </div>
-        ) : (
-          tasks
-            .sort((a, b) => {
-              // Sort by status (in_progress first, then queued, then blocked)
-              const statusOrder = { in_progress: 0, queued: 1, blocked: 2 };
-              const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
-              if (statusDiff !== 0) return statusDiff;
-              // Then by priority (higher first)
-              return b.priority - a.priority;
-            })
-            .map(task => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                onClick={onTaskClick}
-                onEdit={onTaskEdit}
-                onDelete={onTaskDelete}
-                onDragStart={onDragStart}
-                onDragEnd={onDragEnd}
-                isDragging={draggingTaskId === task.id}
-              />
-            ))
-        )}
+        ) : (() => {
+          const sorted = [...sessions].sort((a, b) => {
+            const statusOrder = { active: 0, thinking: 0, editing: 0, idle: 1, waiting: 1, paused: 2, completed: 3 };
+            const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
+            if (statusDiff !== 0) return statusDiff;
+            return (b.priority || 0) - (a.priority || 0);
+          });
+
+          // Group by project
+          const groups = new Map();
+          for (const session of sorted) {
+            const project = session.workingDir || 'Unassigned';
+            if (!groups.has(project)) groups.set(project, []);
+            groups.get(project).push(session);
+          }
+
+          return Array.from(groups.entries()).map(([project, projectSessions]) => (
+            <div key={project} className="kanban-project-group">
+              {groups.size > 1 && (
+                <div className="kanban-project-subheader">
+                  {project.split(/[/\\]/).pop()}
+                </div>
+              )}
+              {projectSessions.map(session => (
+                <TaskCard
+                  key={session.id}
+                  session={session}
+                  onClick={onSessionClick}
+                  onDragStart={onDragStart}
+                  onDragEnd={onDragEnd}
+                  isDragging={draggingSessionId === session.id}
+                  onSessionSelect={onSessionSelect}
+                  selectedSessionId={selectedSessionId}
+                  stageId={stage.id}
+                  onResetPlacement={onResetPlacement}
+                />
+              ))}
+            </div>
+          ));
+        })()}
       </div>
 
-      {stage.id === 'backlog' && (
+      {stage.id === 'todo' && (
         <div className="kanban-column-footer">
           <button
             className="btn-add-task"
-            onClick={() => onAddTask?.(stage.id)}
+            onClick={() => onAddSession?.(stage.id)}
           >
-            + Add Task
+            + Add Session
           </button>
         </div>
       )}

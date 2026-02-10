@@ -41,6 +41,7 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
   const [availablePlans, setAvailablePlans] = useState([]);
   const [loadingAvailable, setLoadingAvailable] = useState(false);
   const planPickerRef = useRef(null);
+  const userCollapsedRef = useRef(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [availableClaudeSessions, setAvailableClaudeSessions] = useState([]);
   const [loadingClaudeSessions, setLoadingClaudeSessions] = useState(false);
@@ -91,6 +92,7 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
       return;
     }
     setArchivedPlanKeys(loadArchivedPlanKeys(session.id));
+    userCollapsedRef.current = false;
   }, [session?.id]);
 
   // Persist archived plans for current session.
@@ -120,6 +122,8 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
       }
       return;
     }
+
+    if (userCollapsedRef.current) return;
 
     const firstUnarchivedIndex = plans.findIndex(
       (plan, index) => !archivedPlanKeys.includes(getPlanKey(plan, index))
@@ -554,7 +558,15 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
                 <div key={plan.path || plan.filename || index} className="plan-item-expandable">
                   <div
                     className={`plan-item-header ${isArchived ? 'archived' : ''}`}
-                    onClick={() => setExpandedPlanIndex(isExpanded ? null : index)}
+                    onClick={() => {
+                      if (isExpanded) {
+                        userCollapsedRef.current = true;
+                        setExpandedPlanIndex(null);
+                      } else {
+                        userCollapsedRef.current = false;
+                        setExpandedPlanIndex(index);
+                      }
+                    }}
                   >
                     <span className="expand-icon">{isExpanded ? '\u25BC' : '\u25B6'}</span>
                     <span className="plan-name">{plan.name || `Plan ${index + 1}`}</span>

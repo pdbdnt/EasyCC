@@ -1,10 +1,27 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useWebSocket } from './useWebSocket';
 
 export function useSessions() {
   const [sessions, setSessions] = useState([]);
+  const [stages, setStages] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
+
+  // Fetch stages on mount
+  useEffect(() => {
+    const fetchStages = async () => {
+      try {
+        const res = await fetch('/api/stages');
+        if (res.ok) {
+          const data = await res.json();
+          setStages(data.stages || []);
+        }
+      } catch (err) {
+        console.error('Error fetching stages:', err);
+      }
+    };
+    fetchStages();
+  }, []);
 
   const handleMessage = useCallback((data) => {
     switch (data.type) {
@@ -40,12 +57,24 @@ export function useSessions() {
         ));
         break;
 
+      case 'sessionMoved':
+        setSessions(prev => prev.map(session =>
+          session.id === data.sessionId
+            ? { ...session, stage: data.toStage }
+            : session
+        ));
+        break;
+
       case 'promptAdded':
         setSessions(prev => prev.map(session =>
           session.id === data.sessionId
             ? { ...session, promptHistory: data.promptHistory }
             : session
         ));
+        break;
+
+      case 'stagesUpdated':
+        setStages(data.stages);
         break;
 
       case 'sessionKilled':
@@ -87,11 +116,11 @@ export function useSessions() {
 
   const createSession = useCallback(async (name, workingDir, cliType = 'claude', options = {}) => {
     try {
-      const { select = true } = options;
+      const { select = true, stage, priority, description } = options;
       const response = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, workingDir, cliType })
+        body: JSON.stringify({ name, workingDir, cliType, stage, priority, description })
       });
 
       if (!response.ok) {
@@ -202,8 +231,84 @@ export function useSessions() {
     }
   }, []);
 
+  // Stage/kanban methods
+  const moveSession = useCallback(async (id, targetStage, reason = null) => {
+    try {
+      const response = await fetch(`/api/sessions/${id}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage: targetStage, reason })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to move session');
+      }
+
+      const { session } = await response.json();
+      setSessions(prev => prev.map(s => s.id === id ? session : s));
+      return session;
+    } catch (err) {
+      console.error('Error moving session:', err);
+      throw err;
+    }
+  }, []);
+
+  const advanceSession = useCallback(async (id) => {
+    try {
+      const response = await fetch(`/api/sessions/${id}/advance`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to advance session');
+      }
+
+      const { session } = await response.json();
+      setSessions(prev => prev.map(s => s.id === id ? session : s));
+      return session;
+    } catch (err) {
+      console.error('Error advancing session:', err);
+      throw err;
+    }
+  }, []);
+
+  const rejectSession = useCallback(async (id, reason, targetStage = null) => {
+    try {
+      const response = await fetch(`/api/sessions/${id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason, targetStage })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to reject session');
+      }
+
+      const { session } = await response.json();
+      setSessions(prev => prev.map(s => s.id === id ? session : s));
+      return session;
+    } catch (err) {
+      console.error('Error rejecting session:', err);
+      throw err;
+    }
+  }, []);
+
+  // Sessions grouped by stage
+  const sessionsByStage = useMemo(() => {
+    const grouped = {};
+    stages.forEach(stage => {
+      grouped[stage.id] = sessions.filter(s => s.stage === stage.id);
+    });
+    return grouped;
+  }, [sessions, stages]);
+
   return useMemo(() => ({
     sessions,
+    stages,
+    sessionsByStage,
     selectedId,
     selectSession,
     createSession,
@@ -211,9 +316,12 @@ export function useSessions() {
     pauseSession,
     resumeSession,
     updateSession,
+    moveSession,
+    advanceSession,
+    rejectSession,
     connectionStatus,
     isConnected
-  }), [sessions, selectedId, selectSession, createSession, killSession, pauseSession, resumeSession, updateSession, connectionStatus, isConnected]);
+  }), [sessions, stages, sessionsByStage, selectedId, selectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
 }
 
 export default useSessions;

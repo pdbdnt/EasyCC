@@ -66,6 +66,8 @@ function App() {
   const [detailsSession, setDetailsSession] = useState(null);
   const {
     sessions,
+    stages,
+    sessionsByStage,
     selectedId,
     selectSession,
     createSession,
@@ -73,6 +75,9 @@ function App() {
     pauseSession,
     resumeSession,
     updateSession,
+    moveSession,
+    advanceSession,
+    rejectSession,
     connectionStatus
   } = useSessions();
   const { isVisible: sidebarVisible, toggle: toggleSidebar, hide: hideSidebar } = useContextSidebar();
@@ -87,6 +92,7 @@ function App() {
   const [showCloseSessionModal, setShowCloseSessionModal] = useState(false);
   const [pendingCloseSessionId, setPendingCloseSessionId] = useState(null);
   const [paneSizes, setPaneSizes] = useState([]); // flex ratios for each pane
+  const [kanbanColumnFilter, setKanbanColumnFilter] = useState(null); // stage ID filter from kanban
 
   // Refs for focus management
   const contextRef = useRef(null);
@@ -433,6 +439,13 @@ function App() {
       );
       if (isEditableTarget) return;
 
+      // Ctrl+O: toggle between sessions and kanban views
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        setCurrentView(prev => prev === 'sessions' ? 'kanban' : 'sessions');
+        return;
+      }
+
       if (isSplitRightShortcut(e)) {
         e.preventDefault();
         createSplitPane('right');
@@ -529,6 +542,16 @@ function App() {
     return !!createdSession;
   };
 
+  const handleSessionSelectFromKanban = useCallback((sessionId, stageId) => {
+    selectSession(sessionId);
+    setCurrentView('sessions');
+    setKanbanColumnFilter(stageId || null);
+  }, [selectSession]);
+
+  const handleClearKanbanFilter = useCallback(() => {
+    setKanbanColumnFilter(null);
+  }, []);
+
   const handleShowDetails = (session) => {
     setDetailsSession(session);
   };
@@ -609,6 +632,8 @@ function App() {
           typedChars={typedChars}
           hintCodes={settings?.keyboard?.hintMode?.hints || {}}
           onGroupedSessionsChange={setGroupedSessions}
+          kanbanColumnFilter={kanbanColumnFilter}
+          onClearKanbanFilter={handleClearKanbanFilter}
         />
       </aside>
       <ResizeHandle onResize={handleSessionsResize} />
@@ -616,8 +641,21 @@ function App() {
         <main className="main-content">
           <KanbanBoard
             sessions={sessions}
+            stages={stages}
+            sessionsByStage={sessionsByStage}
+            moveSession={moveSession}
+            advanceSession={advanceSession}
+            rejectSession={rejectSession}
             settings={settings}
             onUpdateSession={updateSession}
+            onSessionSelect={handleSessionSelectFromKanban}
+            onCreateSession={(stageId) => {
+              setShowNewSessionModal(true);
+            }}
+            selectedSessionId={selectedId}
+            onPauseSession={pauseSession}
+            onResumeSession={resumeSession}
+            onKillSession={killSession}
           />
         </main>
       ) : (

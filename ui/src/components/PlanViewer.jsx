@@ -7,6 +7,8 @@ function PlanViewer({ plan, compact = false }) {
   const [showDiff, setShowDiff] = useState(false);
   const [diff, setDiff] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [allExpanded, setAllExpanded] = useState(null); // null=default, true=all open, false=all closed
 
   if (!plan) return null;
 
@@ -102,6 +104,27 @@ function PlanViewer({ plan, compact = false }) {
     setShowDiff(!showDiff);
   };
 
+  const handleCopyPlan = async () => {
+    const content = currentVersionIndex === null ? plan.content : versionContent;
+    if (!content) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy plan:', err);
+    }
+  };
+
+  const handleToggleExpandAll = () => {
+    setAllExpanded(prev => prev === true ? false : true);
+  };
+
+  const handleSectionToggle = () => {
+    // Reset bulk expand/collapse when user manually toggles a section
+    setAllExpanded(null);
+  };
+
   // Determine content to display
   const displayContent = currentVersionIndex === null ? plan.content : versionContent;
   const isViewingVersion = currentVersionIndex !== null;
@@ -158,16 +181,36 @@ function PlanViewer({ plan, compact = false }) {
           </div>
 
           <div className="version-nav-right">
+            <button
+              className="btn-small"
+              onClick={handleToggleExpandAll}
+              title={allExpanded ? 'Collapse all sections' : 'Expand all sections'}
+            >
+              {allExpanded ? '\u229F Collapse' : '\u229E Expand'}
+            </button>
             {canShowDiff && (
               <button
                 className={`btn-small ${showDiff ? 'btn-active' : ''}`}
                 onClick={handleToggleDiff}
                 title={showDiff ? 'Hide diff' : 'Show diff'}
               >
-                {showDiff ? '✓ ' : ''}Diff
+                {showDiff ? '\u2713 ' : ''}Diff
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Expand/Collapse when no version nav */}
+      {versions.length === 0 && (
+        <div className="plan-actions-bar">
+          <button
+            className="btn-small"
+            onClick={handleToggleExpandAll}
+            title={allExpanded ? 'Collapse all sections' : 'Expand all sections'}
+          >
+            {allExpanded ? '\u229F Collapse' : '\u229E Expand'}
+          </button>
         </div>
       )}
 
@@ -178,14 +221,21 @@ function PlanViewer({ plan, compact = false }) {
         ) : showDiff && diff ? (
           <DiffViewer diff={diff} compact={compact} />
         ) : (
-          <MarkdownRenderer content={displayContent} compact={compact} />
+          <MarkdownRenderer
+            content={displayContent}
+            compact={compact}
+            onCopy={handleCopyPlan}
+            copied={copied}
+            forceExpanded={allExpanded}
+            onSectionToggle={handleSectionToggle}
+          />
         )}
       </div>
     </div>
   );
 }
 
-function MarkdownRenderer({ content, compact = false }) {
+function MarkdownRenderer({ content, compact = false, onCopy, copied, forceExpanded, onSectionToggle }) {
   if (!content) return <p className="text-muted">No content available</p>;
 
   const compactClass = compact ? 'compact' : '';
@@ -196,7 +246,14 @@ function MarkdownRenderer({ content, compact = false }) {
   return (
     <div className={`markdown-content ${compactClass}`}>
       {sections.map((section, idx) => (
-        <MarkdownSection key={idx} section={section} />
+        <MarkdownSection
+          key={idx}
+          section={section}
+          onCopy={onCopy}
+          copied={copied}
+          forceExpanded={forceExpanded}
+          onSectionToggle={onSectionToggle}
+        />
       ))}
     </div>
   );
@@ -341,7 +398,7 @@ function parsePlainTextSections(content) {
   return root;
 }
 
-function MarkdownSection({ section }) {
+function MarkdownSection({ section, onCopy, copied, forceExpanded, onSectionToggle }) {
   // Auto-collapse rules:
   // - level >= 3 (### and deeper) collapsed by default
   // - Special section titles that should collapse regardless of level
@@ -370,32 +427,60 @@ function MarkdownSection({ section }) {
 
   const [collapsed, setCollapsed] = useState(shouldAutoCollapse);
 
+  // forceExpanded overrides local collapsed state
+  const isCollapsed = forceExpanded !== null && forceExpanded !== undefined
+    ? !forceExpanded
+    : collapsed;
+
   const hasContent = section.contentLines.length > 0 || section.children.length > 0;
   const isCollapsible = section.title && hasContent;
 
   const HeadingTag = section.level === 1 ? 'h1' : section.level === 2 ? 'h2' : 'h3';
   const headingClass = `md-h${Math.min(section.level, 3)}`;
 
+  const handleHeadingClick = () => {
+    if (isCollapsible) {
+      setCollapsed(!collapsed);
+      onSectionToggle?.(); // Reset bulk expand/collapse
+    }
+  };
+
   return (
     <div className={`md-section md-section-level-${section.level}`}>
       {section.title && (
         <div
           className={`md-section-heading ${isCollapsible ? 'collapsible' : ''}`}
-          onClick={() => isCollapsible && setCollapsed(!collapsed)}
+          onClick={handleHeadingClick}
         >
           {isCollapsible && (
-            <span className="md-section-toggle">{collapsed ? '\u25B6' : '\u25BC'}</span>
+            <span className="md-section-toggle">{isCollapsed ? '\u25B6' : '\u25BC'}</span>
           )}
-          <HeadingTag className={headingClass}>{section.title}</HeadingTag>
+          <HeadingTag className={headingClass}>
+            {section.title}
+            {section.level === 1 && onCopy && (
+              <button
+                className="btn-icon plan-copy-btn"
+                onClick={(e) => { e.stopPropagation(); onCopy(); }}
+                title="Copy plan to clipboard"
+              >
+                {copied ? '\u2713' : '\uD83D\uDCCB'}
+              </button>
+            )}
+          </HeadingTag>
         </div>
       )}
-      {(!isCollapsible || !collapsed) && (
+      {(!isCollapsible || !isCollapsed) && (
         <div className="md-section-body">
           {section.contentLines.length > 0 && (
             <RawLines lines={section.contentLines} startIndex={section.lineIndex} />
           )}
           {section.children.map((child, idx) => (
-            <MarkdownSection key={idx} section={child} />
+            <MarkdownSection
+              key={idx}
+              section={child}
+              forceExpanded={forceExpanded}
+              onSectionToggle={onSectionToggle}
+            />
           ))}
         </div>
       )}

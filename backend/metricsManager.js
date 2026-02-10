@@ -85,7 +85,7 @@ class MetricsManager {
 
     const durations = {};
     let lastTime = new Date(task.createdAt).getTime();
-    let lastStage = 'backlog';
+    let lastStage = 'todo';
 
     for (const transition of taskTransitions) {
       const transitionTime = new Date(transition.timestamp).getTime();

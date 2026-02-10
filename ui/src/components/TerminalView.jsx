@@ -6,6 +6,29 @@ import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
 import '@xterm/xterm/css/xterm.css';
 
+const PROMPT_TAIL_SIZE = 500;
+
+const PROMPT_PATTERNS = [
+  />\s*$/,
+  /\?\s*$/,
+  /\$\s*$/,
+  /Ask Codex to do anything/i,
+  /Would you like to run/i,
+  /Implement this plan\?/i,
+  /\[Y\/n\]/i,
+  /\[y\/N\]/i,
+];
+
+function stripAnsi(text) {
+  return text
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07]*\x07/g, '');
+}
+
+function isPromptOutput(text) {
+  return PROMPT_PATTERNS.some(p => p.test(text));
+}
+
 const TerminalView = forwardRef(function TerminalView({
   session,
   onKillSession,
@@ -34,6 +57,8 @@ const TerminalView = forwardRef(function TerminalView({
   const keyboardSettingsRef = useRef(null);
   const [overrideKeys, setOverrideKeys] = useState(false);
   const overrideKeysRef = useRef(false);
+  const lastPromptLineRef = useRef(null);
+  const outputTailRef = useRef('');
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -41,6 +66,16 @@ const TerminalView = forwardRef(function TerminalView({
       xtermRef.current?.focus();
     }
   }), []);
+
+  const trackPromptFromOutput = useCallback((rawText) => {
+    const stripped = stripAnsi(rawText);
+    outputTailRef.current = (outputTailRef.current + stripped).slice(-PROMPT_TAIL_SIZE);
+    const lastLine = outputTailRef.current.split(/\r?\n/).pop()?.trim() || '';
+    if (lastLine.length > 0 && isPromptOutput(lastLine)) {
+      const buf = xtermRef.current.buffer.active;
+      lastPromptLineRef.current = buf.baseY + buf.cursorY;
+    }
+  }, []);
 
   const connect = useCallback((sessionId) => {
     if (wsRef.current) {
@@ -67,7 +102,9 @@ const TerminalView = forwardRef(function TerminalView({
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'output' && xtermRef.current) {
-          xtermRef.current.write(data.data);
+          xtermRef.current.write(data.data, () => {
+            trackPromptFromOutput(data.data);
+          });
         } else if (data.type === 'status') {
           setSessionStatus(data.status);
         } else if (data.type === 'sessionEnded') {
@@ -79,7 +116,9 @@ const TerminalView = forwardRef(function TerminalView({
       } catch (error) {
         // Handle non-JSON messages (raw terminal output)
         if (xtermRef.current && typeof event.data === 'string') {
-          xtermRef.current.write(event.data);
+          xtermRef.current.write(event.data, () => {
+            trackPromptFromOutput(event.data);
+          });
         }
       }
     };
@@ -91,7 +130,7 @@ const TerminalView = forwardRef(function TerminalView({
     ws.onerror = (error) => {
       console.error('Terminal WebSocket error:', error);
     };
-  }, []);
+  }, [trackPromptFromOutput]);
 
   // Get terminal settings with defaults
   const terminalSettings = settings?.terminal || {
@@ -222,6 +261,11 @@ const TerminalView = forwardRef(function TerminalView({
       if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
         return false;
       }
+      // Ctrl+Up/Down: scroll to prompt / bottom
+      if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey &&
+          (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+        return false;
+      }
       // Panel resize: Ctrl+Alt+Arrow keys
       if (event.ctrlKey && event.altKey) {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -261,6 +305,11 @@ const TerminalView = forwardRef(function TerminalView({
     term.onData((data) => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'input', data }));
+      }
+      // Track prompt line when user presses Enter
+      if (data.includes('\r') || data.includes('\n')) {
+        const buf = term.buffer.active;
+        lastPromptLineRef.current = buf.baseY + buf.cursorY;
       }
     });
 
@@ -306,7 +355,9 @@ const TerminalView = forwardRef(function TerminalView({
     if (currentSessionId.current !== session.id) {
       currentSessionId.current = session.id;
 
-      // Clear terminal for new session
+      // Clear terminal and prompt tracking for new session
+      lastPromptLineRef.current = null;
+      outputTailRef.current = '';
       if (xtermRef.current) {
         xtermRef.current.clear();
       }
@@ -332,6 +383,15 @@ const TerminalView = forwardRef(function TerminalView({
       fitAddonRef.current.fit();
     }
   }, [terminalSettings.fontSize, terminalSettings.fontFamily, terminalSettings.cursorStyle, terminalSettings.cursorBlink]);
+
+  const scrollToLastPrompt = useCallback(() => {
+    if (!xtermRef.current) return;
+    if (lastPromptLineRef.current !== null) {
+      xtermRef.current.scrollToLine(lastPromptLineRef.current);
+    } else {
+      xtermRef.current.scrollToBottom();
+    }
+  }, []);
 
   // Handle custom keyboard shortcuts
   useEffect(() => {
@@ -368,6 +428,20 @@ const TerminalView = forwardRef(function TerminalView({
         return;
       }
 
+      // Ctrl+Up: scroll to last prompt
+      if (event.ctrlKey && event.key === 'ArrowUp' && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        scrollToLastPrompt();
+        return;
+      }
+
+      // Ctrl+Down: scroll to bottom
+      if (event.ctrlKey && event.key === 'ArrowDown' && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        xtermRef.current?.scrollToBottom();
+        return;
+      }
+
       // cancelKey is handled by xterm's custom key handler (for confirmation).
     };
 
@@ -377,7 +451,7 @@ const TerminalView = forwardRef(function TerminalView({
     return () => {
       terminalElement.removeEventListener('keydown', handleKeyDown);
     };
-  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.clearKey]);
+  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.clearKey, scrollToLastPrompt]);
 
   // Focus terminal when clicking
   const handleTerminalClick = () => {
@@ -456,6 +530,13 @@ const TerminalView = forwardRef(function TerminalView({
             title="When ON, keyboard shortcuts are sent to the terminal instead of the app"
           >
             {overrideKeys ? 'KS: Terminal' : 'KS: App'}
+          </button>
+          <button
+            className="btn btn-secondary btn-small"
+            onClick={scrollToLastPrompt}
+            title="Scroll to last prompt (Ctrl+Up)"
+          >
+            ↑ Prompt
           </button>
           <button
             className={`btn btn-secondary btn-small sidebar-toggle-btn ${sidebarVisible ? 'active' : ''}`}

@@ -1,170 +1,163 @@
-import { useState } from 'react';
-
 function TaskCard({
-  task,
+  session,
   onClick,
-  onEdit,
-  onDelete,
   onDragStart,
   onDragEnd,
-  isDragging = false
+  isDragging = false,
+  onSessionSelect,
+  selectedSessionId,
+  stageId,
+  onResetPlacement
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const isSelected = session.id === selectedSessionId;
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'queued': return 'var(--status-idle)';
-      case 'in_progress': return 'var(--status-active)';
-      case 'blocked': return 'var(--status-error)';
-      case 'done': return 'var(--status-completed)';
+      case 'active': return 'var(--status-active)';
+      case 'idle': return 'var(--status-idle)';
+      case 'thinking': return 'var(--status-thinking, #3b82f6)';
+      case 'editing': return 'var(--status-editing, #8b5cf6)';
+      case 'waiting': return 'var(--status-waiting, #f59e0b)';
+      case 'paused': return 'var(--status-paused, #6b7280)';
+      case 'completed': return 'var(--status-completed, #22c55e)';
       default: return 'var(--text-muted)';
     }
   };
 
-  const getPriorityLabel = (priority) => {
-    if (priority >= 3) return { label: 'Critical', class: 'priority-critical' };
-    if (priority >= 2) return { label: 'High', class: 'priority-high' };
-    if (priority >= 1) return { label: 'Medium', class: 'priority-medium' };
-    return { label: 'Low', class: 'priority-low' };
+  const getStatusEmoji = (status) => {
+    switch (status) {
+      case 'active': return '🟢';
+      case 'idle': return '🟡';
+      case 'thinking': return '🔵';
+      case 'editing': return '✏️';
+      case 'waiting': return '⏳';
+      case 'paused': return '⏸️';
+      case 'completed': return '⚪';
+      default: return '⚫';
+    }
   };
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'queued': return '○';
-      case 'in_progress': return '◐';
-      case 'blocked': return '⊘';
-      case 'done': return '●';
-      default: return '○';
-    }
+  const getRelativeTime = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    const now = new Date();
+    const diff = Math.floor((now - date) / 1000);
+    if (diff < 5) return 'just now';
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
   };
 
   const handleDragStart = (e) => {
-    e.dataTransfer.setData('text/plain', task.id);
+    e.dataTransfer.setData('text/plain', session.id);
     e.dataTransfer.effectAllowed = 'move';
-    onDragStart?.(task);
+    onDragStart?.(session);
   };
 
-  const handleDragEnd = (e) => {
-    onDragEnd?.(task);
+  const handleDragEnd = () => {
+    onDragEnd?.(session);
   };
 
-  const handleEditClick = (e) => {
-    e.stopPropagation();
-    onEdit?.(task);
-  };
-
-  const handleDeleteClick = (e) => {
-    e.stopPropagation();
-    if (confirm(`Delete task "${task.title}"?`)) {
-      onDelete?.(task.id);
+  const handleClick = () => {
+    if (onSessionSelect) {
+      onSessionSelect(session.id, stageId);
     }
   };
 
-  const priority = getPriorityLabel(task.priority);
-  const hasBlockers = task.blockedBy && task.blockedBy.length > 0;
-  const hasRejections = task.rejectionHistory && task.rejectionHistory.length > 0;
-
-  const handleClick = (e) => {
-    // Single click opens the task view modal
-    onClick?.(task);
-  };
-
-  const handleDoubleClick = (e) => {
-    // Double click expands inline details
+  const handleDetailsClick = (e) => {
     e.stopPropagation();
-    setIsExpanded(!isExpanded);
+    onClick?.(session);
   };
+
+  const isPaused = session.status === 'paused';
+  const statusColor = getStatusColor(session.status);
 
   return (
     <div
-      className={`task-card ${isDragging ? 'dragging' : ''} ${task.status === 'blocked' ? 'blocked' : ''}`}
+      className={`task-card task-card-linked ${isDragging ? 'dragging' : ''} ${isPaused ? 'task-card-paused' : ''} ${isSelected ? 'task-card-selected' : ''}`}
+      style={{ borderLeftColor: statusColor }}
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onClick={handleClick}
-      onDoubleClick={handleDoubleClick}
     >
       <div className="task-card-header">
-        <span
-          className="task-status-icon"
-          style={{ color: getStatusColor(task.status) }}
-          title={task.status}
-        >
-          {getStatusIcon(task.status)}
-        </span>
-        <span className="task-title">{task.title}</span>
-        {task.priority > 0 && (
-          <span className={`task-priority ${priority.class}`} title={`Priority: ${priority.label}`}>
-            {priority.label[0]}
-          </span>
+        <span className={`status-indicator ${session.status}`} />
+        <span className="task-title">{session.name}</span>
+        {(!session.cliType || session.cliType === 'claude' || session.cliType === 'claude-code') && (
+          <span className="cli-type-badge claude-code">CC</span>
         )}
+        {session.cliType === 'codex' && (
+          <span className="cli-type-badge codex">CDX</span>
+        )}
+        {session.cliType === 'terminal' && (
+          <span className="cli-type-badge terminal">TRM</span>
+        )}
+        <button
+          className="btn-icon task-card-details-btn"
+          onClick={handleDetailsClick}
+          title="Session details"
+        >
+          ⚙️
+        </button>
       </div>
 
       <div className="task-card-meta">
-        <span className="task-project" title={task.project}>
-          {task.project.split(/[/\\]/).pop()}
+        <span className="task-card-status">
+          {getStatusEmoji(session.status)} {session.status}
         </span>
-        {task.assignedAgent && (
-          <span className="task-agent" title={`Assigned to: ${task.assignedAgent}`}>
-            🤖
+        {session.manuallyPlaced && (
+          <span
+            className="task-manual-badge clickable"
+            title="Manually placed — click to unlock"
+            onClick={(e) => {
+              e.stopPropagation();
+              onResetPlacement?.(session.id);
+            }}
+          >
+            📌
           </span>
         )}
-        {hasBlockers && (
-          <span className="task-blockers" title={`Blocked by ${task.blockedBy.length} task(s)`}>
-            🔗 {task.blockedBy.length}
-          </span>
-        )}
-        {hasRejections && (
-          <span className="task-rejections" title={`Rejected ${task.rejectionHistory.length} time(s)`}>
-            ↩ {task.rejectionHistory.length}
+        {session.priority > 0 && (
+          <span className={`task-priority ${session.priority >= 3 ? 'priority-critical' : session.priority >= 2 ? 'priority-high' : 'priority-medium'}`}>
+            {session.priority >= 3 ? 'C' : session.priority >= 2 ? 'H' : 'M'}
           </span>
         )}
       </div>
 
-      {isExpanded && (
-        <div className="task-card-expanded">
-          {task.description && (
-            <div className="task-description">
-              {task.description}
-            </div>
-          )}
+      {session.currentTask && !isPaused && (
+        <div className="task-card-current-task" title={session.currentTask}>
+          {session.currentTask}
+        </div>
+      )}
 
-          {task.tags && task.tags.length > 0 && (
-            <div className="task-tags">
-              {task.tags.map(tag => (
-                <span key={tag} className="task-tag">{tag}</span>
-              ))}
-            </div>
-          )}
+      {session.description && (
+        <div className="task-card-notes" title={session.description}>
+          {session.description.length > 60 ? session.description.substring(0, 60) + '...' : session.description}
+        </div>
+      )}
 
-          {hasRejections && (
-            <div className="task-rejection-history">
-              <strong>Last rejection:</strong> {task.rejectionHistory[task.rejectionHistory.length - 1].reason}
-            </div>
+      {session.tags && session.tags.length > 0 && (
+        <div className="session-tags">
+          {session.tags.slice(0, 3).map(tag => (
+            <span key={tag} className="session-tag">{tag}</span>
+          ))}
+          {session.tags.length > 3 && (
+            <span className="session-tag-more">+{session.tags.length - 3}</span>
           )}
+        </div>
+      )}
 
-          {task.context?.blockReason && (
-            <div className="task-block-reason">
-              <strong>Blocked:</strong> {task.context.blockReason}
-            </div>
-          )}
+      <div className="task-card-footer">
+        <span className="task-card-time">
+          {isPaused ? 'Paused' : getRelativeTime(session.lastActivity)}
+        </span>
+      </div>
 
-          <div className="task-card-actions">
-            <button
-              className="btn-small"
-              onClick={handleEditClick}
-              title="Edit task"
-            >
-              Edit
-            </button>
-            <button
-              className="btn-small btn-danger"
-              onClick={handleDeleteClick}
-              title="Delete task"
-            >
-              Delete
-            </button>
-          </div>
+      {isPaused && (
+        <div className="paused-overlay">
+          <span className="paused-badge">PAUSED</span>
         </div>
       )}
     </div>

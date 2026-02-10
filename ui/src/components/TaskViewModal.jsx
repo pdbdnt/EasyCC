@@ -1,36 +1,37 @@
 import { useState, useRef, useEffect } from 'react';
 import TerminalView from './TerminalView';
 import ContextSidebar from './ContextSidebar';
+import ResizeHandle from './ResizeHandle';
 
 /**
- * Modal for viewing a task with its assigned agent's terminal and context.
- * Reuses TerminalView and ContextSidebar components.
+ * Modal for viewing a session's details with terminal and context.
+ * Sessions ARE the kanban cards now.
  */
 function TaskViewModal({
-  task,
-  session, // The session assigned to this task (if any)
+  session,
   stages,
   onClose,
-  onUpdateTask,
   onUpdateSession,
   onAdvance,
   onReject,
-  onAssign,
-  onUnassign,
-  settings
+  onSessionSelect,
+  settings,
+  onPauseSession,
+  onResumeSession,
+  onKillSession
 }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectTargetStage, setRejectTargetStage] = useState('');
   const [contextWidth, setContextWidth] = useState(300);
+  const [showContext, setShowContext] = useState(true);
   const modalRef = useRef(null);
 
   // Get current stage info
-  const currentStage = stages?.find(s => s.id === task.stage);
+  const currentStage = stages?.find(s => s.id === session.stage);
   const previousStages = stages?.filter(s => s.order < (currentStage?.order || 0)) || [];
 
-  // Handle escape key to close
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
@@ -38,6 +39,15 @@ function TaskViewModal({
           setShowRejectModal(false);
         } else {
           onClose();
+        }
+      }
+      if (e.ctrlKey && e.altKey) {
+        if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          setContextWidth(w => Math.min(w + 40, window.innerWidth * 0.5));
+        } else if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          setContextWidth(w => Math.max(w - 40, 200));
         }
       }
     };
@@ -56,7 +66,7 @@ function TaskViewModal({
       alert('Please provide a rejection reason');
       return;
     }
-    onReject?.(task.id, rejectReason.trim(), rejectTargetStage || undefined);
+    onReject?.(session.id, rejectReason.trim(), rejectTargetStage || undefined);
     setShowRejectModal(false);
     setRejectReason('');
     setRejectTargetStage('');
@@ -64,15 +74,18 @@ function TaskViewModal({
 
   const getStatusBadge = (status) => {
     const badges = {
-      queued: { label: 'Queued', class: 'status-queued' },
-      in_progress: { label: 'In Progress', class: 'status-active' },
-      blocked: { label: 'Blocked', class: 'status-blocked' },
-      done: { label: 'Done', class: 'status-done' }
+      active: { label: 'Active', class: 'status-active' },
+      idle: { label: 'Idle', class: 'status-idle' },
+      thinking: { label: 'Thinking', class: 'status-active' },
+      editing: { label: 'Editing', class: 'status-active' },
+      waiting: { label: 'Waiting', class: 'status-idle' },
+      paused: { label: 'Paused', class: 'status-blocked' },
+      completed: { label: 'Completed', class: 'status-done' }
     };
     return badges[status] || { label: status, class: '' };
   };
 
-  const statusBadge = getStatusBadge(task.status);
+  const statusBadge = getStatusBadge(session.status);
 
   return (
     <div
@@ -86,40 +99,39 @@ function TaskViewModal({
         {/* Header */}
         <div className="task-view-header">
           <div className="task-view-title">
-            <h2>{task.title}</h2>
+            <h2>{session.name}</h2>
             <span className={`task-view-status ${statusBadge.class}`}>
               {statusBadge.label}
             </span>
             <span className="task-view-stage">
-              {currentStage?.name || task.stage}
+              {currentStage?.name || session.stage}
             </span>
-            <span className="task-view-project">
-              {task.project.split(/[/\\]/).pop()}
-            </span>
+            {session.workingDir && (
+              <span className="task-view-project">
+                {session.workingDir.split(/[/\\]/).pop()}
+              </span>
+            )}
           </div>
           <div className="task-view-actions">
-            {/* Advance button (if not in done or review) */}
-            {task.stage !== 'done' && currentStage?.poolType !== 'human' && (
+            {session.stage !== 'done' && currentStage?.poolType !== 'human' && (
               <button
                 className="btn-small btn-success"
-                onClick={() => onAdvance?.(task.id)}
+                onClick={() => onAdvance?.(session.id)}
                 title="Move to next stage"
               >
                 Advance
               </button>
             )}
-            {/* Approve button (in review stage) */}
-            {currentStage?.poolType === 'human' && task.stage !== 'done' && (
+            {currentStage?.poolType === 'human' && session.stage !== 'done' && (
               <button
                 className="btn-small btn-success"
-                onClick={() => onAdvance?.(task.id)}
+                onClick={() => onAdvance?.(session.id)}
                 title="Approve and move to Done"
               >
                 Approve
               </button>
             )}
-            {/* Reject button (if not in backlog) */}
-            {task.stage !== 'backlog' && task.stage !== 'done' && (
+            {session.stage !== 'todo' && session.stage !== 'done' && (
               <button
                 className="btn-small btn-warning"
                 onClick={() => setShowRejectModal(true)}
@@ -128,14 +140,13 @@ function TaskViewModal({
                 Reject
               </button>
             )}
-            {/* Unassign button (if assigned) */}
-            {task.assignedSessionId && (
+            {onSessionSelect && (
               <button
                 className="btn-small"
-                onClick={() => onUnassign?.(task.id)}
-                title="Unassign agent"
+                onClick={() => { onSessionSelect(session.id); onClose(); }}
+                title="Open in terminal view"
               >
-                Unassign
+                Open Terminal
               </button>
             )}
             <button
@@ -151,84 +162,32 @@ function TaskViewModal({
 
         {/* Content: Context + Terminal */}
         <div className="task-view-content">
-          {/* Context Sidebar */}
-          <div className="task-view-context" style={{ width: contextWidth }}>
-            {session ? (
-              <ContextSidebar
-                session={session}
-                onClose={() => {}}
-                onUpdateSession={onUpdateSession}
-                hideCloseButton
-              />
-            ) : (
-              <div className="task-context-placeholder">
-                <h3>Task Details</h3>
-                <div className="task-detail-section">
-                  <label>Description</label>
-                  <p>{task.description || 'No description'}</p>
-                </div>
-                {task.blockedBy?.length > 0 && (
-                  <div className="task-detail-section">
-                    <label>Blocked By</label>
-                    <ul className="blocked-by-list">
-                      {task.blockedBy.map(id => (
-                        <li key={id}>{id}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {task.rejectionHistory?.length > 0 && (
-                  <div className="task-detail-section">
-                    <label>Rejection History</label>
-                    {task.rejectionHistory.map((r, i) => (
-                      <div key={i} className="rejection-item">
-                        <span className="rejection-flow">{r.from} → {r.to}</span>
-                        <span className="rejection-reason">{r.reason}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {task.tags?.length > 0 && (
-                  <div className="task-detail-section">
-                    <label>Tags</label>
-                    <div className="task-tags">
-                      {task.tags.map(tag => (
-                        <span key={tag} className="task-tag">{tag}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div className="task-detail-section">
-                  <label>Status</label>
-                  <p>No agent assigned. Task is queued.</p>
-                </div>
+          {showContext && (
+            <>
+              <div className="task-view-context" style={{ width: contextWidth }}>
+                <ContextSidebar
+                  session={session}
+                  onClose={() => setShowContext(false)}
+                  onUpdateSession={onUpdateSession}
+                />
               </div>
-            )}
-          </div>
+              <ResizeHandle onResize={(delta) => {
+                setContextWidth(w => Math.min(Math.max(w + delta, 200), window.innerWidth * 0.5));
+              }} />
+            </>
+          )}
 
-          {/* Terminal */}
           <div className="task-view-terminal">
-            {session ? (
-              <TerminalView
-                session={session}
-                onKillSession={() => {}}
-                onPauseSession={() => {}}
-                onResumeSession={() => {}}
-                onToggleSidebar={() => {}}
-                sidebarVisible={false}
-                settings={settings}
-                onUpdateSession={onUpdateSession}
-                hideHeader
-              />
-            ) : (
-              <div className="terminal-placeholder">
-                <div className="terminal-placeholder-icon">🤖</div>
-                <p>No agent assigned to this task</p>
-                <p className="text-muted">
-                  Drag the task to a stage with agents to assign one
-                </p>
-              </div>
-            )}
+            <TerminalView
+              session={session}
+              onKillSession={() => { onKillSession?.(session.id); onClose(); }}
+              onPauseSession={onPauseSession}
+              onResumeSession={onResumeSession}
+              onToggleSidebar={() => setShowContext(v => !v)}
+              sidebarVisible={showContext}
+              settings={settings}
+              onUpdateSession={onUpdateSession}
+            />
           </div>
         </div>
 
@@ -236,13 +195,13 @@ function TaskViewModal({
         {showRejectModal && (
           <div className="reject-modal-overlay" onClick={() => setShowRejectModal(false)}>
             <div className="reject-modal" onClick={e => e.stopPropagation()}>
-              <h3>Reject Task</h3>
+              <h3>Reject Session</h3>
               <div className="form-group">
                 <label>Reason for rejection *</label>
                 <textarea
                   value={rejectReason}
                   onChange={(e) => setRejectReason(e.target.value)}
-                  placeholder="Explain why this task is being rejected..."
+                  placeholder="Explain why this session is being rejected..."
                   rows={4}
                   autoFocus
                 />
@@ -270,7 +229,7 @@ function TaskViewModal({
                   className="btn-warning"
                   onClick={handleRejectSubmit}
                 >
-                  Reject Task
+                  Reject
                 </button>
               </div>
             </div>
