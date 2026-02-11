@@ -141,8 +141,8 @@ const TerminalView = forwardRef(function TerminalView({
   };
 
   const keyboardSettings = settings?.keyboard || {
-    copyKey: 'Ctrl+Shift+C',
-    pasteKey: 'Ctrl+Shift+V',
+    copyKey: 'Ctrl+C',
+    pasteKey: 'Ctrl+V',
     cancelKey: 'Ctrl+C',
     clearKey: 'Ctrl+L'
   };
@@ -244,8 +244,23 @@ const TerminalView = forwardRef(function TerminalView({
         return false;
       }
 
+      // Intercept paste shortcut before xterm consumes it
+      const pasteKey = keyboardSettingsRef.current?.pasteKey || 'Ctrl+V';
+      if (matchKeyCombo(event, pasteKey)) {
+        navigator.clipboard.readText().then(text => {
+          if (text && wsRef.current?.readyState === WebSocket.OPEN) {
+            const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
+            if (!pastedText) return;
+            wsRef.current.send(JSON.stringify({ type: 'input', data: pastedText }));
+          }
+        }).catch(err => {
+          console.error('Failed to read clipboard:', err);
+        });
+        return false;
+      }
+
       // When override mode is ON, let the terminal handle all keys
-      // (except Ctrl+C cancel which is always handled above)
+      // (except Ctrl+C cancel and paste which are always handled above)
       if (overrideKeysRef.current) {
         return true;
       }
@@ -398,8 +413,9 @@ const TerminalView = forwardRef(function TerminalView({
     if (!terminalRef.current) return;
 
     const handleKeyDown = (event) => {
-      // Check for copy shortcut
-      if (matchKeyCombo(event, keyboardSettings.copyKey)) {
+      // Check for copy shortcut (skip if same as cancelKey — already handled inside xterm)
+      if (keyboardSettings.copyKey !== keyboardSettings.cancelKey &&
+          matchKeyCombo(event, keyboardSettings.copyKey)) {
         event.preventDefault();
         const selection = xtermRef.current?.getSelection();
         if (selection) {
@@ -408,12 +424,15 @@ const TerminalView = forwardRef(function TerminalView({
         return;
       }
 
-      // Check for paste shortcut
+      // Check for paste shortcut (also handled inside xterm, but keep as fallback)
       if (matchKeyCombo(event, keyboardSettings.pasteKey)) {
         event.preventDefault();
         navigator.clipboard.readText().then(text => {
           if (text && wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: 'input', data: text }));
+            // Avoid implicit submit on paste when clipboard content ends with newline.
+            const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
+            if (!pastedText) return;
+            wsRef.current.send(JSON.stringify({ type: 'input', data: pastedText }));
           }
         }).catch(err => {
           console.error('Failed to read clipboard:', err);

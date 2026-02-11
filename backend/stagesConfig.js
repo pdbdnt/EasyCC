@@ -221,7 +221,7 @@ function sessionStatusToStage(sessionStatus) {
     case 'waiting':
       return 'in_review';
     case 'idle':
-      return null; // Idle is ambiguous — don't auto-move
+      return 'in_review'; // Agent finished, waiting for user — safe since 'active' is blocked from auto-sync
     case 'completed':
       return 'done';
     default:

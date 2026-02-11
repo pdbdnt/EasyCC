@@ -51,7 +51,7 @@ export function useSessions() {
 
       case 'sessionUpdated':
         setSessions(prev => prev.map(session =>
-          session.id === data.sessionId
+          session.id === data.id
             ? { ...session, ...data }
             : session
         ));

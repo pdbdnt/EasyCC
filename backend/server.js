@@ -971,22 +971,44 @@ async function start() {
 
   // Debounced auto-sync: session status → session's own stage (3s stability)
   sessionManager.on('statusChange', ({ sessionId, status }) => {
-    // Clear previous timer
-    if (kanbanSyncTimers.has(sessionId)) {
-      clearTimeout(kanbanSyncTimers.get(sessionId));
-    }
+    const existingTimer = kanbanSyncTimers.get(sessionId);
 
     // Codex mid-work approvals: don't auto-move to in_review
     const session = sessionManager.getSession(sessionId);
     if (session?.cliType === 'codex' && status === 'waiting') {
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
       kanbanSyncTimers.delete(sessionId);
       return;
     }
 
     const targetStage = sessionStatusToStage(status);
     if (!targetStage) {
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
       kanbanSyncTimers.delete(sessionId);
       return;
+    }
+
+    // Don't auto-move on 'active' — it's too vague (fires on resume, generic output)
+    // Only 'thinking' and 'editing' should move to in_progress
+    if (status === 'active' && targetStage === 'in_progress') {
+      // Keep any pending timer (e.g. waiting -> in_review) so active jitter
+      // from redraw/prompts doesn't cancel a valid transition.
+      return;
+    }
+
+    // Don't auto-move sessions BACK from in_review to in_progress
+    // User must manually drag if they want to move it back
+    if (session?.stage === 'in_review' && targetStage === 'in_progress') {
+      return;
+    }
+
+    // Replace prior pending transition with the latest actionable status.
+    if (existingTimer) {
+      clearTimeout(existingTimer);
     }
 
     // Set 3s debounce timer

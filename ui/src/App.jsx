@@ -8,10 +8,12 @@ import SettingsModal from './components/SettingsModal';
 import ResizeHandle from './components/ResizeHandle';
 import HintBadge from './components/HintBadge';
 import KanbanBoard from './components/KanbanBoard';
+import ToastContainer from './components/Toast';
 import { useSessions } from './hooks/useSessions';
 import { useContextSidebar } from './hooks/useContextSidebar';
 import { useSettings } from './hooks/useSettings';
 import { useHintMode } from './hooks/useHintMode';
+import { useToast } from './hooks/useToast';
 import { registerHint, unregisterHint } from './utils/hintRegistry';
 
 const makePaneId = () => `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -82,6 +84,7 @@ function App() {
   } = useSessions();
   const { isVisible: sidebarVisible, toggle: toggleSidebar, hide: hideSidebar } = useContextSidebar();
   const { settings, updateSettings, resetSettings } = useSettings();
+  const { toasts, addToast, removeToast } = useToast();
   const [sessionsWidth, setSessionsWidth] = useState(280);
   const [contextWidth, setContextWidth] = useState(320);
   const [focusedPanel, setFocusedPanel] = useState(null); // 'terminal' | 'context' | null
@@ -656,6 +659,7 @@ function App() {
             onPauseSession={pauseSession}
             onResumeSession={resumeSession}
             onKillSession={killSession}
+            addToast={addToast}
           />
         </main>
       ) : (
@@ -803,6 +807,7 @@ function App() {
           </div>
         </div>
       )}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );
 }

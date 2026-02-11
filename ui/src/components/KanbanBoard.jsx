@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import KanbanColumn from './KanbanColumn';
 import TaskViewModal from './TaskViewModal';
 
-function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSession, rejectSession, settings, onUpdateSession, onSessionSelect, onCreateSession, selectedSessionId, onPauseSession, onResumeSession, onKillSession }) {
+function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSession, rejectSession, settings, onUpdateSession, onSessionSelect, onCreateSession, selectedSessionId, onPauseSession, onResumeSession, onKillSession, addToast }) {
   const [draggingSessionId, setDraggingSessionId] = useState(null);
   const [viewingSession, setViewingSession] = useState(null);
   const [selectedProjects, setSelectedProjects] = useState(new Set());
@@ -64,9 +64,15 @@ function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSe
 
   const handleResetPlacement = async (sessionId) => {
     try {
-      await fetch(`/api/sessions/${sessionId}/reset-placement`, { method: 'POST' });
+      const res = await fetch(`/api/sessions/${sessionId}/reset-placement`, { method: 'POST' });
+      if (res.ok) {
+        addToast?.('Auto-sync unlocked', 'success');
+      } else {
+        addToast?.('Failed to unlock placement', 'error');
+      }
     } catch (err) {
       console.error('Failed to reset placement:', err);
+      addToast?.('Failed to unlock placement', 'error');
     }
   };
 

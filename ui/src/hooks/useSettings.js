@@ -6,8 +6,8 @@ const API_BASE = '';
 const defaultSettings = {
   version: 1,
   keyboard: {
-    copyKey: 'Ctrl+Shift+C',
-    pasteKey: 'Ctrl+Shift+V',
+    copyKey: 'Ctrl+C',
+    pasteKey: 'Ctrl+V',
     cancelKey: 'Ctrl+C',
     clearKey: 'Ctrl+L',
     hintMode: {

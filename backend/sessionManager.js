@@ -504,10 +504,12 @@ class SessionManager extends EventEmitter {
       // Try to detect Claude session ID from output
       this.detectClaudeSessionId(data, session);
 
-      // Detect status from output (debounced to avoid flickering)
-      const newStatus = this.detectStatus(data, session.status);
-      if (newStatus !== session.status) {
-        this.updateSessionStatus(session, newStatus);
+      // Detect status from output (skip during resize — PTY redraws old content)
+      if (!session.resizingUntil || Date.now() > session.resizingUntil) {
+        const newStatus = this.detectStatus(data, session.status);
+        if (newStatus !== session.status) {
+          this.updateSessionStatus(session, newStatus);
+        }
       }
 
       // Detect current task
@@ -882,10 +884,12 @@ class SessionManager extends EventEmitter {
           return;
         }
 
-        // Detect status from output (debounced to avoid flickering)
-        const newStatus = this.detectStatus(data, session.status);
-        if (newStatus !== session.status && newStatus !== 'paused') {
-          this.updateSessionStatus(session, newStatus);
+        // Detect status from output (skip during resize — PTY redraws old content)
+        if (!session.resizingUntil || Date.now() > session.resizingUntil) {
+          const newStatus = this.detectStatus(data, session.status);
+          if (newStatus !== session.status && newStatus !== 'paused') {
+            this.updateSessionStatus(session, newStatus);
+          }
         }
 
         const task = this.detectTask(data);
@@ -1163,15 +1167,13 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    // Detect editing patterns
+    // Detect editing patterns (must match actual tool-call output, not generic words)
     const editingPatterns = [
-      // Claude Code patterns
-      /Writing to/i,
-      /Editing/i,
+      // Claude Code tool-call patterns
+      /Write\(.+\)/,                  // Write(path/to/file)
+      /Edit\(.+\)/,                   // Edit(path/to/file)
+      /MultiEdit\(.+\)/,             // MultiEdit(path/to/file)
       /Creating file/i,
-      /Updating/i,
-      /^\s*\+\s+/m,  // Diff additions
-      /^\s*-\s+/m,   // Diff removals
       // Codex CLI patterns
       /\u2022\s*Edited/i,             // • Edited <file> (+N -N)
       /\u2022\s*Added/i,              // • Added <file>
@@ -1497,6 +1499,14 @@ class SessionManager extends EventEmitter {
     }
 
     try {
+      // Cancel any pending status change queued before resize
+      if (session.statusDebounceTimer) {
+        clearTimeout(session.statusDebounceTimer);
+        session.statusDebounceTimer = null;
+      }
+      session.pendingStatus = null;
+      // Suppress status detection for 2s (PTY redraws old content on resize)
+      session.resizingUntil = Date.now() + 2000;
       session.pty.resize(cols, rows);
       return true;
     } catch (error) {
