@@ -213,7 +213,19 @@ const TerminalView = forwardRef(function TerminalView({
         return false;
       }
 
+      // Handle dedicated copy shortcut (when different from cancel key)
+      const copyKey = keyboardSettingsRef.current?.copyKey || 'Ctrl+C';
       const cancelKey = keyboardSettingsRef.current?.cancelKey || 'Ctrl+C';
+      if (copyKey !== cancelKey && matchKeyCombo(event, copyKey)) {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard?.writeText(selection).catch((error) => {
+            console.error('Failed to copy selection:', error);
+          });
+        }
+        return false;
+      }
+
       if (matchKeyCombo(event, cancelKey)) {
         const selection = term.getSelection();
         if (selection) {

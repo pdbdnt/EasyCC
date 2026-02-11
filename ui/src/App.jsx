@@ -382,7 +382,17 @@ function App() {
       if (currentGroupIndex !== -1) break;
     }
 
-    if (currentGroupIndex === -1) return;
+    if (currentGroupIndex === -1) {
+      // Selected session is no longer in the filtered list (e.g., moved to another kanban stage).
+      // Fall back to the first session in the first group.
+      if (groupedSessions.length > 0) {
+        const [, firstGroup] = groupedSessions[0];
+        if (firstGroup.length > 0) {
+          selectSession(firstGroup[0].session.id);
+        }
+      }
+      return;
+    }
 
     const [, sessionsInGroup] = groupedSessions[currentGroupIndex];
 
@@ -425,6 +435,53 @@ function App() {
   }, [selectedId, groupedSessions, selectSession]);
 
   // Keyboard shortcuts for panel resize and session navigation
+  // Kanban arrow key navigation
+  const navigateKanban = useCallback((key) => {
+    const sortSessions = (list) => {
+      return [...list].sort((a, b) => {
+        const statusOrder = { active: 0, thinking: 0, editing: 0, idle: 1, waiting: 1, paused: 2, completed: 3 };
+        const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
+        if (statusDiff !== 0) return statusDiff;
+        return (b.priority || 0) - (a.priority || 0);
+      });
+    };
+
+    let currentColIndex = -1;
+    let currentSessionIndex = -1;
+    const columnSessions = stages.map((stage, i) => {
+      const sorted = sortSessions(sessionsByStage[stage.id] || []);
+      const idx = sorted.findIndex(s => s.id === selectedId);
+      if (idx !== -1) {
+        currentColIndex = i;
+        currentSessionIndex = idx;
+      }
+      return sorted;
+    });
+
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      const dir = key === 'ArrowRight' ? 1 : -1;
+      let targetCol = currentColIndex === -1 ? 0 : currentColIndex;
+      for (let i = 0; i < stages.length; i++) {
+        targetCol = (targetCol + dir + stages.length) % stages.length;
+        if (columnSessions[targetCol].length > 0) break;
+      }
+      if (columnSessions[targetCol].length > 0) {
+        selectSession(columnSessions[targetCol][0].id);
+      }
+    } else {
+      if (currentColIndex === -1) {
+        const firstNonEmpty = columnSessions.find(col => col.length > 0);
+        if (firstNonEmpty) selectSession(firstNonEmpty[0].id);
+        return;
+      }
+      const col = columnSessions[currentColIndex];
+      if (col.length === 0) return;
+      const dir = key === 'ArrowDown' ? 1 : -1;
+      const nextIndex = (currentSessionIndex + dir + col.length) % col.length;
+      selectSession(col[nextIndex].id);
+    }
+  }, [stages, sessionsByStage, selectedId, selectSession]);
+
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Skip if hint mode is active (let hint mode handle keys)
@@ -447,6 +504,15 @@ function App() {
         e.preventDefault();
         setCurrentView(prev => prev === 'sessions' ? 'kanban' : 'sessions');
         return;
+      }
+
+      // Arrow keys for kanban navigation (bare arrows, no modifiers)
+      if (currentView === 'kanban' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+          e.preventDefault();
+          navigateKanban(e.key);
+          return;
+        }
       }
 
       if (isSplitRightShortcut(e)) {
@@ -525,7 +591,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [closeFocusedPane, createSplitPane, hintModeActive, focusedPanel, navigatePanes, navigateSession, navigateGroup, requestCloseCurrentSession]);
+  }, [closeFocusedPane, createSplitPane, hintModeActive, focusedPanel, navigatePanes, navigateSession, navigateGroup, requestCloseCurrentSession, currentView, navigateKanban]);
 
   const handleSessionsResize = useCallback((delta) => {
     setSessionsWidth(w => Math.max(200, Math.min(400, w + delta)));
@@ -630,6 +696,7 @@ function App() {
           onOpenSettings={() => setShowSettingsModal(true)}
           onUpdateSession={updateSession}
           onKillSession={killSession}
+          onResumeSession={resumeSession}
           connectionStatus={connectionStatus}
           hintModeActive={hintModeActive}
           typedChars={typedChars}
@@ -790,14 +857,14 @@ function App() {
         </div>
       )}
       {showCloseSessionModal && pendingCloseSession && (
-        <div className="modal-overlay" onClick={handleCancelCloseCurrentSession}>
+        <div className="modal-overlay" onClick={handleCancelCloseCurrentSession} onKeyDown={e => { if (e.key === 'Escape') handleCancelCloseCurrentSession(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h2>Close Current Session?</h2>
             <p className="settings-description">
               This will kill session <strong>{pendingCloseSession.name}</strong> and keep this browser tab open.
             </p>
             <div className="modal-actions">
-              <button className="btn btn-secondary" onClick={handleCancelCloseCurrentSession}>
+              <button className="btn btn-secondary" onClick={handleCancelCloseCurrentSession} autoFocus>
                 Cancel
               </button>
               <button className="btn btn-danger" onClick={handleConfirmCloseCurrentSession}>

@@ -79,6 +79,7 @@ class DataStore {
         manualPlacedAt: session.manualPlacedAt || null,
         rejectionHistory: session.rejectionHistory || [],
         completedAt: session.completedAt || null,
+        stageEnteredAt: session.stageEnteredAt || null,
         updatedAt: session.updatedAt || null,
         comments: session.comments || []
       };

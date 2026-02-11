@@ -484,6 +484,7 @@ class SessionManager extends EventEmitter {
       pendingStatus: null,        // Status waiting to be applied
       // Kanban stage fields
       stage: stageOpts.stage || 'todo',
+      stageEnteredAt: now.toISOString(),
       priority: stageOpts.priority || 0,
       description: stageOpts.description || '',
       blockedBy: stageOpts.blockedBy || [],
@@ -1580,6 +1581,7 @@ class SessionManager extends EventEmitter {
       promptHistory: session.promptHistory || [],
       // Kanban stage fields
       stage: session.stage || 'todo',
+      stageEnteredAt: session.stageEnteredAt || null,
       priority: session.priority || 0,
       description: session.description || '',
       blockedBy: session.blockedBy || [],
@@ -1833,6 +1835,8 @@ class SessionManager extends EventEmitter {
     }
 
     session.stage = targetStageId;
+    session.stageEnteredAt = new Date().toISOString();
+    console.log(`[Kanban] Session ${session.name || id} moved: ${previousStage} → ${targetStageId} (source: ${source}${reason ? ', reason: ' + reason : ''})`);
     session.updatedAt = new Date().toISOString();
     if (targetStageId === 'done') {
       session.completedAt = new Date().toISOString();

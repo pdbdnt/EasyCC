@@ -1,3 +1,5 @@
+import { useRef, useEffect } from 'react';
+
 function TaskCard({
   session,
   onClick,
@@ -10,6 +12,13 @@ function TaskCard({
   onResetPlacement
 }) {
   const isSelected = session.id === selectedSessionId;
+  const cardRef = useRef(null);
+
+  useEffect(() => {
+    if (isSelected && cardRef.current) {
+      cardRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [isSelected]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -75,6 +84,7 @@ function TaskCard({
 
   return (
     <div
+      ref={cardRef}
       className={`task-card task-card-linked ${isDragging ? 'dragging' : ''} ${isPaused ? 'task-card-paused' : ''} ${isSelected ? 'task-card-selected' : ''}`}
       style={{ borderLeftColor: statusColor }}
       draggable

@@ -492,6 +492,89 @@ async function start() {
     return { diff, from, to };
   });
 
+  // Save a plan version to the project's plans/ directory
+  app.post('/api/plans/save', async (request, reply) => {
+    const { content, title, versionNumber, versionDate, workingDir } = request.body || {};
+
+    if (!content || !content.trim()) {
+      return reply.status(400).send({ error: 'Plan content is required' });
+    }
+    if (!workingDir) {
+      return reply.status(400).send({ error: 'workingDir is required' });
+    }
+
+    const safeTitle = (title || 'plan').replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').slice(0, 60);
+    const versionLabel = versionNumber ? `v${versionNumber}` : 'current';
+    const dateStr = versionDate
+      ? new Date(versionDate).toISOString().replace(/[:.]/g, '-').slice(0, 16)
+      : new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+    const filename = `${safeTitle}_${versionLabel}_${dateStr}.md`;
+
+    const plansDir = path.join(workingDir, 'plans');
+    if (!fs.existsSync(plansDir)) {
+      fs.mkdirSync(plansDir, { recursive: true });
+    }
+
+    const planPath = path.join(plansDir, filename);
+    fs.writeFileSync(planPath, content, 'utf8');
+
+    return { success: true, path: planPath, filename };
+  });
+
+  // List saved plans in a project's plans/ directory
+  app.get('/api/saved-plans', async (request, reply) => {
+    const { workingDir } = request.query;
+    if (!workingDir) {
+      return reply.status(400).send({ error: 'workingDir query param is required' });
+    }
+
+    const plansDir = path.join(workingDir, 'plans');
+    if (!fs.existsSync(plansDir)) {
+      return { plans: [] };
+    }
+
+    try {
+      const files = fs.readdirSync(plansDir).filter(f => f.endsWith('.md'));
+      const plans = files.map(filename => {
+        const filePath = path.join(plansDir, filename);
+        const stat = fs.statSync(filePath);
+        const content = fs.readFileSync(filePath, 'utf8');
+        // Extract title from first h1 heading
+        const titleMatch = content.match(/^#\s+(.+)$/m);
+        const name = titleMatch ? titleMatch[1] : filename.replace(/\.md$/, '');
+        return {
+          filename,
+          name,
+          path: filePath,
+          content,
+          modifiedAt: stat.mtime.toISOString(),
+          size: stat.size
+        };
+      });
+      plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+      return { plans };
+    } catch (error) {
+      return reply.status(500).send({ error: `Failed to read plans: ${error.message}` });
+    }
+  });
+
+  // Delete a saved plan
+  app.delete('/api/saved-plans', async (request, reply) => {
+    const { path: filePath } = request.query;
+    if (!filePath) {
+      return reply.status(400).send({ error: 'path query param is required' });
+    }
+
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      return { success: true };
+    } catch (error) {
+      return reply.status(500).send({ error: `Failed to delete: ${error.message}` });
+    }
+  });
+
   // Settings API
 
   // Get current settings
@@ -992,19 +1075,15 @@ async function start() {
       return;
     }
 
-    // Don't auto-move on 'active' — it's too vague (fires on resume, generic output)
-    // Only 'thinking' and 'editing' should move to in_progress
+    // Don't auto-move on 'active' when already in_progress (prevents jitter from redraws).
+    // But DO allow 'active' to move back to in_progress from other stages (e.g. in_review).
     if (status === 'active' && targetStage === 'in_progress') {
-      // Keep any pending timer (e.g. waiting -> in_review) so active jitter
-      // from redraw/prompts doesn't cancel a valid transition.
-      return;
+      const sess = sessionManager.getSession(sessionId);
+      if (sess?.stage === 'in_progress') {
+        return;
+      }
     }
 
-    // Don't auto-move sessions BACK from in_review to in_progress
-    // User must manually drag if they want to move it back
-    if (session?.stage === 'in_review' && targetStage === 'in_progress') {
-      return;
-    }
 
     // Replace prior pending transition with the latest actionable status.
     if (existingTimer) {

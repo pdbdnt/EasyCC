@@ -103,7 +103,7 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
             className={`tab-btn ${activeTab === 'plans' ? 'active' : ''}`}
             onClick={() => setActiveTab('plans')}
           >
-            Plans ({session.plans?.length || 0})
+            Plans ({plans.length || session.plans?.length || 0})
           </button>
         </div>
 

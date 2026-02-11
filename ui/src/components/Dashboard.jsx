@@ -1,6 +1,7 @@
 import { useMemo, useEffect, useState } from 'react';
 import SessionCard from './SessionCard';
 import HintBadge from './HintBadge';
+import SavedPlansModal from './SavedPlansModal';
 
 // Extract the bottom-level directory name from a path
 function getDirectoryName(path) {
@@ -55,6 +56,7 @@ function Dashboard({
   onOpenSettings,
   onUpdateSession,
   onKillSession,
+  onResumeSession,
   connectionStatus,
   hintModeActive = false,
   typedChars = '',
@@ -65,6 +67,7 @@ function Dashboard({
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
+  const [savedPlansTarget, setSavedPlansTarget] = useState(null); // { dirName, workingDir }
 
   // Get hint codes from settings or use defaults
   const newSessionHint = hintCodes.newSession || 'ns';
@@ -75,6 +78,16 @@ function Dashboard({
     if (!kanbanColumnFilter) return sessions;
     return sessions.filter(s => s.stage === kanbanColumnFilter);
   }, [sessions, kanbanColumnFilter]);
+
+  // Total sessions per directory (unfiltered) for showing "filtered/total" counts
+  const totalsByDir = useMemo(() => {
+    const totals = new Map();
+    sessions.forEach(session => {
+      const dirName = getDirectoryName(session.workingDir);
+      totals.set(dirName, (totals.get(dirName) || 0) + 1);
+    });
+    return totals;
+  }, [sessions]);
 
   // Group sessions by their working directory with directory-based hint codes
   const groupedSessions = useMemo(() => {
@@ -88,9 +101,17 @@ function Dashboard({
       groups.get(dirName).push({ session, globalIndex: index });
     });
 
-    // Within each group, show Claude sessions first and Codex sessions last.
+    // Within each group, sort sessions.
+    // When kanban filter is active, sort by stageEnteredAt (most recent first).
+    // Otherwise, show Claude sessions first, Codex last, then by insertion order.
     for (const [, sessionsInGroup] of groups) {
       sessionsInGroup.sort((a, b) => {
+        if (kanbanColumnFilter) {
+          // Most recently entered stage first
+          const aTime = a.session.stageEnteredAt ? new Date(a.session.stageEnteredAt).getTime() : 0;
+          const bTime = b.session.stageEnteredAt ? new Date(b.session.stageEnteredAt).getTime() : 0;
+          if (aTime !== bTime) return bTime - aTime;
+        }
         const aCodex = a.session.cliType === 'codex' ? 1 : 0;
         const bCodex = b.session.cliType === 'codex' ? 1 : 0;
         if (aCodex !== bCodex) {
@@ -220,9 +241,43 @@ function Dashboard({
                 <span className={`session-group-chevron ${collapsedGroups.has(dirName) ? 'collapsed' : ''}`}>▾</span>
                 <span className="session-group-icon">📁</span>
                 <span className="session-group-name">{dirName}</span>
-                <span className="session-group-count">{sessionsInGroup.length}</span>
+                <span className="session-group-count">
+                  {kanbanColumnFilter
+                    ? `${sessionsInGroup.length}/${totalsByDir.get(dirName) || 0}`
+                    : sessionsInGroup.length}
+                </span>
                 {hintModeActive && (
                   <span className="session-group-hint">{hintLetter}</span>
+                )}
+                <button
+                  className="group-gear-btn"
+                  title={`Saved plans for ${dirName}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const workingDir = sessionsInGroup[0]?.session?.workingDir;
+                    if (workingDir) {
+                      setSavedPlansTarget({ dirName, workingDir });
+                    }
+                  }}
+                >
+                  ⚙
+                </button>
+                {onResumeSession && sessionsInGroup.some(s => s.session.status === 'paused') && (
+                  <button
+                    className="group-resume-btn"
+                    title={`Resume all paused sessions in ${dirName}`}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const pausedIds = sessionsInGroup
+                        .filter(s => s.session.status === 'paused')
+                        .map(s => s.session.id);
+                      for (const id of pausedIds) {
+                        await onResumeSession(id);
+                      }
+                    }}
+                  >
+                    ▶
+                  </button>
                 )}
                 {onKillSession && (
                   <button
@@ -240,20 +295,25 @@ function Dashboard({
                   </button>
                 )}
               </button>
-              {!collapsedGroups.has(dirName) && sessionsInGroup.map(({ session, globalIndex, hintCode }) => (
-                <SessionCard
-                  key={session.id}
-                  session={session}
-                  index={globalIndex}
-                  isSelected={session.id === selectedId}
-                  onSelect={() => onSelectSession(session.id)}
-                  onShowDetails={onShowDetails}
-                  onUpdate={onUpdateSession}
-                  hintModeActive={hintModeActive}
-                  typedChars={typedChars}
-                  hintCode={hintCode}
-                />
-              ))}
+              {!collapsedGroups.has(dirName) && sessionsInGroup.map(({ session, globalIndex, hintCode }) => {
+                const recentlyEntered = kanbanColumnFilter && session.stageEnteredAt &&
+                  (Date.now() - new Date(session.stageEnteredAt).getTime()) < 10 * 60 * 1000;
+                return (
+                  <SessionCard
+                    key={session.id}
+                    session={session}
+                    index={globalIndex}
+                    isSelected={session.id === selectedId}
+                    onSelect={() => onSelectSession(session.id)}
+                    onShowDetails={onShowDetails}
+                    onUpdate={onUpdateSession}
+                    hintModeActive={hintModeActive}
+                    typedChars={typedChars}
+                    hintCode={hintCode}
+                    isRecentlyEntered={!!recentlyEntered}
+                  />
+                );
+              })}
             </div>
           ))
         )}
@@ -265,14 +325,14 @@ function Dashboard({
          'Disconnected'}
       </div>
       {killGroupTarget && (
-        <div className="modal-overlay" onClick={() => setKillGroupTarget(null)}>
+        <div className="modal-overlay" onClick={() => setKillGroupTarget(null)} onKeyDown={e => { if (e.key === 'Escape') setKillGroupTarget(null); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h2>Kill All Sessions?</h2>
             <p className="settings-description">
               This will kill <strong>{killGroupTarget.sessionIds.length}</strong> session{killGroupTarget.sessionIds.length > 1 ? 's' : ''} in <strong>{killGroupTarget.dirName}</strong>.
             </p>
             <div className="modal-actions">
-              <button className="btn btn-secondary" onClick={() => setKillGroupTarget(null)}>
+              <button className="btn btn-secondary" onClick={() => setKillGroupTarget(null)} autoFocus>
                 Cancel
               </button>
               <button
@@ -289,6 +349,13 @@ function Dashboard({
             </div>
           </div>
         </div>
+      )}
+      {savedPlansTarget && (
+        <SavedPlansModal
+          workingDir={savedPlansTarget.workingDir}
+          dirName={savedPlansTarget.dirName}
+          onClose={() => setSavedPlansTarget(null)}
+        />
       )}
     </>
   );

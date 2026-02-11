@@ -588,7 +588,7 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
                   </div>
                   {isExpanded && (
                     <div className="plan-content-expanded">
-                      <PlanViewer plan={plan} compact={true} />
+                      <PlanViewer plan={plan} compact={true} workingDir={session?.workingDir} />
                     </div>
                   )}
                 </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-function PlanViewer({ plan, compact = false }) {
+function PlanViewer({ plan, compact = false, workingDir = null }) {
   const [versions, setVersions] = useState([]);
   const [currentVersionIndex, setCurrentVersionIndex] = useState(null);
   const [versionContent, setVersionContent] = useState(null);
@@ -8,6 +8,7 @@ function PlanViewer({ plan, compact = false }) {
   const [diff, setDiff] = useState(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [allExpanded, setAllExpanded] = useState(null); // null=default, true=all open, false=all closed
 
   if (!plan) return null;
@@ -29,7 +30,7 @@ function PlanViewer({ plan, compact = false }) {
     };
 
     fetchVersions();
-  }, [plan.filename]);
+  }, [plan.filename, plan.modifiedAt]);
 
   // Fetch version content when currentVersionIndex changes
   useEffect(() => {
@@ -116,6 +117,37 @@ function PlanViewer({ plan, compact = false }) {
     }
   };
 
+  const handleSavePlan = async () => {
+    const content = currentVersionIndex === null ? plan.content : versionContent;
+    if (!content || !workingDir) return;
+
+    // Extract title from first h1
+    const titleMatch = content.match(/^#\s+(.+)$/m);
+    const title = titleMatch ? titleMatch[1] : plan.name || 'plan';
+
+    // Version info
+    const versionNumber = currentVersionIndex === null
+      ? null
+      : versions.length - currentVersionIndex;
+    const versionDate = currentVersionIndex !== null && versions[currentVersionIndex]
+      ? versions[currentVersionIndex].savedAt || versions[currentVersionIndex].timestamp
+      : null;
+
+    try {
+      const response = await fetch('/api/plans/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, title, versionNumber, versionDate, workingDir })
+      });
+      if (response.ok) {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      }
+    } catch (err) {
+      console.error('Failed to save plan:', err);
+    }
+  };
+
   const handleToggleExpandAll = () => {
     setAllExpanded(prev => prev === true ? false : true);
   };
@@ -160,6 +192,16 @@ function PlanViewer({ plan, compact = false }) {
             >
               Current
             </button>
+            {workingDir && (
+              <button
+                className={`btn-small ${saved ? 'btn-saved' : ''}`}
+                onClick={handleSavePlan}
+                disabled={!displayContent || saved}
+                title="Save this version to project plans"
+              >
+                {saved ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
+              </button>
+            )}
           </div>
 
           <div className="version-nav-center">

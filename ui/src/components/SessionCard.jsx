@@ -10,7 +10,8 @@ function SessionCard({
   onUpdate,
   hintModeActive = false,
   typedChars = '',
-  hintCode = ''
+  hintCode = '',
+  isRecentlyEntered = false
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(session.name);
@@ -71,7 +72,7 @@ function SessionCard({
 
   return (
     <div
-      className={`session-card ${isSelected ? 'selected' : ''} ${isPaused ? 'paused' : ''}`}
+      className={`session-card ${isSelected ? 'selected' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}`}
       onClick={onSelect}
     >
       {hintCode && (
