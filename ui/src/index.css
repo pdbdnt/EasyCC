@@ -205,6 +205,16 @@ body {
   border: 1px solid #4dff7c;
 }
 
+.stage-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  border: 1px solid;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* CLI Type Selector in Context Sidebar */
 .cli-type-selector-row {
   display: flex;

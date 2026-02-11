@@ -502,15 +502,37 @@ function App() {
       // Ctrl+O: toggle between sessions and kanban views
       if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        setCurrentView(prev => prev === 'sessions' ? 'kanban' : 'sessions');
+        setCurrentView(prev => {
+          if (prev === 'kanban') {
+            // Switching to sessions — set filter to selected session's column
+            if (selectedId) {
+              const stageId = stages.find(stage =>
+                (sessionsByStage[stage.id] || []).some(s => s.id === selectedId)
+              )?.id;
+              setKanbanColumnFilter(stageId || null);
+            }
+            return 'sessions';
+          }
+          // Switching to kanban — clear filter
+          setKanbanColumnFilter(null);
+          return 'kanban';
+        });
         return;
       }
 
-      // Arrow keys for kanban navigation (bare arrows, no modifiers)
+      // Arrow keys + Enter for kanban navigation (bare keys, no modifiers)
       if (currentView === 'kanban' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
         if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
           e.preventDefault();
           navigateKanban(e.key);
+          return;
+        }
+        if (e.key === 'Enter' && selectedId) {
+          e.preventDefault();
+          const stageId = stages.find(stage =>
+            (sessionsByStage[stage.id] || []).some(s => s.id === selectedId)
+          )?.id;
+          handleSessionSelectFromKanban(selectedId, stageId);
           return;
         }
       }
@@ -591,7 +613,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [closeFocusedPane, createSplitPane, hintModeActive, focusedPanel, navigatePanes, navigateSession, navigateGroup, requestCloseCurrentSession, currentView, navigateKanban]);
+  }, [closeFocusedPane, createSplitPane, hintModeActive, focusedPanel, navigatePanes, navigateSession, navigateGroup, requestCloseCurrentSession, currentView, navigateKanban, selectedId, stages, sessionsByStage, handleSessionSelectFromKanban, setKanbanColumnFilter]);
 
   const handleSessionsResize = useCallback((delta) => {
     setSessionsWidth(w => Math.max(200, Math.min(400, w + delta)));
@@ -704,6 +726,7 @@ function App() {
           onGroupedSessionsChange={setGroupedSessions}
           kanbanColumnFilter={kanbanColumnFilter}
           onClearKanbanFilter={handleClearKanbanFilter}
+          stages={stages}
         />
       </aside>
       <ResizeHandle onResize={handleSessionsResize} />

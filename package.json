@@ -16,7 +16,8 @@
     "package": "npm run build && electron-builder --win --x64",
     "install:all": "npm install && cd backend && npm install && cd ../ui && npm install",
     "rebuild": "electron-rebuild -f -w node-pty",
-    "postinstall": "electron-rebuild -f -w node-pty"
+    "postinstall": "electron-rebuild -f -w node-pty",
+    "create-shortcut": "powershell -ExecutionPolicy Bypass -File ./create-shortcut.ps1"
   },
   "keywords": [
     "claude",

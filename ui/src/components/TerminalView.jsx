@@ -322,6 +322,13 @@ const TerminalView = forwardRef(function TerminalView({
         return false;
       }
 
+      // Ctrl+=/Ctrl+-: Electron zoom (must bubble to native handler)
+      if (event.ctrlKey && !event.altKey && !event.metaKey &&
+          (event.key === '=' || event.key === '+' || event.key === '-' || event.key === '_' ||
+           event.code === 'NumpadAdd' || event.code === 'NumpadSubtract')) {
+        return false;
+      }
+
       return true;
     });
 

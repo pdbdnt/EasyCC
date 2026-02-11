@@ -11,7 +11,8 @@ function SessionCard({
   hintModeActive = false,
   typedChars = '',
   hintCode = '',
-  isRecentlyEntered = false
+  isRecentlyEntered = false,
+  stages = []
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(session.name);
@@ -69,6 +70,7 @@ function SessionCard({
   };
 
   const isPaused = session.status === 'paused';
+  const currentStage = stages.find(s => s.id === session.stage);
 
   return (
     <div
@@ -142,6 +144,18 @@ function SessionCard({
       )}
 
       <div className="session-footer">
+        {currentStage && (
+          <span
+            className="stage-badge"
+            style={{
+              backgroundColor: currentStage.color + '22',
+              color: currentStage.color,
+              borderColor: currentStage.color + '55'
+            }}
+          >
+            {currentStage.name}
+          </span>
+        )}
         <div className="session-time">
           {isPaused ? 'Paused' : `Last activity: ${getRelativeTime(session.lastActivity)}`}
         </div>

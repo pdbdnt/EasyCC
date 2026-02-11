@@ -63,7 +63,8 @@ function Dashboard({
   hintCodes = {},
   onGroupedSessionsChange,
   kanbanColumnFilter = null,
-  onClearKanbanFilter
+  onClearKanbanFilter,
+  stages = []
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
@@ -311,6 +312,7 @@ function Dashboard({
                     typedChars={typedChars}
                     hintCode={hintCode}
                     isRecentlyEntered={!!recentlyEntered}
+                    stages={stages}
                   />
                 );
               })}

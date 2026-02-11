@@ -9,7 +9,7 @@
  * - Graceful shutdown
  */
 
-const { app, BrowserWindow, Tray, Menu, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, shell, dialog } = require('electron');
 const path = require('path');
 
 let mainWindow = null;
@@ -36,7 +36,6 @@ async function startBackend() {
   } catch (error) {
     console.error('[Electron] Failed to start backend:', error);
     // Show error dialog and quit
-    const { dialog } = require('electron');
     dialog.showErrorBox(
       'Failed to Start Server',
       `Could not start the backend server. Please check if port 5010 is already in use.\n\nError: ${error.message}`
@@ -146,9 +145,24 @@ function createTray() {
     },
     {
       label: 'Quit',
-      click: () => {
-        app.isQuitting = true;
-        app.quit();
+      click: async () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+        const { response } = await dialog.showMessageBox(mainWindow, {
+          type: 'question',
+          buttons: ['Yes', 'No'],
+          defaultId: 1,
+          cancelId: 1,
+          title: 'Quit Claude Manager',
+          message: 'Are you sure you want to quit Claude Manager?',
+          detail: 'All active sessions will continue running in their terminals.'
+        });
+        if (response === 0) {
+          app.isQuitting = true;
+          app.quit();
+        }
       }
     }
   ]);
@@ -180,6 +194,30 @@ app.whenReady().then(async () => {
 
   // Set application menu with reload shortcuts
   const menuTemplate = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Quit',
+          accelerator: 'CmdOrCtrl+Q',
+          click: async () => {
+            const { response } = await dialog.showMessageBox(mainWindow, {
+              type: 'question',
+              buttons: ['Yes', 'No'],
+              defaultId: 1,
+              cancelId: 1,
+              title: 'Quit Claude Manager',
+              message: 'Are you sure you want to quit Claude Manager?',
+              detail: 'All active sessions will continue running in their terminals.'
+            });
+            if (response === 0) {
+              app.isQuitting = true;
+              app.quit();
+            }
+          }
+        }
+      ]
+    },
     {
       label: 'View',
       submenu: [

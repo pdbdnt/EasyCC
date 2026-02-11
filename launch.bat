@@ -1,0 +1,6 @@
+@echo off
+cd /d "%~dp0"
+echo Building Claude Manager UI...
+call npm run build
+echo Starting Claude Manager...
+call npm start
