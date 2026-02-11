@@ -558,6 +558,24 @@ async function start() {
     }
   });
 
+  // Open a file or folder in the OS default application
+  app.post('/api/open-path', async (request, reply) => {
+    const { exec } = require('child_process');
+    const { filePath } = request.body || {};
+    if (!filePath) return reply.status(400).send({ error: 'filePath is required' });
+
+    const command = process.platform === 'win32'
+      ? `start "" "${filePath}"`
+      : process.platform === 'darwin'
+        ? `open "${filePath}"`
+        : `xdg-open "${filePath}"`;
+
+    exec(command, (err) => {
+      if (err) return reply.status(500).send({ error: err.message });
+      return reply.send({ success: true });
+    });
+  });
+
   // Delete a saved plan
   app.delete('/api/saved-plans', async (request, reply) => {
     const { path: filePath } = request.query;

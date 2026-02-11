@@ -43,6 +43,24 @@ function SavedPlansModal({ workingDir, dirName, onClose }) {
     }
   };
 
+  const openFolder = async () => {
+    const plansDir = workingDir + '\\plans';
+    await fetch('/api/open-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: plansDir })
+    });
+  };
+
+  const openInEditor = async (planPath, e) => {
+    e.stopPropagation();
+    await fetch('/api/open-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: planPath })
+    });
+  };
+
   const formatDate = (dateStr) => {
     const date = new Date(dateStr);
     return date.toLocaleDateString('en-US', {
@@ -55,7 +73,16 @@ function SavedPlansModal({ workingDir, dirName, onClose }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal saved-plans-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Saved Plans — {dirName}</h2>
+          <div className="saved-plans-title-row">
+            <h2>Saved Plans — {dirName}</h2>
+            <button
+              className="saved-plans-open-folder-btn"
+              title="Open plans folder in Explorer"
+              onClick={openFolder}
+            >
+              📁
+            </button>
+          </div>
           <button className="modal-close-btn" onClick={onClose}>✕</button>
         </div>
 
@@ -77,8 +104,18 @@ function SavedPlansModal({ workingDir, dirName, onClose }) {
                       onClick={() => setExpandedIndex(isExpanded ? null : index)}
                     >
                       <span className="expand-icon">{isExpanded ? '\u25BC' : '\u25B6'}</span>
-                      <span className="saved-plan-name">{plan.name}</span>
+                      <div className="saved-plan-info">
+                        <span className="saved-plan-name">{plan.name}</span>
+                        <span className="saved-plan-filename">{plan.filename}</span>
+                      </div>
                       <span className="saved-plan-date">{formatDate(plan.modifiedAt)}</span>
+                      <button
+                        className="saved-plan-open-btn"
+                        title="Open in editor"
+                        onClick={(e) => openInEditor(plan.path, e)}
+                      >
+                        📝
+                      </button>
                       <button
                         className="saved-plan-delete-btn"
                         title="Delete saved plan"
