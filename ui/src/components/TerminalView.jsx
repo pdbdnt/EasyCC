@@ -6,24 +6,12 @@ import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
 import '@xterm/xterm/css/xterm.css';
 
-const PROMPT_TAIL_SIZE = 500;
-
+// Fallback prompt patterns — only used when no Enter history exists (e.g., joining running session)
 const PROMPT_PATTERNS = [
-  />\s*$/,
-  /\?\s*$/,
-  /\$\s*$/,
-  /Ask Codex to do anything/i,
-  /Would you like to run/i,
-  /Implement this plan\?/i,
-  /\[Y\/n\]/i,
-  /\[y\/N\]/i,
+  /^>\s*$/,                    // Claude Code's bare ">" prompt
+  /^❯\s*$/,                   // Alternative prompt character
+  /^\$\s*$/,                  // Shell prompt
 ];
-
-function stripAnsi(text) {
-  return text
-    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-    .replace(/\x1b\][^\x07]*\x07/g, '');
-}
 
 function isPromptOutput(text) {
   return PROMPT_PATTERNS.some(p => p.test(text));
@@ -57,8 +45,8 @@ const TerminalView = forwardRef(function TerminalView({
   const keyboardSettingsRef = useRef(null);
   const [overrideKeys, setOverrideKeys] = useState(false);
   const overrideKeysRef = useRef(false);
-  const lastPromptLineRef = useRef(null);
-  const outputTailRef = useRef('');
+  const promptLinesRef = useRef([]);          // Array of line numbers where Enter was pressed
+  const lastScrolledIndexRef = useRef(null);  // Index into promptLinesRef for stepping
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -66,16 +54,6 @@ const TerminalView = forwardRef(function TerminalView({
       xtermRef.current?.focus();
     }
   }), []);
-
-  const trackPromptFromOutput = useCallback((rawText) => {
-    const stripped = stripAnsi(rawText);
-    outputTailRef.current = (outputTailRef.current + stripped).slice(-PROMPT_TAIL_SIZE);
-    const lastLine = outputTailRef.current.split(/\r?\n/).pop()?.trim() || '';
-    if (lastLine.length > 0 && isPromptOutput(lastLine)) {
-      const buf = xtermRef.current.buffer.active;
-      lastPromptLineRef.current = buf.baseY + buf.cursorY;
-    }
-  }, []);
 
   const connect = useCallback((sessionId) => {
     if (wsRef.current) {
@@ -102,9 +80,7 @@ const TerminalView = forwardRef(function TerminalView({
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'output' && xtermRef.current) {
-          xtermRef.current.write(data.data, () => {
-            trackPromptFromOutput(data.data);
-          });
+          xtermRef.current.write(data.data);
         } else if (data.type === 'status') {
           setSessionStatus(data.status);
         } else if (data.type === 'sessionEnded') {
@@ -116,9 +92,7 @@ const TerminalView = forwardRef(function TerminalView({
       } catch (error) {
         // Handle non-JSON messages (raw terminal output)
         if (xtermRef.current && typeof event.data === 'string') {
-          xtermRef.current.write(event.data, () => {
-            trackPromptFromOutput(event.data);
-          });
+          xtermRef.current.write(event.data);
         }
       }
     };
@@ -130,7 +104,7 @@ const TerminalView = forwardRef(function TerminalView({
     ws.onerror = (error) => {
       console.error('Terminal WebSocket error:', error);
     };
-  }, [trackPromptFromOutput]);
+  }, []);
 
   // Get terminal settings with defaults
   const terminalSettings = settings?.terminal || {
@@ -340,10 +314,17 @@ const TerminalView = forwardRef(function TerminalView({
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'input', data }));
       }
-      // Track prompt line when user presses Enter
+      // Track prompt positions on Enter
       if (data.includes('\r') || data.includes('\n')) {
         const buf = term.buffer.active;
-        lastPromptLineRef.current = buf.baseY + buf.cursorY;
+        const line = buf.baseY + buf.cursorY;
+        // Avoid duplicates for same line
+        const lastRecorded = promptLinesRef.current[promptLinesRef.current.length - 1];
+        if (lastRecorded !== line) {
+          promptLinesRef.current.push(line);
+        }
+        // Reset scroll stepping when new prompt is added
+        lastScrolledIndexRef.current = null;
       }
     });
 
@@ -390,8 +371,8 @@ const TerminalView = forwardRef(function TerminalView({
       currentSessionId.current = session.id;
 
       // Clear terminal and prompt tracking for new session
-      lastPromptLineRef.current = null;
-      outputTailRef.current = '';
+      promptLinesRef.current = [];
+      lastScrolledIndexRef.current = null;
       if (xtermRef.current) {
         xtermRef.current.clear();
       }
@@ -420,9 +401,26 @@ const TerminalView = forwardRef(function TerminalView({
 
   const scrollToLastPrompt = useCallback(() => {
     if (!xtermRef.current) return;
-    if (lastPromptLineRef.current !== null) {
-      xtermRef.current.scrollToLine(lastPromptLineRef.current);
+    const prompts = promptLinesRef.current;
+
+    if (prompts.length > 0) {
+      // Jump to the most recent prompt
+      const lastIdx = prompts.length - 1;
+      xtermRef.current.scrollToLine(prompts[lastIdx]);
+      lastScrolledIndexRef.current = lastIdx;
     } else {
+      // Fallback: search buffer for prompt patterns (e.g., joined a running session)
+      const buf = xtermRef.current.buffer.active;
+      const totalLines = buf.baseY + buf.cursorY;
+      for (let i = totalLines; i >= 0; i--) {
+        const bufLine = buf.getLine(i);
+        if (!bufLine) continue;
+        const text = bufLine.translateToString(true).trim();
+        if (text.length > 0 && isPromptOutput(text)) {
+          xtermRef.current.scrollToLine(i);
+          return;
+        }
+      }
       xtermRef.current.scrollToBottom();
     }
   }, []);
@@ -466,17 +464,44 @@ const TerminalView = forwardRef(function TerminalView({
         return;
       }
 
-      // Ctrl+Up: scroll to last prompt
+      // Ctrl+Up: step backwards through prompt history
       if (event.ctrlKey && event.key === 'ArrowUp' && !event.altKey && !event.shiftKey) {
         event.preventDefault();
-        scrollToLastPrompt();
+        const prompts = promptLinesRef.current;
+        if (prompts.length === 0) {
+          scrollToLastPrompt(); // tries buffer-search fallback
+          return;
+        }
+
+        let idx;
+        if (lastScrolledIndexRef.current !== null && lastScrolledIndexRef.current > 0) {
+          idx = lastScrolledIndexRef.current - 1;
+        } else if (lastScrolledIndexRef.current === null) {
+          idx = prompts.length - 1;
+        } else {
+          return; // Already at the oldest prompt
+        }
+
+        xtermRef.current.scrollToLine(prompts[idx]);
+        lastScrolledIndexRef.current = idx;
         return;
       }
 
-      // Ctrl+Down: scroll to bottom
+      // Ctrl+Down: step forwards through prompt history / scroll to bottom
       if (event.ctrlKey && event.key === 'ArrowDown' && !event.altKey && !event.shiftKey) {
         event.preventDefault();
-        xtermRef.current?.scrollToBottom();
+        const prompts = promptLinesRef.current;
+
+        if (lastScrolledIndexRef.current !== null && lastScrolledIndexRef.current < prompts.length - 1) {
+          // Step to next prompt
+          const idx = lastScrolledIndexRef.current + 1;
+          xtermRef.current.scrollToLine(prompts[idx]);
+          lastScrolledIndexRef.current = idx;
+        } else {
+          // At most recent prompt or no history — scroll to bottom
+          xtermRef.current?.scrollToBottom();
+          lastScrolledIndexRef.current = null;
+        }
         return;
       }
 

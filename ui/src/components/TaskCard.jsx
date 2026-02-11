@@ -9,7 +9,8 @@ function TaskCard({
   onSessionSelect,
   selectedSessionId,
   stageId,
-  onResetPlacement
+  onResetPlacement,
+  onLockPlacement
 }) {
   const isSelected = session.id === selectedSessionId;
   const cardRef = useRef(null);
@@ -117,18 +118,20 @@ function TaskCard({
         <span className="task-card-status">
           {getStatusEmoji(session.status)} {session.status}
         </span>
-        {session.manuallyPlaced && (
-          <span
-            className="task-manual-badge clickable"
-            title="Manually placed — click to unlock"
-            onClick={(e) => {
-              e.stopPropagation();
+        <button
+          className={`btn-icon task-lock-btn ${session.manuallyPlaced ? 'locked' : ''}`}
+          title={session.manuallyPlaced ? 'Locked to column — click to unlock' : 'Lock to this column'}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (session.manuallyPlaced) {
               onResetPlacement?.(session.id);
-            }}
-          >
-            📌
-          </span>
-        )}
+            } else {
+              onLockPlacement?.(session.id);
+            }
+          }}
+        >
+          {session.manuallyPlaced ? '🔒' : '🔓'}
+        </button>
         {session.priority > 0 && (
           <span className={`task-priority ${session.priority >= 3 ? 'priority-critical' : session.priority >= 2 ? 'priority-high' : 'priority-medium'}`}>
             {session.priority >= 3 ? 'C' : session.priority >= 2 ? 'H' : 'M'}

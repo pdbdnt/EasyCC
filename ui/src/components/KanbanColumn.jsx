@@ -12,7 +12,8 @@ function KanbanColumn({
   draggingSessionId,
   onSessionSelect,
   selectedSessionId,
-  onResetPlacement
+  onResetPlacement,
+  onLockPlacement
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -132,6 +133,7 @@ function KanbanColumn({
                   selectedSessionId={selectedSessionId}
                   stageId={stage.id}
                   onResetPlacement={onResetPlacement}
+                  onLockPlacement={onLockPlacement}
                 />
               ))}
             </div>

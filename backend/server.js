@@ -727,6 +727,21 @@ async function start() {
     }
   });
 
+  // Lock session to current column
+  app.post('/api/sessions/:id/lock-placement', async (request, reply) => {
+    const { id } = request.params;
+
+    try {
+      const session = sessionManager.lockPlacement(id);
+      return { session };
+    } catch (error) {
+      if (error.message.includes('not found')) {
+        return reply.status(404).send({ error: error.message });
+      }
+      return reply.status(500).send({ error: error.message });
+    }
+  });
+
   // Reset manual placement
   app.post('/api/sessions/:id/reset-placement', async (request, reply) => {
     const { id } = request.params;

@@ -1941,6 +1941,22 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Lock session to its current column (prevent auto-sync)
+   */
+  lockPlacement(id) {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session not found: ${id}`);
+
+    session.manuallyPlaced = true;
+    session.manualPlacedAt = new Date().toISOString();
+    session.updatedAt = new Date().toISOString();
+
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    return this.getSessionSnapshot(session);
+  }
+
+  /**
    * Reset manual placement lock
    */
   resetManualPlacement(id) {

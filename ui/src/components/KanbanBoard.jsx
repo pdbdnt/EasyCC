@@ -62,6 +62,19 @@ function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSe
     }
   };
 
+  const handleLockPlacement = async (sessionId) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/lock-placement`, { method: 'POST' });
+      if (res.ok) {
+        addToast?.('Locked to column', 'success');
+      } else {
+        addToast?.('Failed to lock', 'error');
+      }
+    } catch (err) {
+      addToast?.('Failed to lock', 'error');
+    }
+  };
+
   const handleResetPlacement = async (sessionId) => {
     try {
       const res = await fetch(`/api/sessions/${sessionId}/reset-placement`, { method: 'POST' });
@@ -176,6 +189,7 @@ function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSe
             onSessionSelect={onSessionSelect}
             selectedSessionId={selectedSessionId}
             onResetPlacement={handleResetPlacement}
+            onLockPlacement={handleLockPlacement}
           />
         ))}
       </div>

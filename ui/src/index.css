@@ -3399,18 +3399,22 @@ textarea::placeholder {
   box-shadow: 0 0 0 1px var(--accent-blue);
 }
 
-.task-manual-badge {
-  font-size: 11px;
-  cursor: help;
-}
-
-.task-manual-badge.clickable {
-  cursor: pointer;
+.task-lock-btn {
+  font-size: 0.7rem;
+  padding: 0 2px;
+  opacity: 0.3;
   transition: opacity 0.15s;
+  cursor: pointer;
+  background: none;
+  border: none;
 }
 
-.task-manual-badge.clickable:hover {
-  opacity: 0.6;
+.task-lock-btn.locked {
+  opacity: 1;
+}
+
+.task-card:hover .task-lock-btn {
+  opacity: 0.8;
 }
 
 /* Kanban project subheader within columns */
