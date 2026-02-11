@@ -4,7 +4,9 @@ import { useWebSocket } from './useWebSocket';
 export function useSessions() {
   const [sessions, setSessions] = useState([]);
   const [stages, setStages] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  // Derived compat field — last selected is the "primary" for context sidebar etc.
+  const selectedId = selectedIds[selectedIds.length - 1] || null;
   const [connectionStatus, setConnectionStatus] = useState('connecting');
 
   // Fetch stages on mount
@@ -32,9 +34,9 @@ export function useSessions() {
       case 'init':
         setSessions(data.sessions || []);
         // Auto-select first session if none selected
-        setSelectedId(prev => {
-          if (!prev && data.sessions?.length > 0) {
-            return data.sessions[0].id;
+        setSelectedIds(prev => {
+          if (prev.length === 0 && data.sessions?.length > 0) {
+            return [data.sessions[0].id];
           }
           return prev;
         });
@@ -85,12 +87,14 @@ export function useSessions() {
       case 'sessionEnded':
         setSessions(prev => {
           const newSessions = prev.filter(s => s.id !== data.sessionId);
-          // If we were viewing the killed session, select another one
-          if (selectedId === data.sessionId && newSessions.length > 0) {
-            setSelectedId(newSessions[0].id);
-          } else if (selectedId === data.sessionId) {
-            setSelectedId(null);
-          }
+          // Prune deleted session from selection
+          setSelectedIds(prevIds => {
+            const next = prevIds.filter(id => id !== data.sessionId);
+            if (next.length === 0 && newSessions.length > 0) {
+              return [newSessions[0].id];
+            }
+            return next;
+          });
           return newSessions;
         });
         break;
@@ -115,7 +119,15 @@ export function useSessions() {
   });
 
   const selectSession = useCallback((id) => {
-    setSelectedId(id);
+    setSelectedIds([id]);
+  }, []);
+
+  const toggleSelectSession = useCallback((id) => {
+    setSelectedIds(prev => {
+      const idx = prev.indexOf(id);
+      if (idx >= 0) return prev.filter(x => x !== id);
+      return [...prev, id];
+    });
   }, []);
 
   const createSession = useCallback(async (name, workingDir, cliType = 'claude', options = {}) => {
@@ -135,7 +147,7 @@ export function useSessions() {
       const { session } = await response.json();
       setSessions(prev => [...prev, session]);
       if (select) {
-        setSelectedId(session.id);
+        setSelectedIds([session.id]);
       }
       return session;
     } catch (error) {
@@ -314,7 +326,9 @@ export function useSessions() {
     stages,
     sessionsByStage,
     selectedId,
+    selectedIds,
     selectSession,
+    toggleSelectSession,
     createSession,
     killSession,
     pauseSession,
@@ -325,7 +339,7 @@ export function useSessions() {
     rejectSession,
     connectionStatus,
     isConnected
-  }), [sessions, stages, sessionsByStage, selectedId, selectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
+  }), [sessions, stages, sessionsByStage, selectedId, selectedIds, selectSession, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
 }
 
 export default useSessions;

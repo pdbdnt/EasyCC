@@ -18,6 +18,14 @@ import { registerHint, unregisterHint } from './utils/hintRegistry';
 
 const makePaneId = () => `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+function getGridLayout(count) {
+  if (count <= 1) return { cols: 1, rows: 1 };
+  if (count === 2) return { cols: 2, rows: 1 };
+  if (count <= 4) return { cols: 2, rows: Math.ceil(count / 2) };
+  if (count <= 6) return { cols: 3, rows: Math.ceil(count / 3) };
+  return { cols: 4, rows: Math.ceil(count / 4) };
+}
+
 const PANE_LAYOUT_KEY = 'claude-manager-pane-layout';
 
 function loadPaneLayout() {
@@ -71,7 +79,9 @@ function App() {
     stages,
     sessionsByStage,
     selectedId,
+    selectedIds,
     selectSession,
+    toggleSelectSession,
     createSession,
     killSession,
     pauseSession,
@@ -96,11 +106,13 @@ function App() {
   const [pendingCloseSessionId, setPendingCloseSessionId] = useState(null);
   const [paneSizes, setPaneSizes] = useState([]); // flex ratios for each pane
   const [kanbanColumnFilter, setKanbanColumnFilter] = useState(null); // stage ID filter from kanban
+  const [multiPaneLayout, setMultiPaneLayout] = useState('auto'); // 'auto' | 'row' | 'column'
 
   // Refs for focus management
   const contextRef = useRef(null);
   const paneRefs = useRef(new Map());
   const closingSessionRef = useRef(false);
+  const wasMultiSelectRef = useRef(false);
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -168,39 +180,66 @@ function App() {
     });
   }, [paneLayout]);
 
-  // Keep pane session references in sync with selected session list.
+  // Consolidated pane sync: keeps panes in sync with selection and session list.
   useEffect(() => {
     if (currentView !== 'sessions') return;
     const validSessionIds = new Set(sessions.map(s => s.id));
-    setTerminalPanes(prev => {
-      const next = prev.filter(pane => validSessionIds.has(pane.sessionId));
-      if (next.length > 0) {
-        return next;
-      }
-      if (selectedId && validSessionIds.has(selectedId)) {
-        return [{ id: makePaneId(), sessionId: selectedId }];
-      }
-      if (sessions.length > 0) {
-        return [{ id: makePaneId(), sessionId: sessions[0].id }];
-      }
-      return [];
-    });
-  }, [sessions, selectedId, currentView]);
 
-  // Keep selected session visible in a pane.
-  useEffect(() => {
-    if (currentView !== 'sessions' || !selectedId) return;
-    setTerminalPanes(prev => {
-      if (prev.length === 0) return prev;
-      if (prev.some(pane => pane.sessionId === selectedId)) return prev;
-      const targetPaneId = activePaneId && prev.some(p => p.id === activePaneId)
-        ? activePaneId
-        : prev[0].id;
-      return prev.map(pane =>
-        pane.id === targetPaneId ? { ...pane, sessionId: selectedId } : pane
-      );
-    });
-  }, [selectedId, activePaneId, currentView]);
+    if (selectedIds.length > 1) {
+      wasMultiSelectRef.current = true;
+      // Multi-select mode: build panes from selectedIds
+      const validSelected = selectedIds.filter(id => validSessionIds.has(id));
+      if (validSelected.length === 0) {
+        setTerminalPanes([]);
+        return;
+      }
+      setTerminalPanes(prev => {
+        return validSelected.map(sid => {
+          const existing = prev.find(p => p.sessionId === sid);
+          return existing || { id: makePaneId(), sessionId: sid };
+        });
+      });
+    } else {
+      // Transitioning from multi to single: collapse to one pane
+      if (wasMultiSelectRef.current) {
+        wasMultiSelectRef.current = false;
+        const singleId = selectedIds[0] || (sessions.length > 0 ? sessions[0].id : null);
+        if (!singleId || !validSessionIds.has(singleId)) {
+          if (sessions.length > 0) {
+            setTerminalPanes([{ id: makePaneId(), sessionId: sessions[0].id }]);
+          } else {
+            setTerminalPanes([]);
+          }
+          return;
+        }
+        setTerminalPanes(prev => {
+          const existing = prev.find(p => p.sessionId === singleId);
+          return [existing || { id: makePaneId(), sessionId: singleId }];
+        });
+        return;
+      }
+
+      // Normal single-select mode (preserves split panes)
+      const singleId = selectedIds[0] || (sessions.length > 0 ? sessions[0].id : null);
+      if (!singleId || !validSessionIds.has(singleId)) {
+        setTerminalPanes(prev => {
+          const next = prev.filter(p => validSessionIds.has(p.sessionId));
+          if (next.length > 0) return next;
+          if (sessions.length > 0) return [{ id: makePaneId(), sessionId: sessions[0].id }];
+          return [];
+        });
+        return;
+      }
+      setTerminalPanes(prev => {
+        const valid = prev.filter(p => validSessionIds.has(p.sessionId));
+        if (valid.length === 0) return [{ id: makePaneId(), sessionId: singleId }];
+        if (valid.some(p => p.sessionId === singleId)) return valid;
+        const targetPaneId = activePaneId && valid.some(p => p.id === activePaneId)
+          ? activePaneId : valid[0].id;
+        return valid.map(p => p.id === targetPaneId ? { ...p, sessionId: singleId } : p);
+      });
+    }
+  }, [selectedIds, sessions, currentView, activePaneId]);
 
   useEffect(() => {
     if (terminalPanes.length === 0) {
@@ -295,10 +334,12 @@ function App() {
     }
     const newPane = terminalPanes[newIndex];
     setActivePaneId(newPane.id);
-    selectSession(newPane.sessionId);
+    if (selectedIds.length <= 1) {
+      selectSession(newPane.sessionId);
+    }
     setFocusedPanel('terminal');
     setTimeout(() => paneRefs.current.get(newPane.id)?.focus?.(), 0);
-  }, [activePaneId, selectSession, terminalPanes]);
+  }, [activePaneId, selectSession, selectedIds, terminalPanes]);
 
   const handleConfirmCloseCurrentSession = useCallback(async () => {
     if (!pendingCloseSessionId) return;
@@ -746,7 +787,9 @@ function App() {
         <Dashboard
           sessions={sessions}
           selectedId={selectedId}
+          selectedIds={selectedIds}
           onSelectSession={selectSession}
+          onToggleSelectSession={toggleSelectSession}
           onNewSession={() => setShowNewSessionModal(true)}
           onShowDetails={handleShowDetails}
           onOpenSettings={() => setShowSettingsModal(true)}
@@ -824,16 +867,39 @@ function App() {
           position="top-left"
           typedChars={typedChars}
         />
+        {selectedIds.length > 1 && (
+          <div className="multi-pane-layout-toggle">
+            <button onClick={() => setMultiPaneLayout('auto')}
+                    className={multiPaneLayout === 'auto' ? 'active' : ''} title="Auto grid">&#8862;</button>
+            <button onClick={() => setMultiPaneLayout('row')}
+                    className={multiPaneLayout === 'row' ? 'active' : ''} title="Side by side">|||</button>
+            <button onClick={() => setMultiPaneLayout('column')}
+                    className={multiPaneLayout === 'column' ? 'active' : ''} title="Stacked">&#8801;</button>
+            <span className="multi-pane-count">{selectedIds.length} sessions</span>
+          </div>
+        )}
         {terminalPanes.length > 0 ? (
-          <div className={`terminal-panes terminal-panes-${paneLayout}`}>
+          <div className={`terminal-panes ${
+            selectedIds.length > 1
+              ? (multiPaneLayout === 'auto' ? 'terminal-panes-grid' :
+                 multiPaneLayout === 'row' ? 'terminal-panes-row' : 'terminal-panes-column')
+              : `terminal-panes-${paneLayout}`
+          }`}
+          style={selectedIds.length > 1 && multiPaneLayout === 'auto' ? {
+            gridTemplateColumns: `repeat(${getGridLayout(terminalPanes.length).cols}, 1fr)`,
+            gridTemplateRows: `repeat(${getGridLayout(terminalPanes.length).rows}, 1fr)`,
+          } : undefined}
+          >
             {terminalPanes.map((pane, index) => {
               const paneSession = sessions.find(s => s.id === pane.sessionId);
               if (!paneSession) return null;
+              const isMultiMode = selectedIds.length > 1;
               const flexValue = paneSizes[index] || (1 / terminalPanes.length);
+              const showResizeHandle = !isMultiMode && index > 0;
 
               return (
                 <React.Fragment key={pane.id}>
-                  {index > 0 && (
+                  {showResizeHandle && (
                     <ResizeHandle
                       direction={paneLayout === 'row' ? 'vertical' : 'horizontal'}
                       onResize={(delta) => handlePaneResize(index - 1, delta)}
@@ -841,7 +907,7 @@ function App() {
                   )}
                   <div
                     className={`terminal-pane ${activePaneId === pane.id ? 'active' : ''}`}
-                    style={{ flex: flexValue }}
+                    style={isMultiMode ? undefined : { flex: flexValue }}
                   >
                     <TerminalView
                       ref={(instance) => {
@@ -865,7 +931,9 @@ function App() {
                       onFocus={() => {
                         setActivePaneId(pane.id);
                         setFocusedPanel('terminal');
-                        selectSession(paneSession.id);
+                        if (selectedIds.length <= 1) {
+                          selectSession(paneSession.id);
+                        }
                       }}
                     />
                   </div>

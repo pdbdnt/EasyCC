@@ -157,6 +157,22 @@ body {
   box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.3);
 }
 
+.session-card.multi-selected {
+  border-color: var(--accent-blue);
+  background: rgba(74, 158, 255, 0.08);
+  position: relative;
+}
+
+.session-card.multi-selected::after {
+  content: '\2713';
+  position: absolute;
+  top: 4px;
+  right: 24px;
+  font-size: 10px;
+  color: var(--accent-blue);
+  font-weight: bold;
+}
+
 .session-card.recently-entered {
   border-left: 3px solid var(--accent-green, #4caf50);
 }
@@ -409,6 +425,43 @@ body {
 
 .terminal-panes-column {
   flex-direction: column;
+}
+
+.terminal-panes-grid {
+  display: grid !important;
+  gap: 4px;
+  padding: 4px;
+}
+
+.multi-pane-layout-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.multi-pane-layout-toggle button {
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.multi-pane-layout-toggle button.active {
+  background: var(--accent-blue);
+  color: white;
+  border-color: var(--accent-blue);
+}
+
+.multi-pane-count {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .terminal-pane {

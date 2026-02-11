@@ -5,7 +5,9 @@ function SessionCard({
   session,
   index,
   isSelected,
+  isMultiSelected = false,
   onSelect,
+  onToggleSelect,
   onShowDetails,
   onUpdate,
   hintModeActive = false,
@@ -72,10 +74,18 @@ function SessionCard({
   const isPaused = session.status === 'paused';
   const currentStage = stages.find(s => s.id === session.stage);
 
+  const handleClick = (e) => {
+    if ((e.ctrlKey || e.metaKey) && onToggleSelect) {
+      onToggleSelect(session.id);
+    } else {
+      onSelect();
+    }
+  };
+
   return (
     <div
-      className={`session-card ${isSelected ? 'selected' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}`}
-      onClick={onSelect}
+      className={`session-card ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}`}
+      onClick={handleClick}
     >
       {hintCode && (
         <HintBadge

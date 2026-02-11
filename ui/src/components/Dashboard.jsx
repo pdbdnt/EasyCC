@@ -50,7 +50,9 @@ function getHintLetter(dirName, usedLetters) {
 function Dashboard({
   sessions,
   selectedId,
+  selectedIds = [],
   onSelectSession,
+  onToggleSelectSession,
   onNewSession,
   onShowDetails,
   onOpenSettings,
@@ -305,7 +307,9 @@ function Dashboard({
                     session={session}
                     index={globalIndex}
                     isSelected={session.id === selectedId}
+                    isMultiSelected={selectedIds.includes(session.id) && selectedIds.length > 1}
                     onSelect={() => onSelectSession(session.id)}
+                    onToggleSelect={onToggleSelectSession}
                     onShowDetails={onShowDetails}
                     onUpdate={onUpdateSession}
                     hintModeActive={hintModeActive}
