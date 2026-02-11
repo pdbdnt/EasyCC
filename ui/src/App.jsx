@@ -434,6 +434,12 @@ function App() {
     }
   }, [selectedId, groupedSessions, selectSession]);
 
+  const handleSessionSelectFromKanban = useCallback((sessionId, stageId) => {
+    selectSession(sessionId);
+    setCurrentView('sessions');
+    setKanbanColumnFilter(stageId || null);
+  }, [selectSession]);
+
   // Keyboard shortcuts for panel resize and session navigation
   // Kanban arrow key navigation
   const navigateKanban = useCallback((key) => {
@@ -482,10 +488,42 @@ function App() {
     }
   }, [stages, sessionsByStage, selectedId, selectSession]);
 
+  // Refs for keyboard handler -- allows mount-once effect with no dependency churn
+  const hintModeActiveRef = useRef(hintModeActive);
+  const currentViewRef = useRef(currentView);
+  const selectedIdRef = useRef(selectedId);
+  const stagesRef = useRef(stages);
+  const sessionsByStageRef = useRef(sessionsByStage);
+  const navigateSessionRef = useRef(navigateSession);
+  const navigateGroupRef = useRef(navigateGroup);
+  const navigateKanbanRef = useRef(navigateKanban);
+  const createSplitPaneRef = useRef(createSplitPane);
+  const closeFocusedPaneRef = useRef(closeFocusedPane);
+  const navigatePanesRef = useRef(navigatePanes);
+  const requestCloseCurrentSessionRef = useRef(requestCloseCurrentSession);
+  const handleSessionSelectFromKanbanRef = useRef(handleSessionSelectFromKanban);
+
+  // Sync refs during render (no effect needed)
+  hintModeActiveRef.current = hintModeActive;
+  currentViewRef.current = currentView;
+  selectedIdRef.current = selectedId;
+  stagesRef.current = stages;
+  sessionsByStageRef.current = sessionsByStage;
+  navigateSessionRef.current = navigateSession;
+  navigateGroupRef.current = navigateGroup;
+  navigateKanbanRef.current = navigateKanban;
+  createSplitPaneRef.current = createSplitPane;
+  closeFocusedPaneRef.current = closeFocusedPane;
+  navigatePanesRef.current = navigatePanes;
+  requestCloseCurrentSessionRef.current = requestCloseCurrentSession;
+  handleSessionSelectFromKanbanRef.current = handleSessionSelectFromKanban;
+
+  // Mount-once keyboard handler -- reads all dynamic values from refs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Skip if hint mode is active (let hint mode handle keys)
-      if (hintModeActive) return;
+      if (hintModeActiveRef.current) return;
 
       // Skip if terminal override mode is active (let terminal handle keys)
       if (window.__terminalOverrideKeys) return;
@@ -505,9 +543,10 @@ function App() {
         setCurrentView(prev => {
           if (prev === 'kanban') {
             // Switching to sessions — set filter to selected session's column
-            if (selectedId) {
-              const stageId = stages.find(stage =>
-                (sessionsByStage[stage.id] || []).some(s => s.id === selectedId)
+            const selId = selectedIdRef.current;
+            if (selId) {
+              const stageId = stagesRef.current.find(stage =>
+                (sessionsByStageRef.current[stage.id] || []).some(s => s.id === selId)
               )?.id;
               setKanbanColumnFilter(stageId || null);
             }
@@ -521,31 +560,32 @@ function App() {
       }
 
       // Arrow keys + Enter for kanban navigation (bare keys, no modifiers)
-      if (currentView === 'kanban' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      if (currentViewRef.current === 'kanban' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
         if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
           e.preventDefault();
-          navigateKanban(e.key);
+          navigateKanbanRef.current(e.key);
           return;
         }
-        if (e.key === 'Enter' && selectedId) {
+        if (e.key === 'Enter' && selectedIdRef.current) {
           e.preventDefault();
-          const stageId = stages.find(stage =>
-            (sessionsByStage[stage.id] || []).some(s => s.id === selectedId)
+          const selId = selectedIdRef.current;
+          const stageId = stagesRef.current.find(stage =>
+            (sessionsByStageRef.current[stage.id] || []).some(s => s.id === selId)
           )?.id;
-          handleSessionSelectFromKanban(selectedId, stageId);
+          handleSessionSelectFromKanbanRef.current(selId, stageId);
           return;
         }
       }
 
       if (isSplitRightShortcut(e)) {
         e.preventDefault();
-        createSplitPane('right');
+        createSplitPaneRef.current('right');
         return;
       }
 
       if (isSplitBottomShortcut(e)) {
         e.preventDefault();
-        createSplitPane('down');
+        createSplitPaneRef.current('down');
         return;
       }
 
@@ -553,14 +593,14 @@ function App() {
       if (isClosePaneShortcut(e)) {
         e.preventDefault();
         e.stopPropagation();
-        closeFocusedPane();
+        closeFocusedPaneRef.current();
         return;
       }
 
       // Alt+Arrow navigates between panes
       if (isPaneFocusShortcut(e)) {
         e.preventDefault();
-        navigatePanes(e.key);
+        navigatePanesRef.current(e.key);
         return;
       }
 
@@ -568,7 +608,7 @@ function App() {
         e.preventDefault();
         e.stopPropagation();
         closingSessionRef.current = true;
-        requestCloseCurrentSession();
+        requestCloseCurrentSessionRef.current();
         return;
       }
 
@@ -594,26 +634,26 @@ function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
         if (e.code === 'BracketRight' || e.key === ']') {
           e.preventDefault();
-          navigateSession('next');
+          navigateSessionRef.current('next');
         }
         if (e.code === 'BracketLeft' || e.key === '[') {
           e.preventDefault();
-          navigateSession('prev');
+          navigateSessionRef.current('prev');
         }
         if (e.key === "'") {
           e.preventDefault();
-          navigateGroup('next');
+          navigateGroupRef.current('next');
         }
         if (e.key === ';') {
           e.preventDefault();
-          navigateGroup('prev');
+          navigateGroupRef.current('prev');
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [closeFocusedPane, createSplitPane, hintModeActive, focusedPanel, navigatePanes, navigateSession, navigateGroup, requestCloseCurrentSession, currentView, navigateKanban, selectedId, stages, sessionsByStage, handleSessionSelectFromKanban, setKanbanColumnFilter]);
+  }, []);
 
   const handleSessionsResize = useCallback((delta) => {
     setSessionsWidth(w => Math.max(200, Math.min(400, w + delta)));
@@ -632,12 +672,6 @@ function App() {
     }
     return !!createdSession;
   };
-
-  const handleSessionSelectFromKanban = useCallback((sessionId, stageId) => {
-    selectSession(sessionId);
-    setCurrentView('sessions');
-    setKanbanColumnFilter(stageId || null);
-  }, [selectSession]);
 
   const handleClearKanbanFilter = useCallback(() => {
     setKanbanColumnFilter(null);

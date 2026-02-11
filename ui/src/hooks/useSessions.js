@@ -9,18 +9,22 @@ export function useSessions() {
 
   // Fetch stages on mount
   useEffect(() => {
+    const controller = new AbortController();
     const fetchStages = async () => {
       try {
-        const res = await fetch('/api/stages');
+        const res = await fetch('/api/stages', { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
           setStages(data.stages || []);
         }
       } catch (err) {
-        console.error('Error fetching stages:', err);
+        if (err.name !== 'AbortError') {
+          console.error('Error fetching stages:', err);
+        }
       }
     };
     fetchStages();
+    return () => controller.abort();
   }, []);
 
   const handleMessage = useCallback((data) => {

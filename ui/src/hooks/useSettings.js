@@ -45,9 +45,10 @@ export function useSettings() {
 
   // Load settings on mount
   useEffect(() => {
+    const controller = new AbortController();
     const loadSettings = async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/settings`);
+        const response = await fetch(`${API_BASE}/api/settings`, { signal: controller.signal });
         if (response.ok) {
           const data = await response.json();
           setSettings(data.settings);
@@ -55,14 +56,19 @@ export function useSettings() {
           console.error('Failed to load settings');
         }
       } catch (err) {
-        console.error('Error loading settings:', err);
-        setError(err.message);
+        if (err.name !== 'AbortError') {
+          console.error('Error loading settings:', err);
+          setError(err.message);
+        }
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
 
     loadSettings();
+    return () => controller.abort();
   }, []);
 
   // Update settings

@@ -18,11 +18,11 @@ export function useWebSocket(url, options = {}) {
   const onCloseRef = useRef(onClose);
   const onErrorRef = useRef(onError);
 
-  // Update refs when callbacks change (without triggering reconnect)
-  useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
-  useEffect(() => { onOpenRef.current = onOpen; }, [onOpen]);
-  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
-  useEffect(() => { onErrorRef.current = onError; }, [onError]);
+  // Sync refs during render (no effect needed)
+  onMessageRef.current = onMessage;
+  onOpenRef.current = onOpen;
+  onCloseRef.current = onClose;
+  onErrorRef.current = onError;
 
   const connect = useCallback(() => {
     if (unmountedRef.current) return;

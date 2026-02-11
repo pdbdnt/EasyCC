@@ -17,6 +17,14 @@ export function useHintMode(options = {}) {
   const [typedChars, setTypedChars] = useState('');
   const [lastMatchedHint, setLastMatchedHint] = useState(null);
 
+  // Refs for reading current values inside event handlers without causing listener churn
+  const isActiveRef = useRef(false);
+  const typedCharsRef = useRef('');
+
+  // Sync refs during render
+  isActiveRef.current = isActive;
+  typedCharsRef.current = typedChars;
+
   // Track key state for tap detection
   const keyStateRef = useRef({
     ctrlPressed: false,
@@ -34,12 +42,18 @@ export function useHintMode(options = {}) {
     setIsActive(true);
     setTypedChars('');
     setLastMatchedHint(null);
+    // Update refs immediately so handlers see current state
+    isActiveRef.current = true;
+    typedCharsRef.current = '';
   }, []);
 
   const deactivate = useCallback((restoreFocus = false) => {
     setIsActive(false);
     setTypedChars('');
     setLastMatchedHint(null);
+    // Update refs immediately so handlers see current state
+    isActiveRef.current = false;
+    typedCharsRef.current = '';
 
     // Restore previous focus if requested (on cancel, not on successful match)
     if (restoreFocus && previousFocusRef.current) {
@@ -50,11 +64,13 @@ export function useHintMode(options = {}) {
 
   const clearTyped = useCallback(() => {
     setTypedChars('');
+    typedCharsRef.current = '';
   }, []);
 
   useEffect(() => {
     if (!enabled) {
       setIsActive(false);
+      isActiveRef.current = false;
       return;
     }
 
@@ -69,7 +85,7 @@ export function useHintMode(options = {}) {
         }
 
         // If both are pressed and we haven't activated yet, activate
-        if (keyStateRef.current.ctrlPressed && keyStateRef.current.altPressed && !isActive && !keyStateRef.current.activatedThisCombo) {
+        if (keyStateRef.current.ctrlPressed && keyStateRef.current.altPressed && !isActiveRef.current && !keyStateRef.current.activatedThisCombo) {
           keyStateRef.current.activatedThisCombo = true;
           activate();
           e.preventDefault();
@@ -80,7 +96,7 @@ export function useHintMode(options = {}) {
       // Handle backtick trigger (special case - single character key)
       else if (triggerKey === '`' || triggerKey === 'Backquote') {
         if (e.key === '`' && !e.ctrlKey && !e.altKey && !e.metaKey) {
-          if (isActive) {
+          if (isActiveRef.current) {
             // Toggle off - restore previous focus
             deactivate(true);
           } else {
@@ -103,7 +119,7 @@ export function useHintMode(options = {}) {
         };
         const expectedKey = keyMap[triggerKey] || triggerKey;
 
-        if (e.key === expectedKey && !isActive) {
+        if (e.key === expectedKey && !isActiveRef.current) {
           activate();
           e.preventDefault();
           e.stopPropagation();
@@ -112,7 +128,7 @@ export function useHintMode(options = {}) {
       }
 
       // If hint mode is active (sticky mode), handle typed characters
-      if (isActive) {
+      if (isActiveRef.current) {
         // Block ALL keys from reaching the terminal while in hint mode
         e.preventDefault();
         e.stopPropagation();
@@ -131,14 +147,17 @@ export function useHintMode(options = {}) {
 
         // Backspace removes last character
         if (e.key === 'Backspace') {
-          setTypedChars(prev => prev.slice(0, -1));
+          const newTyped = typedCharsRef.current.slice(0, -1);
+          setTypedChars(newTyped);
+          typedCharsRef.current = newTyped;
           return;
         }
 
         // Only accept alphanumeric characters
         if (/^[a-zA-Z0-9]$/.test(e.key)) {
-          const newTyped = typedChars + e.key.toLowerCase();
+          const newTyped = typedCharsRef.current + e.key.toLowerCase();
           setTypedChars(newTyped);
+          typedCharsRef.current = newTyped;
 
           // Check for exact match → execute and deactivate (don't restore focus, hint handles it)
           if (hasExactMatch(newTyped)) {
@@ -176,7 +195,7 @@ export function useHintMode(options = {}) {
 
     // Deactivate if window loses focus (restore focus when window regains it)
     const handleBlur = () => {
-      if (isActive) {
+      if (isActiveRef.current) {
         deactivate(true);
       }
       // Reset key state on blur
@@ -195,7 +214,7 @@ export function useHintMode(options = {}) {
       window.removeEventListener('keyup', handleKeyUp, true);
       window.removeEventListener('blur', handleBlur);
     };
-  }, [enabled, triggerKey, isActive, typedChars, activate, deactivate]);
+  }, [enabled, triggerKey, activate, deactivate]);
 
   return {
     isActive,
