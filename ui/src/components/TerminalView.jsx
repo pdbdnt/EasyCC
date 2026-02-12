@@ -181,6 +181,7 @@ const TerminalView = forwardRef(function TerminalView({
     const xtermTextarea = terminalRef.current.querySelector('textarea');
     const handlePaste = (e) => {
       e.preventDefault();
+      e.stopImmediatePropagation();
       const text = e.clipboardData?.getData('text/plain');
       if (text && wsRef.current?.readyState === WebSocket.OPEN) {
         const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
@@ -190,7 +191,7 @@ const TerminalView = forwardRef(function TerminalView({
       }
     };
     if (xtermTextarea) {
-      xtermTextarea.addEventListener('paste', handlePaste);
+      xtermTextarea.addEventListener('paste', handlePaste, { capture: true });
     }
 
     term.attachCustomKeyEventHandler((event) => {
@@ -358,7 +359,7 @@ const TerminalView = forwardRef(function TerminalView({
 
     return () => {
       if (xtermTextarea) {
-        xtermTextarea.removeEventListener('paste', handlePaste);
+        xtermTextarea.removeEventListener('paste', handlePaste, { capture: true });
       }
       if (ctrlCTimerRef.current) {
         clearTimeout(ctrlCTimerRef.current);

@@ -1620,6 +1620,7 @@ class SessionManager extends EventEmitter {
       tags: session.tags || [],
       plans: session.plans || [],
       promptHistory: session.promptHistory || [],
+      lastSubmittedInputAtMs: session.lastSubmittedInputAtMs || 0,
       // Kanban stage fields
       stage: session.stage || 'todo',
       stageEnteredAt: session.stageEnteredAt || null,
