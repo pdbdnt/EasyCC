@@ -1093,6 +1093,13 @@ async function start() {
       return;
     }
 
+    // Don't auto-move sessions out of 'todo' until user has submitted input
+    if (session?.stage === 'todo' && !session?.lastSubmittedInputAtMs) {
+      if (existingTimer) clearTimeout(existingTimer);
+      kanbanSyncTimers.delete(sessionId);
+      return;
+    }
+
     const targetStage = sessionStatusToStage(status);
     if (!targetStage) {
       if (existingTimer) {

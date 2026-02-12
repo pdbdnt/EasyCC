@@ -48,7 +48,6 @@ const TerminalView = forwardRef(function TerminalView({
   const overrideKeysRef = useRef(false);
   const promptLinesRef = useRef([]);          // Array of line numbers where Enter was pressed
   const lastScrolledIndexRef = useRef(null);  // Index into promptLinesRef for stepping
-  const customPasteRef = useRef(false);       // Flag to suppress xterm's duplicate paste
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -178,11 +177,16 @@ const TerminalView = forwardRef(function TerminalView({
     term.open(terminalRef.current);
     fitAddon.fit();
 
-    // Suppress xterm's built-in paste when our custom keyboard handler already sent it
+    // Single source of truth for all paste operations (Ctrl+V, context-menu, etc.)
     const xtermTextarea = terminalRef.current.querySelector('textarea');
     const handlePaste = (e) => {
-      if (customPasteRef.current) {
-        e.preventDefault();
+      e.preventDefault();
+      const text = e.clipboardData?.getData('text/plain');
+      if (text && wsRef.current?.readyState === WebSocket.OPEN) {
+        const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
+        if (pastedText) {
+          wsRef.current.send(JSON.stringify({ type: 'input', data: pastedText }));
+        }
       }
     };
     if (xtermTextarea) {
@@ -245,21 +249,9 @@ const TerminalView = forwardRef(function TerminalView({
         return false;
       }
 
-      // Intercept paste shortcut before xterm consumes it
+      // Block xterm from processing paste key; browser paste event still fires → handlePaste catches it
       const pasteKey = keyboardSettingsRef.current?.pasteKey || 'Ctrl+V';
       if (matchKeyCombo(event, pasteKey)) {
-        customPasteRef.current = true;
-        navigator.clipboard.readText().then(text => {
-          if (text && wsRef.current?.readyState === WebSocket.OPEN) {
-            const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
-            if (!pastedText) return;
-            wsRef.current.send(JSON.stringify({ type: 'input', data: pastedText }));
-          }
-        }).catch(err => {
-          console.error('Failed to read clipboard:', err);
-        }).finally(() => {
-          setTimeout(() => { customPasteRef.current = false; }, 100);
-        });
         return false;
       }
 
