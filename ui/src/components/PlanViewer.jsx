@@ -9,6 +9,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedContentSet, setSavedContentSet] = useState(new Set());
   const [allExpanded, setAllExpanded] = useState(null); // null=default, true=all open, false=all closed
 
   if (!plan) return null;
@@ -72,6 +73,31 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
 
     fetchVersionContent();
   }, [currentVersionIndex, versions, plan.filename, showDiff]);
+
+  // Fetch saved plans content to detect "already saved" versions
+  useEffect(() => {
+    if (!workingDir) {
+      setSavedContentSet(new Set());
+      return;
+    }
+
+    const fetchSavedPlans = async () => {
+      try {
+        const response = await fetch(`/api/saved-plans?workingDir=${encodeURIComponent(workingDir)}`);
+        if (response.ok) {
+          const data = await response.json();
+          const contentSet = new Set(
+            (data.plans || []).map(p => p.content.trim())
+          );
+          setSavedContentSet(contentSet);
+        }
+      } catch (error) {
+        console.error('Error fetching saved plans for save check:', error);
+      }
+    };
+
+    fetchSavedPlans();
+  }, [workingDir]);
 
   const handlePrevVersion = () => {
     if (currentVersionIndex === null) {
@@ -141,6 +167,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
       });
       if (response.ok) {
         setSaved(true);
+        setSavedContentSet(prev => new Set(prev).add(content.trim()));
         setTimeout(() => setSaved(false), 2000);
       }
     } catch (err) {
@@ -161,6 +188,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
   const displayContent = currentVersionIndex === null ? plan.content : versionContent;
   const isViewingVersion = currentVersionIndex !== null;
   const canShowDiff = isViewingVersion && currentVersionIndex < versions.length - 1;
+  const alreadySaved = displayContent ? savedContentSet.has(displayContent.trim()) : false;
 
   return (
     <div className={`plan-viewer ${compact ? 'compact' : ''}`}>
@@ -194,12 +222,12 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
             </button>
             {workingDir && (
               <button
-                className={`btn-small ${saved ? 'btn-saved' : ''}`}
+                className={`btn-small ${(saved || alreadySaved) ? 'btn-saved' : ''}`}
                 onClick={handleSavePlan}
-                disabled={!displayContent || saved}
-                title="Save this version to project plans"
+                disabled={!displayContent || saved || alreadySaved}
+                title={alreadySaved ? 'This version is already saved' : 'Save this version to project plans'}
               >
-                {saved ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
+                {(saved || alreadySaved) ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
               </button>
             )}
           </div>

@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react';
 
-function ResizeHandle({ onResize, direction = 'horizontal' }) {
+function ResizeHandle({ onResize, direction = 'horizontal', onDoubleClick }) {
   const startRef = useRef(0);
   const isDraggingRef = useRef(false);
   const isVertical = direction === 'vertical';
@@ -36,6 +36,7 @@ function ResizeHandle({ onResize, direction = 'horizontal' }) {
     <div
       className={`resize-handle resize-handle-${direction}`}
       onMouseDown={handleMouseDown}
+      onDoubleClick={onDoubleClick}
     />
   );
 }

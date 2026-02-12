@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import TaskCard from './TaskCard';
 
 function KanbanColumn({
@@ -13,9 +13,19 @@ function KanbanColumn({
   onSessionSelect,
   selectedSessionId,
   onResetPlacement,
-  onLockPlacement
+  onLockPlacement,
+  focusedColumnId
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
+  const isFocused = stage.id === focusedColumnId;
+  const columnRef = useRef(null);
+
+  // Auto-scroll focused column into view
+  useEffect(() => {
+    if (isFocused && columnRef.current) {
+      columnRef.current.scrollIntoView({ inline: 'nearest', behavior: 'smooth' });
+    }
+  }, [isFocused]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -66,7 +76,8 @@ function KanbanColumn({
 
   return (
     <div
-      className={`kanban-column ${isDragOver ? 'drag-over' : ''}`}
+      ref={columnRef}
+      className={`kanban-column ${isDragOver ? 'drag-over' : ''} ${isFocused ? 'column-focused' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -96,7 +107,7 @@ function KanbanColumn({
       <div className="kanban-column-body">
         {sessions.length === 0 ? (
           <div className="column-empty">
-            {isDragOver ? 'Drop here' : 'No sessions'}
+            {isDragOver ? 'Drop here' : (isFocused ? 'Press Enter or Ctrl+O to watch' : 'No sessions')}
           </div>
         ) : (() => {
           const sorted = [...sessions].sort((a, b) => {

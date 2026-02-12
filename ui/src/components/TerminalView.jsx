@@ -30,7 +30,8 @@ const TerminalView = forwardRef(function TerminalView({
   typedChars = '',
   hintCodes = {},
   onFocus,
-  hideHeader = false
+  hideHeader = false,
+  onUpdateSettings
 }, ref) {
   const terminalRef = useRef(null);
   const xtermRef = useRef(null);
@@ -47,6 +48,7 @@ const TerminalView = forwardRef(function TerminalView({
   const overrideKeysRef = useRef(false);
   const promptLinesRef = useRef([]);          // Array of line numbers where Enter was pressed
   const lastScrolledIndexRef = useRef(null);  // Index into promptLinesRef for stepping
+  const customPasteRef = useRef(false);       // Flag to suppress xterm's duplicate paste
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -111,7 +113,8 @@ const TerminalView = forwardRef(function TerminalView({
     fontSize: 14,
     fontFamily: "Consolas, Monaco, 'Courier New', monospace",
     cursorStyle: 'block',
-    cursorBlink: true
+    cursorBlink: true,
+    scrollback: 2000
   };
 
   const keyboardSettings = settings?.keyboard || {
@@ -139,6 +142,7 @@ const TerminalView = forwardRef(function TerminalView({
       cursorStyle: terminalSettings.cursorStyle,
       fontFamily: terminalSettings.fontFamily,
       fontSize: terminalSettings.fontSize,
+      scrollback: terminalSettings.scrollback,
       lineHeight: 1.2,
       theme: {
         background: '#0d0d0d',
@@ -173,6 +177,17 @@ const TerminalView = forwardRef(function TerminalView({
 
     term.open(terminalRef.current);
     fitAddon.fit();
+
+    // Suppress xterm's built-in paste when our custom keyboard handler already sent it
+    const xtermTextarea = terminalRef.current.querySelector('textarea');
+    const handlePaste = (e) => {
+      if (customPasteRef.current) {
+        e.preventDefault();
+      }
+    };
+    if (xtermTextarea) {
+      xtermTextarea.addEventListener('paste', handlePaste);
+    }
 
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') {
@@ -233,6 +248,7 @@ const TerminalView = forwardRef(function TerminalView({
       // Intercept paste shortcut before xterm consumes it
       const pasteKey = keyboardSettingsRef.current?.pasteKey || 'Ctrl+V';
       if (matchKeyCombo(event, pasteKey)) {
+        customPasteRef.current = true;
         navigator.clipboard.readText().then(text => {
           if (text && wsRef.current?.readyState === WebSocket.OPEN) {
             const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
@@ -241,6 +257,8 @@ const TerminalView = forwardRef(function TerminalView({
           }
         }).catch(err => {
           console.error('Failed to read clipboard:', err);
+        }).finally(() => {
+          setTimeout(() => { customPasteRef.current = false; }, 100);
         });
         return false;
       }
@@ -347,6 +365,9 @@ const TerminalView = forwardRef(function TerminalView({
     term.focus();
 
     return () => {
+      if (xtermTextarea) {
+        xtermTextarea.removeEventListener('paste', handlePaste);
+      }
       if (ctrlCTimerRef.current) {
         clearTimeout(ctrlCTimerRef.current);
         ctrlCTimerRef.current = null;
@@ -392,12 +413,13 @@ const TerminalView = forwardRef(function TerminalView({
     term.options.fontFamily = terminalSettings.fontFamily;
     term.options.cursorStyle = terminalSettings.cursorStyle;
     term.options.cursorBlink = terminalSettings.cursorBlink;
+    term.options.scrollback = terminalSettings.scrollback;
 
     // Refit terminal after font changes
     if (fitAddonRef.current) {
       fitAddonRef.current.fit();
     }
-  }, [terminalSettings.fontSize, terminalSettings.fontFamily, terminalSettings.cursorStyle, terminalSettings.cursorBlink]);
+  }, [terminalSettings.fontSize, terminalSettings.fontFamily, terminalSettings.cursorStyle, terminalSettings.cursorBlink, terminalSettings.scrollback]);
 
   const scrollToLastPrompt = useCallback(() => {
     if (!xtermRef.current) return;
@@ -430,6 +452,31 @@ const TerminalView = forwardRef(function TerminalView({
     if (!terminalRef.current) return;
 
     const handleKeyDown = (event) => {
+      // Ctrl+=/+/-: Terminal font size zoom
+      if (event.ctrlKey && !event.altKey && !event.metaKey && onUpdateSettings) {
+        if (event.key === '=' || event.key === '+' || event.code === 'NumpadAdd') {
+          event.preventDefault();
+          const current = terminalSettings.fontSize;
+          if (current < 32) {
+            onUpdateSettings({ terminal: { fontSize: current + 1 } });
+          }
+          return;
+        }
+        if (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') {
+          event.preventDefault();
+          const current = terminalSettings.fontSize;
+          if (current > 8) {
+            onUpdateSettings({ terminal: { fontSize: current - 1 } });
+          }
+          return;
+        }
+        if (event.key === '0' && !event.shiftKey) {
+          event.preventDefault();
+          onUpdateSettings({ terminal: { fontSize: 14 } });
+          return;
+        }
+      }
+
       // Check for copy shortcut (skip if same as cancelKey — already handled inside xterm)
       if (keyboardSettings.copyKey !== keyboardSettings.cancelKey &&
           matchKeyCombo(event, keyboardSettings.copyKey)) {
@@ -438,22 +485,6 @@ const TerminalView = forwardRef(function TerminalView({
         if (selection) {
           navigator.clipboard.writeText(selection);
         }
-        return;
-      }
-
-      // Check for paste shortcut (also handled inside xterm, but keep as fallback)
-      if (matchKeyCombo(event, keyboardSettings.pasteKey)) {
-        event.preventDefault();
-        navigator.clipboard.readText().then(text => {
-          if (text && wsRef.current?.readyState === WebSocket.OPEN) {
-            // Avoid implicit submit on paste when clipboard content ends with newline.
-            const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
-            if (!pastedText) return;
-            wsRef.current.send(JSON.stringify({ type: 'input', data: pastedText }));
-          }
-        }).catch(err => {
-          console.error('Failed to read clipboard:', err);
-        });
         return;
       }
 
@@ -514,7 +545,7 @@ const TerminalView = forwardRef(function TerminalView({
     return () => {
       terminalElement.removeEventListener('keydown', handleKeyDown);
     };
-  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.clearKey, scrollToLastPrompt]);
+  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.clearKey, scrollToLastPrompt, onUpdateSettings, terminalSettings.fontSize]);
 
   // Focus terminal when clicking
   const handleTerminalClick = () => {

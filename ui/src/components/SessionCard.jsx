@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import HintBadge from './HintBadge';
 
 function SessionCard({
@@ -10,6 +10,7 @@ function SessionCard({
   onToggleSelect,
   onShowDetails,
   onUpdate,
+  onMoveSession,
   hintModeActive = false,
   typedChars = '',
   hintCode = '',
@@ -18,6 +19,20 @@ function SessionCard({
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(session.name);
+  const [showStageMenu, setShowStageMenu] = useState(false);
+  const stageMenuRef = useRef(null);
+
+  // Close stage menu on click outside
+  useEffect(() => {
+    if (!showStageMenu) return;
+    const handleClickOutside = (e) => {
+      if (stageMenuRef.current && !stageMenuRef.current.contains(e.target)) {
+        setShowStageMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showStageMenu]);
 
   const getStatusEmoji = (status) => {
     switch (status) {
@@ -154,17 +169,51 @@ function SessionCard({
       )}
 
       <div className="session-footer">
+        {session.manuallyPlaced && (
+          <span className="session-lock-icon" title="Locked to column">🔒</span>
+        )}
         {currentStage && (
-          <span
-            className="stage-badge"
-            style={{
-              backgroundColor: currentStage.color + '22',
-              color: currentStage.color,
-              borderColor: currentStage.color + '55'
-            }}
-          >
-            {currentStage.name}
-          </span>
+          <div className="stage-badge-wrapper" ref={stageMenuRef}>
+            <span
+              className={`stage-badge ${onMoveSession ? 'clickable' : ''}`}
+              style={{
+                backgroundColor: currentStage.color + '22',
+                color: currentStage.color,
+                borderColor: currentStage.color + '55'
+              }}
+              onClick={(e) => {
+                if (!onMoveSession) return;
+                e.stopPropagation();
+                setShowStageMenu(!showStageMenu);
+              }}
+            >
+              {currentStage.name}
+            </span>
+            {showStageMenu && (
+              <div className="stage-picker-dropdown">
+                {stages.map((stage) => (
+                  <div
+                    key={stage.id}
+                    className={`stage-picker-item ${stage.id === session.stage ? 'current' : ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (stage.id !== session.stage) {
+                        onMoveSession(session.id, stage.id);
+                      }
+                      setShowStageMenu(false);
+                    }}
+                  >
+                    <span
+                      className="stage-picker-dot"
+                      style={{ backgroundColor: stage.color }}
+                    />
+                    <span>{stage.name}</span>
+                    {stage.id === session.stage && <span style={{ marginLeft: 'auto' }}>{'\u2713'}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
         <div className="session-time">
           {isPaused ? 'Paused' : `Last activity: ${getRelativeTime(session.lastActivity)}`}

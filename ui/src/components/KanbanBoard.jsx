@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import KanbanColumn from './KanbanColumn';
 import TaskViewModal from './TaskViewModal';
 
-function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSession, rejectSession, settings, onUpdateSession, onSessionSelect, onCreateSession, selectedSessionId, onPauseSession, onResumeSession, onKillSession, addToast }) {
+function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSession, rejectSession, settings, onUpdateSession, onSessionSelect, onCreateSession, selectedSessionId, focusedColumnId, onPauseSession, onResumeSession, onKillSession, addToast }) {
   const [draggingSessionId, setDraggingSessionId] = useState(null);
   const [viewingSession, setViewingSession] = useState(null);
   const [selectedProjects, setSelectedProjects] = useState(new Set());
@@ -190,6 +190,7 @@ function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSe
             selectedSessionId={selectedSessionId}
             onResetPlacement={handleResetPlacement}
             onLockPlacement={handleLockPlacement}
+            focusedColumnId={focusedColumnId}
           />
         ))}
       </div>

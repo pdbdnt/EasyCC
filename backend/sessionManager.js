@@ -7,6 +7,7 @@ const os = require('os');
 const DataStore = require('./dataStore');
 const PlanManager = require('./planManager');
 const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStatusToStage } = require('./stagesConfig');
+const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInputUtils');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 
 // Debug logger that writes to file
@@ -22,7 +23,7 @@ function debugLog(message) {
  * Ring buffer for storing terminal output with a maximum size
  */
 class RingBuffer {
-  constructor(maxSize = 500) {
+  constructor(maxSize = 750) {
     this.buffer = [];
     this.maxSize = maxSize;
   }
@@ -100,7 +101,7 @@ class SessionManager extends EventEmitter {
           currentTask: sessionData.currentTask || '',
           createdAt: new Date(sessionData.createdAt),
           lastActivity: new Date(sessionData.lastActivity),
-          outputBuffer: new RingBuffer(500),
+          outputBuffer: new RingBuffer(750),
           pty: null,
           workingDir: sessionData.workingDir,
           cliType: cliType,
@@ -469,7 +470,7 @@ class SessionManager extends EventEmitter {
       currentTask: '',
       createdAt: now,
       lastActivity: now,
-      outputBuffer: new RingBuffer(500),
+      outputBuffer: new RingBuffer(750),
       pty: ptyProcess,
       workingDir,
       cliType,  // 'claude' or 'codex'
@@ -480,6 +481,8 @@ class SessionManager extends EventEmitter {
       promptBuffer: '',      // Characters accumulated until Enter
       promptHistory: [],     // Last 10 prompts [{text, timestamp}]
       inEscapeSeq: false,    // Track if we're inside an escape sequence
+      isComposingPrompt: false, // True while user types draft text without Enter
+      lastSubmittedInputAtMs: 0, // Timestamp of last submitted input (Enter/newline)
       statusDebounceTimer: null,  // Timer for debouncing status changes
       pendingStatus: null,        // Status waiting to be applied
       // Kanban stage fields
@@ -500,7 +503,14 @@ class SessionManager extends EventEmitter {
     // Handle PTY output
     ptyProcess.onData((data) => {
       session.outputBuffer.push(data);
-      session.lastActivity = new Date();
+      if (shouldCountOutputAsActivity({
+        data,
+        isComposingPrompt: !!session.isComposingPrompt,
+        lastSubmittedInputAtMs: session.lastSubmittedInputAtMs || 0,
+        nowMs: Date.now()
+      })) {
+        session.lastActivity = new Date();
+      }
 
       // Try to detect Claude session ID from output
       this.detectClaudeSessionId(data, session);
@@ -875,7 +885,14 @@ class SessionManager extends EventEmitter {
 
       processRef.onData((data) => {
         session.outputBuffer.push(data);
-        session.lastActivity = new Date();
+        if (shouldCountOutputAsActivity({
+          data,
+          isComposingPrompt: !!session.isComposingPrompt,
+          lastSubmittedInputAtMs: session.lastSubmittedInputAtMs || 0,
+          nowMs: Date.now()
+        })) {
+          session.lastActivity = new Date();
+        }
 
         this.detectClaudeSessionId(data, session);
 
@@ -1109,7 +1126,7 @@ class SessionManager extends EventEmitter {
       }
 
       const idleTime = Date.now() - session.lastActivity.getTime();
-      const canGoIdle = ['active', 'thinking', 'editing', 'waiting'].includes(session.status);
+      const canGoIdle = ['active', 'editing', 'waiting'].includes(session.status);
       if (idleTime > 5000 && canGoIdle) {
         session.status = 'idle';
         this.emit('statusChange', {
@@ -1133,8 +1150,17 @@ class SessionManager extends EventEmitter {
       return 'paused';
     }
 
-    // Skip trivial output (escape sequences, cursor movements, single chars)
+    // Strip ANSI escape sequences for pattern matching
     const stripped = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').trim();
+
+    // Detect Claude Code thinking spinner before length guard.
+    // Spinner chars (✻ ✢ ✽ *) arrive as single-char PTY chunks during animation.
+    // Anchors ensure entire stripped output is just one spinner char — no false positives.
+    if (/^[\u2721-\u2749\u002A]$/.test(stripped)) {
+      return 'thinking';
+    }
+
+    // Skip trivial output (escape sequences, cursor movements, single chars)
     if (stripped.length < 3) {
       return currentStatus;
     }
@@ -1155,7 +1181,10 @@ class SessionManager extends EventEmitter {
       /Examining/i,
       /Considering/i,
       /\(thought for \d+/i,            // "(thought for 2s)" pattern
-      /\u280B|\u2819|\u2839|\u2838|\u283C|\u2834|\u2826|\u2827|\u2807|\u280F/,  // Braille spinners
+      /[\u2800-\u28FF]/,               // Braille spinners (all 256 variants)
+      /[\u2721-\u2749]/,               // Dingbat stars/asterisks: ✳✻✱✶ etc.
+      /\b[A-Z][a-z]+ing\s*\.{3}/,     // "Doing...", "Reading..." with ASCII dots
+      /\b[A-Z][a-z]+ing\s*\u2026/,    // "Doing…", "Reading…" with Unicode ellipsis
       // Codex CLI patterns
       /\u2022\s*Working\s*\(/,         // • Working (Xs . esc to interrupt)
       /esc to interrupt/i,             // Generic Codex working indicator
@@ -1190,7 +1219,7 @@ class SessionManager extends EventEmitter {
 
     // Detect waiting for input
     const waitingPatterns = [
-      />\s*$/,
+      /^\s*>\s*$/m,
       /\?\s*$/,
       /Enter.*:/i,
       /Press.*to continue/i,
@@ -1382,7 +1411,11 @@ class SessionManager extends EventEmitter {
       }
 
       session.pty.write(filteredText);
-      session.lastActivity = new Date();
+      const isSubmittedInput = hasSubmittedInput(filteredText);
+      if (isSubmittedInput) {
+        session.lastSubmittedInputAtMs = Date.now();
+        session.isComposingPrompt = false;
+      }
 
       // Prompt detection - buffer until Enter.
       // Treat multiline paste chunks as a single prompt entry.
@@ -1398,6 +1431,8 @@ class SessionManager extends EventEmitter {
           this.addPromptToHistory(session, combined);
         }
         session.promptBuffer = '';
+        session.lastActivity = new Date();
+        session.isComposingPrompt = false;
       } else {
         for (const char of text) {
         const code = char.charCodeAt(0);
@@ -1423,18 +1458,24 @@ class SessionManager extends EventEmitter {
             this.addPromptToHistory(session, promptText);
           }
           session.promptBuffer = '';
+          session.lastActivity = new Date();
+          session.isComposingPrompt = false;
         } else if (char === '\x7f' || char === '\b') {
           // Handle backspace
           session.promptBuffer = session.promptBuffer.slice(0, -1);
+          if (session.promptBuffer.length === 0) {
+            session.isComposingPrompt = false;
+          }
         } else if (code >= 32 && code < 127) {
           // Only add printable ASCII characters
           session.promptBuffer += char;
+          session.isComposingPrompt = true;
         }
       }
       }
 
-      // Update status to active on input
-      if (session.status === 'idle' || session.status === 'waiting') {
+      // Only submitted input (Enter/newline) flips state back to active.
+      if (isSubmittedInput && (session.status === 'idle' || session.status === 'waiting')) {
         session.status = 'active';
         this.emit('statusChange', {
           sessionId: id,

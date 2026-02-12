@@ -1,7 +1,9 @@
-import { useMemo, useEffect, useState } from 'react';
+import { useMemo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import SessionCard from './SessionCard';
 import HintBadge from './HintBadge';
 import SavedPlansModal from './SavedPlansModal';
+
+const MAX_FLIP_ANIMATION_CARDS = 60;
 
 // Extract the bottom-level directory name from a path
 function getDirectoryName(path) {
@@ -57,6 +59,7 @@ function Dashboard({
   onShowDetails,
   onOpenSettings,
   onUpdateSession,
+  onMoveSession,
   onKillSession,
   onResumeSession,
   connectionStatus,
@@ -66,15 +69,38 @@ function Dashboard({
   onGroupedSessionsChange,
   kanbanColumnFilter = null,
   onClearKanbanFilter,
-  stages = []
+  stages = [],
+  viewTransition = null,
+  flipTriggerNonce = 0
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
   const [savedPlansTarget, setSavedPlansTarget] = useState(null); // { dirName, workingDir }
+  const cardNodeRefs = useRef(new Map());
+  const cardRefCallbacks = useRef(new Map());
+  const previousCardRectsRef = useRef(new Map());
+  const lastAnimatedNonceRef = useRef(0);
 
   // Get hint codes from settings or use defaults
   const newSessionHint = hintCodes.newSession || 'ns';
   const settingsHint = hintCodes.settings || 'st';
+
+  const getCardNodeRef = useCallback((sessionId) => {
+    if (cardRefCallbacks.current.has(sessionId)) {
+      return cardRefCallbacks.current.get(sessionId);
+    }
+
+    const callback = (node) => {
+      if (node) {
+        cardNodeRefs.current.set(sessionId, node);
+        return;
+      }
+      cardNodeRefs.current.delete(sessionId);
+    };
+
+    cardRefCallbacks.current.set(sessionId, callback);
+    return callback;
+  }, []);
 
   // Filter sessions by kanban column if active
   const filteredSessions = useMemo(() => {
@@ -140,7 +166,81 @@ function Dashboard({
     });
 
     return groupsWithHints;
-  }, [filteredSessions]);
+  }, [filteredSessions, kanbanColumnFilter]);
+
+  useLayoutEffect(() => {
+    const flipRequested = flipTriggerNonce > 0 && flipTriggerNonce !== lastAnimatedNonceRef.current;
+    const shouldSampleRects = !!(viewTransition?.active || flipRequested);
+    const isCtrlOContext = !!(viewTransition?.reason === 'ctrl-o' || flipRequested);
+    if (!shouldSampleRects || !isCtrlOContext) return;
+
+    const nextRects = new Map();
+    cardNodeRefs.current.forEach((node, sessionId) => {
+      if (!node?.isConnected) return;
+      nextRects.set(sessionId, node.getBoundingClientRect());
+    });
+
+    const prefersReducedMotion = typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const shouldAnimateFlip = !prefersReducedMotion &&
+      viewTransition?.active &&
+      viewTransition?.reason === 'ctrl-o' &&
+      viewTransition?.direction === 'k2s' &&
+      flipRequested &&
+      nextRects.size > 0 &&
+      nextRects.size <= MAX_FLIP_ANIMATION_CARDS;
+
+    if (shouldAnimateFlip) {
+      const prevRects = previousCardRectsRef.current;
+
+      nextRects.forEach((nextRect, sessionId) => {
+        const node = cardNodeRefs.current.get(sessionId);
+        if (!node) return;
+        const prevRect = prevRects.get(sessionId);
+
+        if (prevRect) {
+          const dx = prevRect.left - nextRect.left;
+          const dy = prevRect.top - nextRect.top;
+          if (dx || dy) {
+            if (typeof node.animate !== 'function') return;
+            node.style.willChange = 'transform';
+            const anim = node.animate(
+              [
+                { transform: `translate(${dx}px, ${dy}px)` },
+                { transform: 'translate(0, 0)' }
+              ],
+              {
+                duration: 180,
+                easing: 'cubic-bezier(0.22, 1, 0.36, 1)'
+              }
+            );
+            anim.onfinish = () => { node.style.willChange = ''; };
+            anim.oncancel = () => { node.style.willChange = ''; };
+          }
+        } else {
+          if (typeof node.animate !== 'function') return;
+          node.style.willChange = 'transform, opacity';
+          const anim = node.animate(
+            [
+              { opacity: 0, transform: 'translateY(6px)' },
+              { opacity: 1, transform: 'translateY(0)' }
+            ],
+            {
+              duration: 140,
+              easing: 'ease-out'
+            }
+          );
+          anim.onfinish = () => { node.style.willChange = ''; };
+          anim.oncancel = () => { node.style.willChange = ''; };
+        }
+      });
+
+      lastAnimatedNonceRef.current = flipTriggerNonce;
+    }
+
+    previousCardRectsRef.current = nextRects;
+  }, [groupedSessions, viewTransition, flipTriggerNonce]);
 
   // Notify parent about grouped sessions for navigation
   useEffect(() => {
@@ -227,9 +327,9 @@ function Dashboard({
       <div className="sessions-list">
         {filteredSessions.length === 0 ? (
           <div className="empty-state">
-            <div className="empty-state-icon">📭</div>
-            <p>No active sessions</p>
-            <p>Create one to get started</p>
+            <div className="empty-state-icon">{kanbanColumnFilter ? '👀' : '📭'}</div>
+            <p>{kanbanColumnFilter ? `Watching: ${kanbanColumnFilter.replace('_', ' ')}` : 'No active sessions'}</p>
+            <p>{kanbanColumnFilter ? 'Will auto-show when a session enters this stage' : 'Create one to get started'}</p>
           </div>
         ) : (
           groupedSessions.map(([dirName, sessionsInGroup, hintLetter]) => (
@@ -302,22 +402,29 @@ function Dashboard({
                 const recentlyEntered = kanbanColumnFilter && session.stageEnteredAt &&
                   (Date.now() - new Date(session.stageEnteredAt).getTime()) < 10 * 60 * 1000;
                 return (
-                  <SessionCard
+                  <div
                     key={session.id}
-                    session={session}
-                    index={globalIndex}
-                    isSelected={session.id === selectedId}
-                    isMultiSelected={selectedIds.includes(session.id) && selectedIds.length > 1}
-                    onSelect={() => onSelectSession(session.id)}
-                    onToggleSelect={onToggleSelectSession}
-                    onShowDetails={onShowDetails}
-                    onUpdate={onUpdateSession}
-                    hintModeActive={hintModeActive}
-                    typedChars={typedChars}
-                    hintCode={hintCode}
-                    isRecentlyEntered={!!recentlyEntered}
-                    stages={stages}
-                  />
+                    className="session-card-flip-item"
+                    data-session-id={session.id}
+                    ref={getCardNodeRef(session.id)}
+                  >
+                    <SessionCard
+                      session={session}
+                      index={globalIndex}
+                      isSelected={session.id === selectedId}
+                      isMultiSelected={selectedIds.includes(session.id) && selectedIds.length > 1}
+                      onSelect={() => onSelectSession(session.id)}
+                      onToggleSelect={onToggleSelectSession}
+                      onShowDetails={onShowDetails}
+                      onUpdate={onUpdateSession}
+                      onMoveSession={onMoveSession}
+                      hintModeActive={hintModeActive}
+                      typedChars={typedChars}
+                      hintCode={hintCode}
+                      isRecentlyEntered={!!recentlyEntered}
+                      stages={stages}
+                    />
+                  </div>
                 );
               })}
             </div>

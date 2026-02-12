@@ -69,6 +69,8 @@ function isPaneFocusShortcut(e) {
     (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown');
 }
 
+const CTRL_O_TRANSITION_MS = 280;
+
 function App() {
   const [currentView, setCurrentView] = useState('sessions'); // 'sessions' | 'kanban'
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
@@ -81,6 +83,7 @@ function App() {
     selectedId,
     selectedIds,
     selectSession,
+    setActiveSelectedId,
     toggleSelectSession,
     createSession,
     killSession,
@@ -106,13 +109,23 @@ function App() {
   const [pendingCloseSessionId, setPendingCloseSessionId] = useState(null);
   const [paneSizes, setPaneSizes] = useState([]); // flex ratios for each pane
   const [kanbanColumnFilter, setKanbanColumnFilter] = useState(null); // stage ID filter from kanban
+  const [focusedColumnId, setFocusedColumnId] = useState(null); // stage ID when empty kanban column focused
   const [multiPaneLayout, setMultiPaneLayout] = useState('auto'); // 'auto' | 'row' | 'column'
+  const [multiPaneSizes, setMultiPaneSizes] = useState(null); // null=equal, Array for row/col, {cols:[]} for grid
+  const [viewTransition, setViewTransition] = useState({
+    active: false,
+    direction: null,
+    reason: 'other',
+    nonce: 0
+  });
+  const [flipTriggerNonce, setFlipTriggerNonce] = useState(0);
 
   // Refs for focus management
   const contextRef = useRef(null);
   const paneRefs = useRef(new Map());
   const closingSessionRef = useRef(false);
   const wasMultiSelectRef = useRef(false);
+  const ctrlOTransitionTimerRef = useRef(null);
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -136,12 +149,62 @@ function App() {
     }
   }, [activePaneId, terminalPanes]);
 
+  const switchView = useCallback((nextView, options = {}) => {
+    const reason = options.reason || 'other';
+    const fromView = options.fromView || currentView;
+    if (fromView === nextView) return;
+
+    const reducedMotion = typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const shouldAnimateCtrlO = reason === 'ctrl-o' && !reducedMotion;
+
+    if (shouldAnimateCtrlO) {
+      const direction = fromView === 'kanban' && nextView === 'sessions'
+        ? 'k2s'
+        : (fromView === 'sessions' && nextView === 'kanban' ? 's2k' : null);
+
+      if (direction) {
+        if (ctrlOTransitionTimerRef.current) {
+          clearTimeout(ctrlOTransitionTimerRef.current);
+        }
+        setViewTransition((prev) => ({
+          active: true,
+          direction,
+          reason: 'ctrl-o',
+          nonce: prev.nonce + 1
+        }));
+        if (direction === 'k2s') {
+          setFlipTriggerNonce((n) => n + 1);
+        }
+        ctrlOTransitionTimerRef.current = setTimeout(() => {
+          setViewTransition((prev) => ({ ...prev, active: false }));
+          ctrlOTransitionTimerRef.current = null;
+        }, CTRL_O_TRANSITION_MS);
+      }
+    } else {
+      setViewTransition((prev) => (
+        prev.active ? { ...prev, active: false, reason: 'other', direction: null } : prev
+      ));
+    }
+
+    setCurrentView(nextView);
+  }, [currentView]);
+
   // Save pane layout on changes
   useEffect(() => {
     if (terminalPanes.length > 0) {
       savePaneLayout(terminalPanes, paneLayout, paneSizes);
     }
   }, [terminalPanes, paneLayout, paneSizes]);
+
+  useEffect(() => {
+    return () => {
+      if (ctrlOTransitionTimerRef.current) {
+        clearTimeout(ctrlOTransitionTimerRef.current);
+      }
+    };
+  }, []);
 
   // Restore pane layout from localStorage on mount
   useEffect(() => {
@@ -179,6 +242,57 @@ function App() {
       return next;
     });
   }, [paneLayout]);
+
+  // Reset multi-pane sizes when pane count or layout mode changes
+  const prevMultiCountRef = useRef(0);
+  const prevMultiLayoutRef = useRef(multiPaneLayout);
+  useEffect(() => {
+    const count = terminalPanes.length;
+    if (count !== prevMultiCountRef.current || multiPaneLayout !== prevMultiLayoutRef.current) {
+      setMultiPaneSizes(null);
+      prevMultiCountRef.current = count;
+      prevMultiLayoutRef.current = multiPaneLayout;
+    }
+  }, [terminalPanes.length, multiPaneLayout]);
+
+  // Resize handler for multi-pane mode (row/column/grid)
+  const handleMultiPaneResize = useCallback((index, delta, mode) => {
+    setMultiPaneSizes(prev => {
+      const count = terminalPanes.length;
+      if (count < 2) return prev;
+
+      if (mode === 'row' || mode === 'column') {
+        const sizes = Array.isArray(prev) ? [...prev] : Array(count).fill(1 / count);
+        const containerEl = document.querySelector('.terminal-panes');
+        const containerSize = mode === 'row' ? containerEl?.clientWidth : containerEl?.clientHeight;
+        if (!containerSize) return prev;
+
+        const total = sizes[index] + sizes[index + 1];
+        const ratioDelta = delta / containerSize;
+        sizes[index] = Math.max(0.05, Math.min(total - 0.05, sizes[index] + ratioDelta));
+        sizes[index + 1] = total - sizes[index];
+        return sizes;
+      }
+
+      if (mode === 'grid-col') {
+        const { cols } = getGridLayout(count);
+        const colSizes = prev?.cols ? [...prev.cols] : Array(cols).fill(1 / cols);
+        const containerEl = document.querySelector('.terminal-panes');
+        const containerWidth = containerEl?.clientWidth || 800;
+        const ratioDelta = delta / containerWidth;
+        const total = colSizes[index] + colSizes[index + 1];
+        colSizes[index] = Math.max(0.05, Math.min(total - 0.05, colSizes[index] + ratioDelta));
+        colSizes[index + 1] = total - colSizes[index];
+        return { cols: colSizes };
+      }
+
+      return prev;
+    });
+  }, [terminalPanes.length]);
+
+  const resetMultiPaneSizes = useCallback(() => {
+    setMultiPaneSizes(null);
+  }, []);
 
   // Consolidated pane sync: keeps panes in sync with selection and session list.
   useEffect(() => {
@@ -220,7 +334,9 @@ function App() {
       }
 
       // Normal single-select mode (preserves split panes)
-      const singleId = selectedIds[0] || (sessions.length > 0 ? sessions[0].id : null);
+      // When kanban filter is active with no selection, don't fallback to first session
+      const singleId = selectedIds[0] ||
+        (kanbanColumnFilter ? null : (sessions.length > 0 ? sessions[0].id : null));
       if (!singleId || !validSessionIds.has(singleId)) {
         setTerminalPanes(prev => {
           const next = prev.filter(p => validSessionIds.has(p.sessionId));
@@ -239,7 +355,7 @@ function App() {
         return valid.map(p => p.id === targetPaneId ? { ...p, sessionId: singleId } : p);
       });
     }
-  }, [selectedIds, sessions, currentView, activePaneId]);
+  }, [selectedIds, sessions, currentView, activePaneId, kanbanColumnFilter]);
 
   useEffect(() => {
     if (terminalPanes.length === 0) {
@@ -477,9 +593,32 @@ function App() {
 
   const handleSessionSelectFromKanban = useCallback((sessionId, stageId) => {
     selectSession(sessionId);
-    setCurrentView('sessions');
+    switchView('sessions', { reason: 'other', fromView: 'kanban' });
     setKanbanColumnFilter(stageId || null);
-  }, [selectSession]);
+  }, [selectSession, switchView]);
+
+  // Clear focused column when a session gets selected
+  useEffect(() => {
+    if (selectedId && focusedColumnId) setFocusedColumnId(null);
+  }, [selectedId, focusedColumnId]);
+
+  // Auto-clear focus when a session arrives in the focused empty column
+  useEffect(() => {
+    if (focusedColumnId && (sessionsByStage[focusedColumnId] || []).length > 0) {
+      setFocusedColumnId(null);
+      selectSession(sessionsByStage[focusedColumnId][0].id);
+    }
+  }, [focusedColumnId, sessionsByStage, selectSession]);
+
+  // Auto-select when a session arrives in a filtered-but-empty sessions view (watch mode)
+  useEffect(() => {
+    if (currentView !== 'sessions' || !kanbanColumnFilter) return;
+    if (selectedId) return;
+    const matchingSessions = sessions.filter(s => s.stage === kanbanColumnFilter);
+    if (matchingSessions.length > 0) {
+      selectSession(matchingSessions[0].id);
+    }
+  }, [currentView, kanbanColumnFilter, selectedId, sessions, selectSession]);
 
   // Keyboard shortcuts for panel resize and session navigation
   // Kanban arrow key navigation
@@ -505,17 +644,34 @@ function App() {
       return sorted;
     });
 
+    // If no session selected but a column is focused, use that as current position
+    if (currentColIndex === -1 && focusedColumnId) {
+      currentColIndex = stages.findIndex(s => s.id === focusedColumnId);
+    }
+
     if (key === 'ArrowLeft' || key === 'ArrowRight') {
       const dir = key === 'ArrowRight' ? 1 : -1;
-      let targetCol = currentColIndex === -1 ? 0 : currentColIndex;
-      for (let i = 0; i < stages.length; i++) {
-        targetCol = (targetCol + dir + stages.length) % stages.length;
-        if (columnSessions[targetCol].length > 0) break;
+      // If nothing selected/focused yet, start at first column (ArrowRight) or last (ArrowLeft)
+      let targetCol;
+      if (currentColIndex === -1) {
+        targetCol = dir === 1 ? 0 : stages.length - 1;
+      } else {
+        targetCol = (currentColIndex + dir + stages.length) % stages.length;
       }
+
       if (columnSessions[targetCol].length > 0) {
+        // Non-empty column: select first session, clear column focus
+        setFocusedColumnId(null);
         selectSession(columnSessions[targetCol][0].id);
+      } else {
+        // Empty column: focus the column, deselect any session
+        selectSession(null);
+        setFocusedColumnId(stages[targetCol].id);
       }
     } else {
+      // Up/Down: no-op if empty column is focused
+      if (focusedColumnId) return;
+
       if (currentColIndex === -1) {
         const firstNonEmpty = columnSessions.find(col => col.length > 0);
         if (firstNonEmpty) selectSession(firstNonEmpty[0].id);
@@ -527,7 +683,7 @@ function App() {
       const nextIndex = (currentSessionIndex + dir + col.length) % col.length;
       selectSession(col[nextIndex].id);
     }
-  }, [stages, sessionsByStage, selectedId, selectSession]);
+  }, [stages, sessionsByStage, selectedId, selectSession, focusedColumnId]);
 
   // Refs for keyboard handler -- allows mount-once effect with no dependency churn
   const hintModeActiveRef = useRef(hintModeActive);
@@ -543,6 +699,9 @@ function App() {
   const navigatePanesRef = useRef(navigatePanes);
   const requestCloseCurrentSessionRef = useRef(requestCloseCurrentSession);
   const handleSessionSelectFromKanbanRef = useRef(handleSessionSelectFromKanban);
+  const switchViewRef = useRef(switchView);
+  const focusedColumnIdRef = useRef(focusedColumnId);
+  const kanbanColumnFilterRef = useRef(kanbanColumnFilter);
 
   // Sync refs during render (no effect needed)
   hintModeActiveRef.current = hintModeActive;
@@ -558,6 +717,9 @@ function App() {
   navigatePanesRef.current = navigatePanes;
   requestCloseCurrentSessionRef.current = requestCloseCurrentSession;
   handleSessionSelectFromKanbanRef.current = handleSessionSelectFromKanban;
+  switchViewRef.current = switchView;
+  focusedColumnIdRef.current = focusedColumnId;
+  kanbanColumnFilterRef.current = kanbanColumnFilter;
 
   // Mount-once keyboard handler -- reads all dynamic values from refs
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -581,9 +743,15 @@ function App() {
       // Ctrl+O: toggle between sessions and kanban views
       if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        setCurrentView(prev => {
-          if (prev === 'kanban') {
-            // Switching to sessions — set filter to selected session's column
+        const currentView = currentViewRef.current;
+        if (currentView === 'kanban') {
+          // Switching to sessions: check focused column first, then selected session
+          const focusedCol = focusedColumnIdRef.current;
+          if (focusedCol) {
+            setKanbanColumnFilter(focusedCol);
+            setFocusedColumnId(null);
+            selectSession(null); // Clear selection so no terminal shows for empty stage
+          } else {
             const selId = selectedIdRef.current;
             if (selId) {
               const stageId = stagesRef.current.find(stage =>
@@ -591,12 +759,21 @@ function App() {
               )?.id;
               setKanbanColumnFilter(stageId || null);
             }
-            return 'sessions';
           }
-          // Switching to kanban — clear filter
+          switchViewRef.current('sessions', { reason: 'ctrl-o', fromView: currentView });
+        } else {
+          // Switching to kanban: restore focused column if filter matches an empty stage
+          const currentFilter = kanbanColumnFilterRef.current;
+          if (currentFilter) {
+            const stageExists = stagesRef.current.some(s => s.id === currentFilter);
+            const hasSessionsInStage = (sessionsByStageRef.current[currentFilter] || []).length > 0;
+            if (stageExists && !hasSessionsInStage) {
+              setFocusedColumnId(currentFilter);
+            }
+          }
           setKanbanColumnFilter(null);
-          return 'kanban';
-        });
+          switchViewRef.current('kanban', { reason: 'ctrl-o', fromView: currentView });
+        }
         return;
       }
 
@@ -607,14 +784,26 @@ function App() {
           navigateKanbanRef.current(e.key);
           return;
         }
-        if (e.key === 'Enter' && selectedIdRef.current) {
-          e.preventDefault();
-          const selId = selectedIdRef.current;
-          const stageId = stagesRef.current.find(stage =>
-            (sessionsByStageRef.current[stage.id] || []).some(s => s.id === selId)
-          )?.id;
-          handleSessionSelectFromKanbanRef.current(selId, stageId);
-          return;
+        if (e.key === 'Enter') {
+          // Enter on focused empty column: switch to sessions view with that filter
+          const focusedCol = focusedColumnIdRef.current;
+          if (focusedCol) {
+            e.preventDefault();
+            setKanbanColumnFilter(focusedCol);
+            setFocusedColumnId(null);
+            switchViewRef.current('sessions', { reason: 'other', fromView: 'kanban' });
+            return;
+          }
+          // Enter on selected session: switch to sessions view
+          if (selectedIdRef.current) {
+            e.preventDefault();
+            const selId = selectedIdRef.current;
+            const stageId = stagesRef.current.find(stage =>
+              (sessionsByStageRef.current[stage.id] || []).some(s => s.id === selId)
+            )?.id;
+            handleSessionSelectFromKanbanRef.current(selId, stageId);
+            return;
+          }
         }
       }
 
@@ -764,6 +953,10 @@ function App() {
     return success;
   };
 
+  const ctrlOTransitionClass = viewTransition.active && viewTransition.reason === 'ctrl-o' && viewTransition.direction
+    ? `ctrl-o-transition ctrl-o-transition-${viewTransition.direction}`
+    : '';
+
   return (
     <div className={`app-container ${hintModeActive ? 'hint-mode-active' : ''}`}>
       <aside className="sidebar sessions-sidebar" style={{ width: sessionsWidth, minWidth: sessionsWidth }}>
@@ -772,13 +965,13 @@ function App() {
           <div className="view-toggle">
             <button
               className={`view-toggle-btn ${currentView === 'sessions' ? 'active' : ''}`}
-              onClick={() => setCurrentView('sessions')}
+              onClick={() => switchView('sessions', { reason: 'other', fromView: currentView })}
             >
               Sessions
             </button>
             <button
               className={`view-toggle-btn ${currentView === 'kanban' ? 'active' : ''}`}
-              onClick={() => setCurrentView('kanban')}
+              onClick={() => switchView('kanban', { reason: 'other', fromView: currentView })}
             >
               Kanban
             </button>
@@ -794,6 +987,7 @@ function App() {
           onShowDetails={handleShowDetails}
           onOpenSettings={() => setShowSettingsModal(true)}
           onUpdateSession={updateSession}
+          onMoveSession={moveSession}
           onKillSession={killSession}
           onResumeSession={resumeSession}
           connectionStatus={connectionStatus}
@@ -804,11 +998,13 @@ function App() {
           kanbanColumnFilter={kanbanColumnFilter}
           onClearKanbanFilter={handleClearKanbanFilter}
           stages={stages}
+          viewTransition={viewTransition}
+          flipTriggerNonce={flipTriggerNonce}
         />
       </aside>
       <ResizeHandle onResize={handleSessionsResize} />
       {currentView === 'kanban' ? (
-        <main className="main-content">
+        <main className={`main-content ${ctrlOTransitionClass}`.trim()}>
           <KanbanBoard
             sessions={sessions}
             stages={stages}
@@ -823,6 +1019,7 @@ function App() {
               setShowNewSessionModal(true);
             }}
             selectedSessionId={selectedId}
+            focusedColumnId={focusedColumnId}
             onPauseSession={pauseSession}
             onResumeSession={resumeSession}
             onKillSession={killSession}
@@ -857,7 +1054,7 @@ function App() {
         </>
       )}
       <main
-        className="main-content"
+        className={`main-content ${ctrlOTransitionClass}`.trim()}
         style={{ position: 'relative' }}
         onClick={() => setFocusedPanel('terminal')}
       >
@@ -886,28 +1083,87 @@ function App() {
               : `terminal-panes-${paneLayout}`
           }`}
           style={selectedIds.length > 1 && multiPaneLayout === 'auto' ? {
-            gridTemplateColumns: `repeat(${getGridLayout(terminalPanes.length).cols}, 1fr)`,
+            gridTemplateColumns: multiPaneSizes?.cols
+              ? multiPaneSizes.cols.map(s => `${s}fr`).join(' ')
+              : `repeat(${getGridLayout(terminalPanes.length).cols}, 1fr)`,
             gridTemplateRows: `repeat(${getGridLayout(terminalPanes.length).rows}, 1fr)`,
           } : undefined}
           >
+            {selectedIds.length > 1 && multiPaneLayout === 'auto' && (() => {
+              const { cols } = getGridLayout(terminalPanes.length);
+              if (cols <= 1) return null;
+              const colSizes = multiPaneSizes?.cols || Array(cols).fill(1 / cols);
+              return (
+                <div className="grid-resize-overlay">
+                  {Array.from({ length: cols - 1 }, (_, i) => {
+                    const leftPct = colSizes.slice(0, i + 1).reduce((a, b) => a + b, 0) / colSizes.reduce((a, b) => a + b, 0) * 100;
+                    return (
+                      <div
+                        key={`grid-col-handle-${i}`}
+                        className="grid-col-resize-handle"
+                        style={{ left: `${leftPct}%` }}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          let startX = e.clientX;
+                          const onMove = (me) => {
+                            const delta = me.clientX - startX;
+                            startX = me.clientX;
+                            handleMultiPaneResize(i, delta, 'grid-col');
+                          };
+                          const onUp = () => {
+                            document.removeEventListener('mousemove', onMove);
+                            document.removeEventListener('mouseup', onUp);
+                            document.body.style.cursor = '';
+                            document.body.style.userSelect = '';
+                          };
+                          document.addEventListener('mousemove', onMove);
+                          document.addEventListener('mouseup', onUp);
+                          document.body.style.cursor = 'col-resize';
+                          document.body.style.userSelect = 'none';
+                        }}
+                        onDoubleClick={resetMultiPaneSizes}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            })()}
             {terminalPanes.map((pane, index) => {
               const paneSession = sessions.find(s => s.id === pane.sessionId);
               if (!paneSession) return null;
               const isMultiMode = selectedIds.length > 1;
               const flexValue = paneSizes[index] || (1 / terminalPanes.length);
-              const showResizeHandle = !isMultiMode && index > 0;
+              const showSingleResizeHandle = !isMultiMode && index > 0;
+              const showMultiResizeHandle = isMultiMode && index > 0 && multiPaneLayout !== 'auto';
+              const multiFlexValue = Array.isArray(multiPaneSizes) ? multiPaneSizes[index] : (1 / terminalPanes.length);
 
               return (
                 <React.Fragment key={pane.id}>
-                  {showResizeHandle && (
+                  {showSingleResizeHandle && (
                     <ResizeHandle
                       direction={paneLayout === 'row' ? 'vertical' : 'horizontal'}
                       onResize={(delta) => handlePaneResize(index - 1, delta)}
                     />
                   )}
+                  {showMultiResizeHandle && (
+                    <ResizeHandle
+                      direction={multiPaneLayout === 'row' ? 'vertical' : 'horizontal'}
+                      onResize={(delta) => handleMultiPaneResize(index - 1, delta, multiPaneLayout)}
+                      onDoubleClick={resetMultiPaneSizes}
+                    />
+                  )}
                   <div
                     className={`terminal-pane ${activePaneId === pane.id ? 'active' : ''}`}
-                    style={isMultiMode ? undefined : { flex: flexValue }}
+                    style={isMultiMode
+                      ? (multiPaneLayout !== 'auto' ? { flex: multiFlexValue } : undefined)
+                      : { flex: flexValue }}
+                    onMouseDown={() => {
+                      setActivePaneId(pane.id);
+                      setFocusedPanel('terminal');
+                      if (selectedIds.length > 1) {
+                        setActiveSelectedId(paneSession.id);
+                      }
+                    }}
                   >
                     <TerminalView
                       ref={(instance) => {
@@ -928,11 +1184,14 @@ function App() {
                       hintModeActive={hintModeActive}
                       typedChars={typedChars}
                       hintCodes={settings?.keyboard?.hintMode?.hints || {}}
+                      onUpdateSettings={updateSettings}
                       onFocus={() => {
                         setActivePaneId(pane.id);
                         setFocusedPanel('terminal');
                         if (selectedIds.length <= 1) {
                           selectSession(paneSession.id);
+                        } else {
+                          setActiveSelectedId(paneSession.id);
                         }
                       }}
                     />

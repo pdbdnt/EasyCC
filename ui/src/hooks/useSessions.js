@@ -122,6 +122,13 @@ export function useSessions() {
     setSelectedIds([id]);
   }, []);
 
+  const setActiveSelectedId = useCallback((id) => {
+    setSelectedIds(prev => {
+      if (!prev.includes(id)) return prev;
+      return [...prev.filter(x => x !== id), id];
+    });
+  }, []);
+
   const toggleSelectSession = useCallback((id) => {
     setSelectedIds(prev => {
       const idx = prev.indexOf(id);
@@ -328,6 +335,7 @@ export function useSessions() {
     selectedId,
     selectedIds,
     selectSession,
+    setActiveSelectedId,
     toggleSelectSession,
     createSession,
     killSession,
@@ -339,7 +347,7 @@ export function useSessions() {
     rejectSession,
     connectionStatus,
     isConnected
-  }), [sessions, stages, sessionsByStage, selectedId, selectedIds, selectSession, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
+  }), [sessions, stages, sessionsByStage, selectedId, selectedIds, selectSession, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
 }
 
 export default useSessions;

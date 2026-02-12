@@ -9,6 +9,7 @@ const PlanManager = require('./planManager');
 const SettingsManager = require('./settingsManager');
 const DataStore = require('./dataStore');
 const PlanVersionStore = require('./planVersionStore');
+const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
@@ -40,14 +41,6 @@ function isPathWithinRoot(targetPath, rootPath) {
   const normalizedTarget = normalizeWindowsPath(targetPath).toLowerCase();
   const normalizedRoot = normalizeWindowsPath(rootPath).toLowerCase();
   return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}\\`);
-}
-
-function generateSessionName(cliType = 'claude') {
-  const now = new Date();
-  const date = now.toISOString().slice(0, 10);
-  const time = now.toTimeString().slice(0, 5).replace(':', '');
-  const prefix = cliType === 'terminal' ? 'Terminal' : cliType === 'codex' ? 'Codex' : 'Session';
-  return `${prefix} ${date}-${time}`;
 }
 
 async function start() {
@@ -92,7 +85,8 @@ async function start() {
     const validCliTypes = ['claude', 'codex', 'terminal'];
     const normalizedCliType = cliType && validCliTypes.includes(cliType) ? cliType : 'claude';
     const normalizedName = typeof name === 'string' ? name.trim() : '';
-    const resolvedName = normalizedName || generateSessionName(normalizedCliType);
+    const existingNames = sessionManager.getAllSessions().map(s => s.name);
+    const resolvedName = normalizedName || ensureUniqueSessionName(generateSessionName(new Date(), normalizedCliType), existingNames);
 
     try {
       const session = sessionManager.createSession(resolvedName, workingDir, normalizedCliType, {

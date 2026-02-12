@@ -6,6 +6,7 @@ class AppPage {
     this.activeViewBtn = page.locator('.view-toggle-btn.active');
     this.sessionsList = page.locator('.sessions-list');
     this.kanbanBoard = page.locator('.kanban-board');
+    this.mainContent = page.locator('main.main-content').first();
   }
 
   async switchToKanban() {
@@ -22,6 +23,10 @@ class AppPage {
     await this.page.keyboard.press('Control+o');
     // Small wait for view transition
     await this.page.waitForTimeout(300);
+  }
+
+  async pressCtrlORaw() {
+    await this.page.keyboard.press('Control+o');
   }
 
   async isInSessionsView() {

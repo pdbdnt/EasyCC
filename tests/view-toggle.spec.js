@@ -41,6 +41,26 @@ test.describe('View Toggle (Ctrl+O)', () => {
     await expect(appPage.activeViewBtn).toHaveText('Sessions');
   });
 
+  test('Ctrl+O applies transient transition class', async () => {
+    await appPage.switchToKanban();
+
+    await appPage.pressCtrlORaw();
+    await expect(appPage.mainContent).toHaveClass(/ctrl-o-transition/);
+    await expect(appPage.sessionsList).toBeVisible({ timeout: 5000 });
+    await expect(appPage.mainContent).not.toHaveClass(/ctrl-o-transition/, { timeout: 1500 });
+  });
+
+  test('reduced motion disables Ctrl+O transition class', async () => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await appPage.switchToKanban();
+
+    await appPage.pressCtrlORaw();
+    await expect(appPage.sessionsList).toBeVisible({ timeout: 5000 });
+    await expect(appPage.mainContent).not.toHaveClass(/ctrl-o-transition/);
+
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+  });
+
   test('view toggle buttons work', async () => {
     await appPage.switchToKanban();
     await expect(appPage.kanbanBoard).toBeVisible();

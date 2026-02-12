@@ -264,6 +264,17 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
               </div>
 
               <div className="form-group">
+                <label>Scrollback Lines</label>
+                <input
+                  type="number"
+                  min="500"
+                  max="20000"
+                  value={localSettings.terminal.scrollback ?? 2000}
+                  onChange={e => updateSetting('terminal', 'scrollback', Math.max(500, Math.min(20000, parseInt(e.target.value, 10) || 2000)))}
+                />
+              </div>
+
+              <div className="form-group">
                 <label>Font Family</label>
                 <select
                   value={localSettings.terminal.fontFamily}
