@@ -6,9 +6,10 @@ import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
 import '@xterm/xterm/css/xterm.css';
 
-// Fallback prompt patterns — only used when no Enter history exists (e.g., joining running session)
+// Prompt patterns for buffer scanning (e.g., joining a running session)
 const PROMPT_PATTERNS = [
-  /^>\s*$/,                    // Claude Code's bare ">" prompt
+  /^>\s*$/,                    // Claude Code's bare ">" prompt (waiting)
+  /^>\s+\S/,                  // Claude Code prompt with user input ("> some text")
   /^❯\s*$/,                   // Alternative prompt character
   /^\$\s*$/,                  // Shell prompt
 ];
@@ -105,6 +106,25 @@ const TerminalView = forwardRef(function TerminalView({
     ws.onerror = (error) => {
       console.error('Terminal WebSocket error:', error);
     };
+
+    // Pre-populate promptLinesRef by scanning the buffer after initial replay
+    let initialScanDone = false;
+    const scanInitialPrompts = () => {
+      if (initialScanDone || !xtermRef.current) return;
+      initialScanDone = true;
+      const buf = xtermRef.current.buffer.active;
+      const totalLines = buf.baseY + buf.cursorY;
+      const userPromptPattern = /^>\s+\S/;
+      for (let i = 0; i <= totalLines; i++) {
+        const line = buf.getLine(i);
+        if (!line) continue;
+        const text = line.translateToString(true).trim();
+        if (userPromptPattern.test(text)) {
+          promptLinesRef.current.push(i);
+        }
+      }
+    };
+    setTimeout(scanInitialPrompts, 500);
   }, []);
 
   // Get terminal settings with defaults
@@ -427,6 +447,18 @@ const TerminalView = forwardRef(function TerminalView({
       // Fallback: search buffer for prompt patterns (e.g., joined a running session)
       const buf = xtermRef.current.buffer.active;
       const totalLines = buf.baseY + buf.cursorY;
+      const userInputPattern = /^>\s+\S/;
+      // First pass: prefer user-input prompts (skip bare ">")
+      for (let i = totalLines; i >= 0; i--) {
+        const bufLine = buf.getLine(i);
+        if (!bufLine) continue;
+        const text = bufLine.translateToString(true).trim();
+        if (text.length > 0 && userInputPattern.test(text)) {
+          xtermRef.current.scrollToLine(i);
+          return;
+        }
+      }
+      // Second pass: any prompt pattern
       for (let i = totalLines; i >= 0; i--) {
         const bufLine = buf.getLine(i);
         if (!bufLine) continue;

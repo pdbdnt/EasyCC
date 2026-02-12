@@ -311,7 +311,7 @@ class SessionManager extends EventEmitter {
     // Always emit sessionUpdated (for both new and updated plans)
     // Include a timestamp so frontend knows something changed
     this.emit('sessionUpdated', {
-      sessionId,
+      id: sessionId,
       plans: session.plans,
       plansUpdatedAt: Date.now()
     });
@@ -357,7 +357,7 @@ class SessionManager extends EventEmitter {
       this.dataStore.addPlanToSession(sessionId, planPath);
 
       this.emit('sessionUpdated', {
-        sessionId,
+        id: sessionId,
         plans: session.plans
       });
     }
@@ -1292,7 +1292,7 @@ class SessionManager extends EventEmitter {
 
           // Emit sessionUpdated to trigger frontend refresh
           this.emit('sessionUpdated', {
-            sessionId: session.id,
+            id: session.id,
             plans: session.plans || [],
             plansUpdatedAt: now
           });

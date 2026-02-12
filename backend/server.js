@@ -1150,6 +1150,20 @@ async function start() {
           const content = fs.readFileSync(planPath, 'utf8');
           planVersionStore.markDirty(planPath, content);
           console.log(`[PlanVersionStore] Marked plan as dirty: ${plan.filename}`);
+
+          // Notify sessions that reference this plan so frontend re-fetches content
+          const normalizedPlanPath = planPath.replace(/\\/g, '/').toLowerCase();
+          const normalizedFilename = plan.filename.toLowerCase();
+          for (const s of sessionManager.getAllSessions()) {
+            const refs = s.plans || [];
+            const match = refs.some(p => {
+              const np = (p || '').replace(/\\/g, '/').toLowerCase();
+              return np === normalizedPlanPath || np === normalizedFilename || np.endsWith('/' + normalizedFilename);
+            });
+            if (match) {
+              sessionManager.emit('sessionUpdated', { id: s.id, plansUpdatedAt: Date.now() });
+            }
+          }
         } catch (error) {
           console.error(`[PlanVersionStore] Error marking plan dirty: ${error.message}`);
         }

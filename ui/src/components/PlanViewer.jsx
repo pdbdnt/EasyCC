@@ -22,8 +22,8 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
         if (response.ok) {
           const data = await response.json();
           setVersions(data.versions || []);
-          // Set current to the latest version (index 0) or null if no versions
-          setCurrentVersionIndex(data.versions && data.versions.length > 0 ? 0 : null);
+          // Default to live/current view; users navigate to snapshots via Prev/Next
+          setCurrentVersionIndex(null);
         }
       } catch (error) {
         console.error('Error fetching plan versions:', error);
