@@ -634,7 +634,7 @@ const TerminalView = forwardRef(function TerminalView({
             <>
               {session.name}
               <span className="terminal-directory" title={session.workingDir}>
-                {getDirectoryName(session.workingDir)}
+                📂 {getDirectoryName(session.workingDir)}
               </span>
               <span className="terminal-last-activity">
                 {formatRelativeTime(session.lastActivity)}

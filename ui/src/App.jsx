@@ -728,6 +728,25 @@ function App() {
       // Skip if hint mode is active (let hint mode handle keys)
       if (hintModeActiveRef.current) return;
 
+      // ── Always-intercept shortcuts (even in terminal override mode) ──
+
+      // Ctrl+Shift+W: close focused pane
+      if (isClosePaneShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeFocusedPaneRef.current();
+        return;
+      }
+
+      // Ctrl+W / Cmd+W: close current session (never let browser close tab)
+      if (isCloseSessionShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        closingSessionRef.current = true;
+        requestCloseCurrentSessionRef.current();
+        return;
+      }
+
       // Skip if terminal override mode is active (let terminal handle keys)
       if (window.__terminalOverrideKeys) return;
 
@@ -819,26 +838,10 @@ function App() {
         return;
       }
 
-      // Ctrl+Shift+W closes focused pane (before Ctrl+W check)
-      if (isClosePaneShortcut(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        closeFocusedPaneRef.current();
-        return;
-      }
-
       // Alt+Arrow navigates between panes
       if (isPaneFocusShortcut(e)) {
         e.preventDefault();
         navigatePanesRef.current(e.key);
-        return;
-      }
-
-      if (isCloseSessionShortcut(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        closingSessionRef.current = true;
-        requestCloseCurrentSessionRef.current();
         return;
       }
 
@@ -961,7 +964,7 @@ function App() {
     <div className={`app-container ${hintModeActive ? 'hint-mode-active' : ''}`}>
       <aside className="sidebar sessions-sidebar" style={{ width: sessionsWidth, minWidth: sessionsWidth }}>
         <div className="sidebar-header">
-          <h1>Claude Manager</h1>
+          <h1>CliMan</h1>
           <div className="view-toggle">
             <button
               className={`view-toggle-btn ${currentView === 'sessions' ? 'active' : ''}`}
