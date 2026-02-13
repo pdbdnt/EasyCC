@@ -1,5 +1,19 @@
 import { useRef, useEffect } from 'react';
 
+function getDisplayTask(session) {
+  if (session.currentTask && session.currentTask.length > 5) {
+    return session.currentTask;
+  }
+  const lastPrompt = session.promptHistory?.[session.promptHistory.length - 1];
+  if (lastPrompt?.text) {
+    return lastPrompt.text.split('\n')[0].substring(0, 100);
+  }
+  if (session.claudeSessionName) {
+    return session.claudeSessionName;
+  }
+  return session.description || '';
+}
+
 function TaskCard({
   session,
   onClick,
@@ -139,11 +153,14 @@ function TaskCard({
         )}
       </div>
 
-      {session.currentTask && !isPaused && (
-        <div className="task-card-current-task" title={session.currentTask}>
-          {session.currentTask}
-        </div>
-      )}
+      {(() => {
+        const displayTask = getDisplayTask(session);
+        return displayTask && !isPaused ? (
+          <div className="task-card-current-task" title={displayTask}>
+            {displayTask}
+          </div>
+        ) : null;
+      })()}
 
       {session.description && (
         <div className="task-card-notes" title={session.description}>

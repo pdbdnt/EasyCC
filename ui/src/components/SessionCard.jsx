@@ -1,6 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import HintBadge from './HintBadge';
 
+function getDisplayTask(session) {
+  if (session.currentTask && session.currentTask.length > 5) {
+    return session.currentTask;
+  }
+  const lastPrompt = session.promptHistory?.[session.promptHistory.length - 1];
+  if (lastPrompt?.text) {
+    return lastPrompt.text.split('\n')[0].substring(0, 100);
+  }
+  if (session.claudeSessionName) {
+    return session.claudeSessionName;
+  }
+  return session.description || '';
+}
+
 function SessionCard({
   session,
   index,
@@ -145,11 +159,14 @@ function SessionCard({
         </span>
       </div>
 
-      {session.currentTask && !isPaused && (
-        <div className="session-task" title={session.currentTask}>
-          {session.currentTask}
-        </div>
-      )}
+      {(() => {
+        const displayTask = getDisplayTask(session);
+        return displayTask && !isPaused ? (
+          <div className="session-task" title={displayTask}>
+            {displayTask}
+          </div>
+        ) : null;
+      })()}
 
       {session.notes && (
         <div className="session-notes-preview" title={session.notes}>

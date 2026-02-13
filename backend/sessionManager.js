@@ -1252,6 +1252,11 @@ class SessionManager extends EventEmitter {
    * @returns {string|null} Detected task or null
    */
   detectTask(data) {
+    // Strip ANSI escape sequences first (matching detectStatus pattern)
+    const stripped = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+                         .replace(/\x1b\][^\x07]*\x07/g, '')
+                         .trim();
+
     // Look for common task patterns
     const taskPatterns = [
       /Working on[:\s]+(.+)/i,
@@ -1262,7 +1267,7 @@ class SessionManager extends EventEmitter {
     ];
 
     for (const pattern of taskPatterns) {
-      const match = data.match(pattern);
+      const match = stripped.match(pattern);
       if (match && match[1]) {
         return match[1].trim().substring(0, 100);
       }
