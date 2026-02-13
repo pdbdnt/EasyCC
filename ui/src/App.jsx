@@ -308,10 +308,15 @@ function App() {
         return;
       }
       setTerminalPanes(prev => {
-        return validSelected.map(sid => {
-          const existing = prev.find(p => p.sessionId === sid);
-          return existing || { id: makePaneId(), sessionId: sid };
-        });
+        // Keep existing panes in their current order, remove deselected ones
+        const selectedSet = new Set(validSelected);
+        const kept = prev.filter(p => selectedSet.has(p.sessionId));
+        // Add new selections at the end (only truly new ones)
+        const existingIds = new Set(kept.map(p => p.sessionId));
+        const added = validSelected
+          .filter(sid => !existingIds.has(sid))
+          .map(sid => ({ id: makePaneId(), sessionId: sid }));
+        return [...kept, ...added];
       });
     } else {
       // Transitioning from multi to single: collapse to one pane
@@ -997,6 +1002,8 @@ function App() {
           hintModeActive={hintModeActive}
           typedChars={typedChars}
           hintCodes={settings?.keyboard?.hintMode?.hints || {}}
+          settings={settings}
+          onUpdateSettings={updateSettings}
           onGroupedSessionsChange={setGroupedSessions}
           kanbanColumnFilter={kanbanColumnFilter}
           onClearKanbanFilter={handleClearKanbanFilter}

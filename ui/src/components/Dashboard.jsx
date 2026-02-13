@@ -2,16 +2,9 @@ import { useMemo, useEffect, useLayoutEffect, useRef, useState, useCallback } fr
 import SessionCard from './SessionCard';
 import HintBadge from './HintBadge';
 import SavedPlansModal from './SavedPlansModal';
+import { getDirectoryName, getProjectDisplayName } from '../utils/projectUtils';
 
 const MAX_FLIP_ANIMATION_CARDS = 60;
-
-// Extract the bottom-level directory name from a path
-function getDirectoryName(path) {
-  if (!path) return 'Unknown';
-  const normalized = path.replace(/\\/g, '/').replace(/\/$/, '');
-  const parts = normalized.split('/');
-  return parts[parts.length - 1] || 'Unknown';
-}
 
 /**
  * Generate unique hint letter for a directory name, avoiding collisions
@@ -71,11 +64,54 @@ function Dashboard({
   onClearKanbanFilter,
   stages = [],
   viewTransition = null,
-  flipTriggerNonce = 0
+  flipTriggerNonce = 0,
+  settings = {},
+  onUpdateSettings
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
   const [savedPlansTarget, setSavedPlansTarget] = useState(null); // { dirName, workingDir }
+  const [editingAlias, setEditingAlias] = useState(null); // workingDir being edited
+  const [aliasInput, setAliasInput] = useState('');
+  const aliasInputRef = useRef(null);
+
+  const projectAliases = settings?.projectAliases || {};
+
+  const handleAliasDoubleClick = useCallback((e, workingDir, currentDisplayName) => {
+    e.stopPropagation();
+    setEditingAlias(workingDir);
+    setAliasInput(projectAliases[workingDir] || '');
+  }, [projectAliases]);
+
+  const handleAliasSave = useCallback(async (workingDir) => {
+    const trimmed = aliasInput.trim();
+    const newAliases = { ...projectAliases };
+    if (trimmed) {
+      newAliases[workingDir] = trimmed;
+    } else {
+      delete newAliases[workingDir];
+    }
+    if (onUpdateSettings) {
+      await onUpdateSettings({ projectAliases: newAliases });
+    }
+    setEditingAlias(null);
+  }, [aliasInput, projectAliases, onUpdateSettings]);
+
+  const handleAliasKeyDown = useCallback((e, workingDir) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAliasSave(workingDir);
+    } else if (e.key === 'Escape') {
+      setEditingAlias(null);
+    }
+  }, [handleAliasSave]);
+
+  useEffect(() => {
+    if (editingAlias && aliasInputRef.current) {
+      aliasInputRef.current.focus();
+      aliasInputRef.current.select();
+    }
+  }, [editingAlias]);
   const cardNodeRefs = useRef(new Map());
   const cardRefCallbacks = useRef(new Map());
   const previousCardRectsRef = useRef(new Map());
@@ -153,10 +189,11 @@ function Dashboard({
     // Sort groups alphabetically (first gets priority for letter)
     const sortedGroups = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 
-    // Assign unique hint letters to each group
+    // Assign unique hint letters to each group (use display name for hint derivation)
     const usedLetters = new Set();
     const groupsWithHints = sortedGroups.map(([dirName, sessionsInGroup]) => {
-      const hintLetter = getHintLetter(dirName, usedLetters);
+      const displayName = getProjectDisplayName(sessionsInGroup[0]?.session?.workingDir, projectAliases) || dirName;
+      const hintLetter = getHintLetter(displayName, usedLetters);
       // Assign hint codes to sessions within group
       const sessionsWithHints = sessionsInGroup.map((item, indexInGroup) => ({
         ...item,
@@ -166,7 +203,7 @@ function Dashboard({
     });
 
     return groupsWithHints;
-  }, [filteredSessions, kanbanColumnFilter]);
+  }, [filteredSessions, kanbanColumnFilter, projectAliases]);
 
   useLayoutEffect(() => {
     const flipRequested = flipTriggerNonce > 0 && flipTriggerNonce !== lastAnimatedNonceRef.current;
@@ -332,18 +369,41 @@ function Dashboard({
             <p>{kanbanColumnFilter ? 'Will auto-show when a session enters this stage' : 'Create one to get started'}</p>
           </div>
         ) : (
-          groupedSessions.map(([dirName, sessionsInGroup, hintLetter]) => (
+          groupedSessions.map(([dirName, sessionsInGroup, hintLetter]) => {
+            const groupWorkingDir = sessionsInGroup[0]?.session?.workingDir;
+            const displayName = getProjectDisplayName(groupWorkingDir, projectAliases);
+            const isEditingThis = editingAlias === groupWorkingDir;
+            return (
             <div key={dirName} className="session-group">
               <button
                 type="button"
                 className="session-group-header"
                 onClick={() => toggleGroupCollapsed(dirName)}
                 aria-expanded={!collapsedGroups.has(dirName)}
-                aria-label={`${collapsedGroups.has(dirName) ? 'Expand' : 'Collapse'} ${dirName} (${sessionsInGroup.length} sessions)`}
+                aria-label={`${collapsedGroups.has(dirName) ? 'Expand' : 'Collapse'} ${displayName} (${sessionsInGroup.length} sessions)`}
               >
                 <span className={`session-group-chevron ${collapsedGroups.has(dirName) ? 'collapsed' : ''}`}>▾</span>
                 <span className="session-group-icon">📁</span>
-                <span className="session-group-name">{dirName}</span>
+                {isEditingThis ? (
+                  <input
+                    ref={aliasInputRef}
+                    className="session-group-alias-input"
+                    value={aliasInput}
+                    onChange={e => setAliasInput(e.target.value)}
+                    onBlur={() => handleAliasSave(groupWorkingDir)}
+                    onKeyDown={e => handleAliasKeyDown(e, groupWorkingDir)}
+                    onClick={e => e.stopPropagation()}
+                    placeholder={dirName}
+                  />
+                ) : (
+                  <span
+                    className="session-group-name"
+                    title={groupWorkingDir}
+                    onDoubleClick={e => handleAliasDoubleClick(e, groupWorkingDir, displayName)}
+                  >
+                    {displayName}
+                  </span>
+                )}
                 <span className="session-group-count">
                   {kanbanColumnFilter
                     ? `${sessionsInGroup.length}/${totalsByDir.get(dirName) || 0}`
@@ -354,7 +414,7 @@ function Dashboard({
                 )}
                 <button
                   className="group-gear-btn"
-                  title={`Saved plans for ${dirName}`}
+                  title={`Saved plans for ${displayName}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     const workingDir = sessionsInGroup[0]?.session?.workingDir;
@@ -368,7 +428,7 @@ function Dashboard({
                 {onResumeSession && sessionsInGroup.some(s => s.session.status === 'paused') && (
                   <button
                     className="group-resume-btn"
-                    title={`Resume all paused sessions in ${dirName}`}
+                    title={`Resume all paused sessions in ${displayName}`}
                     onClick={async (e) => {
                       e.stopPropagation();
                       const pausedIds = sessionsInGroup
@@ -385,7 +445,7 @@ function Dashboard({
                 {onKillSession && (
                   <button
                     className="group-kill-btn"
-                    title={`Kill all sessions in ${dirName}`}
+                    title={`Kill all sessions in ${displayName}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       setKillGroupTarget({
@@ -428,7 +488,7 @@ function Dashboard({
                 );
               })}
             </div>
-          ))
+          );})
         )}
       </div>
       <div className={`connection-status ${connectionStatus}`}>

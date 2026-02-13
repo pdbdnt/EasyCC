@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
+import { getProjectDisplayName } from '../utils/projectUtils';
 import '@xterm/xterm/css/xterm.css';
 
 // Prompt patterns for buffer scanning (e.g., joining a running session)
@@ -12,6 +13,7 @@ const PROMPT_PATTERNS = [
   /^>\s+\S/,                  // Claude Code prompt with user input ("> some text")
   /^❯\s*$/,                   // Alternative prompt character
   /^\$\s*$/,                  // Shell prompt
+  /Would you like to proceed/i, // Multi-choice prompt header
 ];
 
 function isPromptOutput(text) {
@@ -115,11 +117,12 @@ const TerminalView = forwardRef(function TerminalView({
       const buf = xtermRef.current.buffer.active;
       const totalLines = buf.baseY + buf.cursorY;
       const userPromptPattern = /^>\s+\S/;
+      const multiChoicePattern = /Would you like to proceed/i;
       for (let i = 0; i <= totalLines; i++) {
         const line = buf.getLine(i);
         if (!line) continue;
         const text = line.translateToString(true).trim();
-        if (userPromptPattern.test(text)) {
+        if (userPromptPattern.test(text) || multiChoicePattern.test(text)) {
           promptLinesRef.current.push(i);
         }
       }
@@ -356,6 +359,27 @@ const TerminalView = forwardRef(function TerminalView({
         }
         // Reset scroll stepping when new prompt is added
         lastScrolledIndexRef.current = null;
+      }
+
+      // Track multi-choice selections (single digit without Enter)
+      if (/^\d$/.test(data)) {
+        const buf = term.buffer.active;
+        const curLine = buf.baseY + buf.cursorY;
+        for (let i = curLine; i >= Math.max(0, curLine - 15); i--) {
+          const bufLine = buf.getLine(i);
+          if (!bufLine) continue;
+          const text = bufLine.translateToString(true).trim();
+          if (/Would you like to proceed/i.test(text) ||
+              /^>\s*\d+\.\s/.test(text) ||
+              /Type .* to (change|tell)/i.test(text)) {
+            const lastRecorded = promptLinesRef.current[promptLinesRef.current.length - 1];
+            if (lastRecorded !== i) {
+              promptLinesRef.current.push(i);
+            }
+            lastScrolledIndexRef.current = null;
+            break;
+          }
+        }
       }
     });
 
@@ -634,7 +658,7 @@ const TerminalView = forwardRef(function TerminalView({
             <>
               {session.name}
               <span className="terminal-directory" title={session.workingDir}>
-                📂 {getDirectoryName(session.workingDir)}
+                📂 {getProjectDisplayName(session.workingDir, settings?.projectAliases)}
               </span>
               <span className="terminal-last-activity">
                 {formatRelativeTime(session.lastActivity)}
@@ -708,13 +732,7 @@ const TerminalView = forwardRef(function TerminalView({
   );
 });
 
-// Extract just the bottom-level directory name
-function getDirectoryName(path) {
-  if (!path) return '';
-  const normalized = path.replace(/\\/g, '/').replace(/\/$/, '');
-  const parts = normalized.split('/');
-  return parts[parts.length - 1] || '';
-}
+// getDirectoryName moved to utils/projectUtils.js
 
 function formatRelativeTime(dateString) {
   if (!dateString) return '';

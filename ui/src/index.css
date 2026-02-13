@@ -1749,6 +1749,20 @@ textarea::placeholder {
 .session-group-name {
   flex: 1;
   color: var(--text-primary);
+  cursor: default;
+}
+
+.session-group-alias-input {
+  flex: 1;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: inherit;
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
 }
 
 .session-group-count {

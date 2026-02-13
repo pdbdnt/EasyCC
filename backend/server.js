@@ -46,15 +46,16 @@ function isPathWithinRoot(targetPath, rootPath) {
 async function start() {
   // Register plugins
   await app.register(fastifyCors, {
-    origin: true,
+    origin: ['http://localhost:5010', 'http://localhost:5011'],
     credentials: true
   });
 
   await app.register(fastifyWebsocket, {
     options: {
-      // Allow connections from any origin (for dev mode cross-origin connections)
       verifyClient: function (info, next) {
-        next(true);
+        const origin = info.origin || info.req.headers.origin || '';
+        const allowed = origin.startsWith('http://localhost:');
+        next(allowed);
       }
     }
   });
@@ -1221,7 +1222,7 @@ async function start() {
   process.on('SIGTERM', shutdown);
 
   // Start server
-  const host = '0.0.0.0';
+  const host = '127.0.0.1';
   const port = parseInt(process.env.PORT || '5010', 10);
 
   try {

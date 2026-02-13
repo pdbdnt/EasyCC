@@ -1126,7 +1126,7 @@ class SessionManager extends EventEmitter {
       }
 
       const idleTime = Date.now() - session.lastActivity.getTime();
-      const canGoIdle = ['active', 'editing', 'waiting'].includes(session.status);
+      const canGoIdle = ['active', 'editing', 'waiting', 'thinking'].includes(session.status);
       if (idleTime > 5000 && canGoIdle) {
         session.status = 'idle';
         this.emit('statusChange', {
@@ -1229,7 +1229,11 @@ class SessionManager extends EventEmitter {
       /Ask Codex to do anything/i,    // Codex idle prompt
       /\?\s*for shortcuts/i,          // Codex footer when idle
       /Would you like to run/i,       // Codex approval prompt
-      /Implement this plan\?/i        // Codex plan mode prompt
+      /Implement this plan\?/i,       // Codex plan mode prompt
+      // Claude multi-choice prompts
+      /^\s*>\s*\d+\./m,               // "> 1." — cursor on numbered option line
+      /Would you like to proceed/i,   // Claude plan approval prompt
+      /Type .* to (change|tell)/i     // "Type here to tell Claude what to change"
     ];
 
     for (const pattern of waitingPatterns) {

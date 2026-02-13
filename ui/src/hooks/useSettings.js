@@ -36,7 +36,8 @@ const defaultSettings = {
   session: {
     defaultWorkingDir: '',
     autoResumeOnStart: true
-  }
+  },
+  projectAliases: {}
 };
 
 export function useSettings() {

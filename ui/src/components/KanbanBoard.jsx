@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import KanbanColumn from './KanbanColumn';
 import TaskViewModal from './TaskViewModal';
+import { getProjectDisplayName } from '../utils/projectUtils';
 
 function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSession, rejectSession, settings, onUpdateSession, onSessionSelect, onCreateSession, selectedSessionId, focusedColumnId, onPauseSession, onResumeSession, onKillSession, addToast }) {
   const [draggingSessionId, setDraggingSessionId] = useState(null);
@@ -167,7 +168,7 @@ function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSe
                 className={`project-chip ${selectedProjects.has(project) ? 'selected' : ''}`}
                 onClick={() => toggleProject(project)}
               >
-                {project.split(/[/\\]/).pop()}
+                {getProjectDisplayName(project, settings?.projectAliases)}
               </button>
             ))}
           </div>

@@ -53,7 +53,9 @@ class SettingsManager {
       session: {
         defaultWorkingDir: '',
         autoResumeOnStart: true
-      }
+      },
+      projectAliases: {}
+
     };
   }
 
