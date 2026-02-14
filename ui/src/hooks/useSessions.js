@@ -129,6 +129,10 @@ export function useSessions() {
     });
   }, []);
 
+  const selectMultiple = useCallback((ids, activeId = null) => {
+    setSelectedIds(activeId ? [...ids.filter(x => x !== activeId), activeId] : ids);
+  }, []);
+
   const toggleSelectSession = useCallback((id) => {
     setSelectedIds(prev => {
       const idx = prev.indexOf(id);
@@ -335,6 +339,7 @@ export function useSessions() {
     selectedId,
     selectedIds,
     selectSession,
+    selectMultiple,
     setActiveSelectedId,
     toggleSelectSession,
     createSession,
@@ -347,7 +352,7 @@ export function useSessions() {
     rejectSession,
     connectionStatus,
     isConnected
-  }), [sessions, stages, sessionsByStage, selectedId, selectedIds, selectSession, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
+  }), [sessions, stages, sessionsByStage, selectedId, selectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
 }
 
 export default useSessions;

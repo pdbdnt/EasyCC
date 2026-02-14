@@ -29,7 +29,9 @@ function SessionCard({
   typedChars = '',
   hintCode = '',
   isRecentlyEntered = false,
-  stages = []
+  stages = [],
+  groupInfo = null,
+  isGroupFocused = false
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(session.name);
@@ -104,16 +106,13 @@ function SessionCard({
   const currentStage = stages.find(s => s.id === session.stage);
 
   const handleClick = (e) => {
-    if ((e.ctrlKey || e.metaKey) && onToggleSelect) {
-      onToggleSelect(session.id);
-    } else {
-      onSelect();
-    }
+    // Pass event to onSelect so parent can detect Ctrl/Cmd for group logic
+    onSelect(e);
   };
 
   return (
     <div
-      className={`session-card ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}`}
+      className={`session-card ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''} ${isGroupFocused ? 'group-focused' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}`}
       onClick={handleClick}
     >
       {hintCode && (
@@ -150,6 +149,11 @@ function SessionCard({
               )}
               {session.cliType === 'terminal' && (
                 <span className="cli-type-badge terminal">TRM</span>
+              )}
+              {groupInfo && (
+                <span className="group-badge" title={`Group: ${groupInfo.name}`}>
+                  {groupInfo.name.length > 8 ? groupInfo.name.substring(0, 8) + '..' : groupInfo.name}
+                </span>
               )}
             </>
           )}

@@ -10,6 +10,7 @@ import HintBadge from './components/HintBadge';
 import KanbanBoard from './components/KanbanBoard';
 import ToastContainer from './components/Toast';
 import { useSessions } from './hooks/useSessions';
+import { useSessionGroups } from './hooks/useSessionGroups';
 import { useContextSidebar } from './hooks/useContextSidebar';
 import { useSettings } from './hooks/useSettings';
 import { useHintMode } from './hooks/useHintMode';
@@ -83,6 +84,7 @@ function App() {
     selectedId,
     selectedIds,
     selectSession,
+    selectMultiple,
     setActiveSelectedId,
     toggleSelectSession,
     createSession,
@@ -98,6 +100,14 @@ function App() {
   const { isVisible: sidebarVisible, toggle: toggleSidebar, hide: hideSidebar } = useContextSidebar();
   const { settings, updateSettings, resetSettings } = useSettings();
   const { toasts, addToast, removeToast } = useToast();
+  const {
+    sessionGroups,
+    sessionIdToGroup,
+    saveGroup,
+    deleteGroup,
+    renameGroup
+  } = useSessionGroups(sessions);
+  const [activeGroupId, setActiveGroupId] = useState(null);
   const [sessionsWidth, setSessionsWidth] = useState(280);
   const [contextWidth, setContextWidth] = useState(320);
   const [focusedPanel, setFocusedPanel] = useState(null); // 'terminal' | 'context' | null
@@ -903,6 +913,60 @@ function App() {
     setContextWidth(w => Math.max(250, Math.min(maxWidth, w + delta)));
   }, []);
 
+  // Session group-aware select handler
+  const handleSelectSession = useCallback((id, event) => {
+    if (event && (event.ctrlKey || event.metaKey)) {
+      // Ctrl+click: ad-hoc multi-select, break out of group mode
+      toggleSelectSession(id);
+      setActiveGroupId(null);
+      return;
+    }
+
+    const group = sessionIdToGroup.get(id);
+    if (group) {
+      if (activeGroupId === group.id) {
+        // Group already active, just change focus within it
+        setActiveSelectedId(id);
+      } else {
+        // Activate the group
+        const validIds = group.sessionIds.filter(sid => sessions.some(s => s.id === sid));
+        if (validIds.length > 1) {
+          selectMultiple(validIds, id);
+          setActiveGroupId(group.id);
+        } else {
+          selectSession(id);
+          setActiveGroupId(null);
+        }
+      }
+    } else {
+      selectSession(id);
+      setActiveGroupId(null);
+    }
+  }, [sessionIdToGroup, activeGroupId, sessions, toggleSelectSession, setActiveSelectedId, selectMultiple, selectSession]);
+
+  const handleSaveGroup = useCallback((name) => {
+    const group = saveGroup(name, selectedIds);
+    setActiveGroupId(group.id);
+    return group;
+  }, [saveGroup, selectedIds]);
+
+  const handleDeleteGroup = useCallback((groupId) => {
+    deleteGroup(groupId);
+    setActiveGroupId(null);
+    // Revert to single-select of the currently focused session
+    if (selectedId) {
+      selectSession(selectedId);
+    }
+  }, [deleteGroup, selectSession, selectedId]);
+
+  // Clear activeGroupId when selection drops to single or group is pruned
+  useEffect(() => {
+    if (!activeGroupId) return;
+    if (selectedIds.length <= 1 || !sessionGroups.find(g => g.id === activeGroupId)) {
+      setActiveGroupId(null);
+    }
+  }, [activeGroupId, selectedIds, sessionGroups]);
+
   const handleCreateSession = async (name, workingDir, cliType) => {
     const createdSession = await createSession(name, workingDir, cliType);
     if (createdSession) {
@@ -989,8 +1053,14 @@ function App() {
           sessions={sessions}
           selectedId={selectedId}
           selectedIds={selectedIds}
-          onSelectSession={selectSession}
+          onSelectSession={handleSelectSession}
           onToggleSelectSession={toggleSelectSession}
+          sessionIdToGroup={sessionIdToGroup}
+          sessionGroups={sessionGroups}
+          activeGroupId={activeGroupId}
+          onSaveGroup={handleSaveGroup}
+          onDeleteGroup={handleDeleteGroup}
+          onRenameGroup={renameGroup}
           onNewSession={() => setShowNewSessionModal(true)}
           onShowDetails={handleShowDetails}
           onOpenSettings={() => setShowSettingsModal(true)}

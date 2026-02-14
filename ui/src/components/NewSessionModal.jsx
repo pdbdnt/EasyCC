@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const BASE_DIR = 'C:\\Users\\denni\\apps';
 
@@ -196,6 +196,15 @@ function NewSessionModal({ onClose, onCreate, defaultWorkingDir = '' }) {
     }
   };
 
+  const clickTimerRef = useRef(null);
+
+  // Cleanup click timer on unmount
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
+
   const atBrowseRoot = normalizeWindowsPath(currentBase).toLowerCase() === normalizeWindowsPath(browseRoot).toLowerCase();
   const breadcrumbSegments = getBreadcrumbSegments(currentBase);
 
@@ -293,30 +302,57 @@ function NewSessionModal({ onClose, onCreate, defaultWorkingDir = '' }) {
                     (() => {
                       const folderPath = joinWindowsPath(currentBase, folder);
                       const isStarred = starredFolders.includes(folderPath);
+                      const isSelected = normalizeWindowsPath(selectedPath).toLowerCase() === normalizeWindowsPath(folderPath).toLowerCase();
                       return (
                     <div
                       key={folderPath}
-                      className={`folder-option ${isStarred ? 'starred' : ''}`}
+                      className={`folder-option ${isStarred ? 'starred' : ''} ${isSelected ? 'selected' : ''}`}
                       onClick={() => {
+                        if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+                        clickTimerRef.current = setTimeout(() => {
+                          setSelectedPath(folderPath);
+                          setCustomPath('');
+                          setCustomPathConfirmed(false);
+                        }, 250);
+                      }}
+                      onDoubleClick={() => {
+                        if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
                         setCurrentBase(folderPath);
                         setCustomPath('');
                         setSelectedPath('');
                         setCustomPathConfirmed(false);
                       }}
-                      title={`Browse ${folderPath}`}
+                      title="Click to select, double-click to browse"
                     >
                       <span className="folder-name">
                         {isStarred && <span className="star-icon">*</span>}
                         {folder}
                       </span>
-                      <button
-                        type="button"
-                        className="star-btn"
-                        onClick={(e) => toggleStar(folderPath, e)}
-                        title={isStarred ? 'Unstar' : 'Star'}
-                      >
-                        {isStarred ? '*' : 'o'}
-                      </button>
+                      <span className="folder-actions">
+                        <button
+                          type="button"
+                          className="folder-browse-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+                            setCurrentBase(folderPath);
+                            setCustomPath('');
+                            setSelectedPath('');
+                            setCustomPathConfirmed(false);
+                          }}
+                          title={`Browse into ${folder}`}
+                        >
+                          &gt;
+                        </button>
+                        <button
+                          type="button"
+                          className="star-btn"
+                          onClick={(e) => toggleStar(folderPath, e)}
+                          title={isStarred ? 'Unstar' : 'Star'}
+                        >
+                          {isStarred ? '*' : 'o'}
+                        </button>
+                      </span>
                     </div>
                       );
                     })()
@@ -457,6 +493,29 @@ function NewSessionModal({ onClose, onCreate, defaultWorkingDir = '' }) {
         }
         .star-icon {
           color: #f5c518;
+        }
+        .folder-actions {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+        }
+        .folder-browse-btn {
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 2px 6px;
+          font-size: 14px;
+          color: var(--text-muted, #888);
+          border-radius: 3px;
+          opacity: 0;
+          transition: opacity 0.15s;
+        }
+        .folder-option:hover .folder-browse-btn {
+          opacity: 1;
+        }
+        .folder-browse-btn:hover {
+          background: var(--hover-bg, #333);
+          color: var(--text-color, #fff);
         }
         .star-btn {
           background: none;

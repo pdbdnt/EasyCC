@@ -66,9 +66,17 @@ function Dashboard({
   viewTransition = null,
   flipTriggerNonce = 0,
   settings = {},
-  onUpdateSettings
+  onUpdateSettings,
+  sessionIdToGroup,
+  sessionGroups = [],
+  activeGroupId = null,
+  onSaveGroup,
+  onDeleteGroup,
+  onRenameGroup
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [groupNameInput, setGroupNameInput] = useState('');
+  const [showGroupNameInput, setShowGroupNameInput] = useState(false);
   const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
   const [savedPlansTarget, setSavedPlansTarget] = useState(null); // { dirName, workingDir }
   const [editingAlias, setEditingAlias] = useState(null); // workingDir being edited
@@ -361,6 +369,71 @@ function Dashboard({
           <button onClick={onClearKanbanFilter} title="Clear filter">&times;</button>
         </div>
       )}
+      {selectedIds.length > 1 && (
+        <div className="save-group-bar">
+          {activeGroupId ? (
+            <>
+              <span className="group-active-label">
+                Group: {sessionGroups.find(g => g.id === activeGroupId)?.name || 'Unnamed'}
+              </span>
+              <button
+                className="btn btn-secondary btn-small"
+                onClick={() => onDeleteGroup(activeGroupId)}
+                title="Dissolve this group"
+              >
+                Ungroup
+              </button>
+            </>
+          ) : showGroupNameInput ? (
+            <>
+              <input
+                type="text"
+                className="group-name-input"
+                value={groupNameInput}
+                onChange={(e) => setGroupNameInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && groupNameInput.trim()) {
+                    onSaveGroup(groupNameInput.trim());
+                    setGroupNameInput('');
+                    setShowGroupNameInput(false);
+                  } else if (e.key === 'Escape') {
+                    setShowGroupNameInput(false);
+                    setGroupNameInput('');
+                  }
+                }}
+                placeholder="Group name..."
+                autoFocus
+              />
+              <button
+                className="btn btn-primary btn-small"
+                onClick={() => {
+                  if (groupNameInput.trim()) {
+                    onSaveGroup(groupNameInput.trim());
+                    setGroupNameInput('');
+                    setShowGroupNameInput(false);
+                  }
+                }}
+                disabled={!groupNameInput.trim()}
+              >
+                Save
+              </button>
+              <button
+                className="btn btn-secondary btn-small"
+                onClick={() => { setShowGroupNameInput(false); setGroupNameInput(''); }}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              className="btn btn-secondary btn-small"
+              onClick={() => setShowGroupNameInput(true)}
+            >
+              Save as Group ({selectedIds.length})
+            </button>
+          )}
+        </div>
+      )}
       <div className="sessions-list">
         {filteredSessions.length === 0 ? (
           <div className="empty-state">
@@ -473,7 +546,7 @@ function Dashboard({
                       index={globalIndex}
                       isSelected={session.id === selectedId}
                       isMultiSelected={selectedIds.includes(session.id) && selectedIds.length > 1}
-                      onSelect={() => onSelectSession(session.id)}
+                      onSelect={(event) => onSelectSession(session.id, event)}
                       onToggleSelect={onToggleSelectSession}
                       onShowDetails={onShowDetails}
                       onUpdate={onUpdateSession}
@@ -483,6 +556,8 @@ function Dashboard({
                       hintCode={hintCode}
                       isRecentlyEntered={!!recentlyEntered}
                       stages={stages}
+                      groupInfo={sessionIdToGroup?.get(session.id) || null}
+                      isGroupFocused={activeGroupId && selectedIds.includes(session.id) && session.id === selectedId}
                     />
                   </div>
                 );
