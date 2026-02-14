@@ -546,6 +546,9 @@ class SessionManager extends EventEmitter {
       // Don't process if shutting down (cleanup handles this)
       if (this.isShuttingDown) return;
 
+      // Don't process if session was intentionally killed
+      if (session.status === 'killed') return;
+
       // Don't mark as completed if intentionally paused
       if (session.status === 'paused') {
         return;
@@ -936,6 +939,9 @@ class SessionManager extends EventEmitter {
 
         // Don't process if shutting down (cleanup handles this)
         if (this.isShuttingDown) return;
+
+        // Don't process if session was intentionally killed
+        if (session.status === 'killed') return;
 
         // Don't mark as completed if intentionally paused
         if (session.status === 'paused') {
@@ -1380,6 +1386,9 @@ class SessionManager extends EventEmitter {
         // Ignore
       }
     }
+
+    // Mark as intentionally killed so onExit handler won't re-persist
+    session.status = 'killed';
 
     // Kill the PTY process
     try {
