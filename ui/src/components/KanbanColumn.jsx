@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import TaskCard from './TaskCard';
+import { getProjectDisplayName } from '../utils/projectUtils';
 
 function KanbanColumn({
   stage,
@@ -14,7 +15,8 @@ function KanbanColumn({
   selectedSessionId,
   onResetPlacement,
   onLockPlacement,
-  focusedColumnId
+  focusedColumnId,
+  projectAliases
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
   const isFocused = stage.id === focusedColumnId;
@@ -129,7 +131,7 @@ function KanbanColumn({
             <div key={project} className="kanban-project-group">
               {groups.size > 1 && (
                 <div className="kanban-project-subheader">
-                  {project.split(/[/\\]/).pop()}
+                  {getProjectDisplayName(project, projectAliases)}
                 </div>
               )}
               {projectSessions.map(session => (

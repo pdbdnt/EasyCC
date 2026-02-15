@@ -192,6 +192,7 @@ function KanbanBoard({ sessions, stages, sessionsByStage, moveSession, advanceSe
             onResetPlacement={handleResetPlacement}
             onLockPlacement={handleLockPlacement}
             focusedColumnId={focusedColumnId}
+            projectAliases={settings?.projectAliases}
           />
         ))}
       </div>

@@ -336,14 +336,18 @@ function MarkdownRenderer({ content, compact = false, onCopy, copied, forceExpan
  */
 function parseIntoSections(content) {
   // First check if content has any markdown headings
-  const hasMarkdownHeadings = /^#{1,6}\s+/m.test(content);
+  const hasMarkdownHeadings = /^\s*#{1,6}\s+/m.test(content);
 
   if (hasMarkdownHeadings) {
-    return parseMarkdownSections(content);
+    const sections = parseMarkdownSections(content);
+    applyNumberedSubsections(sections);
+    return sections;
   }
 
   // Fallback: detect plain text sections (Codex format)
-  return parsePlainTextSections(content);
+  const sections = parsePlainTextSections(content);
+  applyNumberedSubsections(sections);
+  return sections;
 }
 
 /**
@@ -380,7 +384,8 @@ function parseMarkdownSections(content) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
+    const trimmedLine = line.trimStart();
+    const headingMatch = trimmedLine.match(/^(#{1,6})\s+(.+)/);
 
     if (headingMatch) {
       flushSection();
@@ -466,6 +471,55 @@ function parsePlainTextSections(content) {
   flushSection();
 
   return root;
+}
+
+/**
+ * Post-process sections: split top-level numbered items into collapsible subsections.
+ * e.g. "1. Foo\n  - bar\n  - baz\n2. Qux\n  - quux" becomes two child sections.
+ */
+function splitNumberedSubsections(section) {
+  if (!section.contentLines.length) return;
+
+  const groups = [];
+  let currentGroup = null;
+  let preambleLines = [];
+
+  for (const line of section.contentLines) {
+    const numMatch = line.match(/^(\d+)\.\s+(.+)/);
+    if (numMatch) {
+      if (currentGroup) groups.push(currentGroup);
+      currentGroup = { title: `${numMatch[1]}. ${numMatch[2]}`, lines: [] };
+    } else if (currentGroup) {
+      currentGroup.lines.push(line);
+    } else {
+      preambleLines.push(line);
+    }
+  }
+  if (currentGroup) groups.push(currentGroup);
+
+  // Only convert if we found 2+ numbered items
+  if (groups.length < 2) return;
+
+  section.contentLines = preambleLines;
+  const numberedChildren = groups.map(group => ({
+    level: section.level + 1,
+    title: group.title,
+    lineIndex: section.lineIndex,
+    contentLines: group.lines,
+    children: []
+  }));
+  // Prepend numbered children before any existing heading-based children
+  section.children = [...numberedChildren, ...section.children];
+}
+
+/** Recursively apply splitNumberedSubsections to a tree of sections */
+function applyNumberedSubsections(sections) {
+  for (const section of sections) {
+    splitNumberedSubsections(section);
+    if (section.children.length) {
+      applyNumberedSubsections(section.children);
+    }
+  }
 }
 
 function MarkdownSection({ section, onCopy, copied, forceExpanded, onSectionToggle }) {

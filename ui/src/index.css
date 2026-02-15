@@ -814,6 +814,17 @@ body {
   flex-shrink: 0;
 }
 
+.session-lock-icon.clickable {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.session-lock-icon.clickable:hover {
+  opacity: 1;
+}
+
 .btn-icon {
   background: none;
   border: none;

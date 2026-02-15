@@ -83,6 +83,17 @@ async function getTask(page, taskId) {
   return apiFetch(page, `/api/tasks/${taskId}`);
 }
 
+async function getSettings(page) {
+  return apiFetch(page, '/api/settings');
+}
+
+async function updateSettings(page, updates) {
+  return apiFetch(page, '/api/settings', {
+    method: 'PUT',
+    body: updates
+  });
+}
+
 module.exports = {
   createTestSession,
   killTestSession,
@@ -95,5 +106,7 @@ module.exports = {
   deleteTask,
   patchSession,
   getStages,
-  getTask
+  getTask,
+  getSettings,
+  updateSettings
 };

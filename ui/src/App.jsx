@@ -353,6 +353,17 @@ function App() {
       const singleId = selectedIds[0] ||
         (kanbanColumnFilter ? null : (sessions.length > 0 ? sessions[0].id : null));
       if (!singleId || !validSessionIds.has(singleId)) {
+        // When kanban filter is active, only retain panes matching the filtered stage
+        if (kanbanColumnFilter) {
+          const filteredIds = new Set(
+            sessions.filter(s => s.stage === kanbanColumnFilter).map(s => s.id)
+          );
+          setTerminalPanes(prev => {
+            const next = prev.filter(p => filteredIds.has(p.sessionId));
+            return next.length > 0 ? next : [];
+          });
+          return;
+        }
         setTerminalPanes(prev => {
           const next = prev.filter(p => validSessionIds.has(p.sessionId));
           if (next.length > 0) return next;

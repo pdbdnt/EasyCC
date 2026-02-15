@@ -191,7 +191,19 @@ function SessionCard({
 
       <div className="session-footer">
         {session.manuallyPlaced && (
-          <span className="session-lock-icon" title="Locked to column">🔒</span>
+          <button
+            className="session-lock-icon clickable"
+            title="Locked to column — click to unlock"
+            onClick={async (e) => {
+              e.stopPropagation();
+              try {
+                const res = await fetch(`/api/sessions/${session.id}/reset-placement`, { method: 'POST' });
+                if (!res.ok) console.error('Failed to unlock session');
+              } catch (err) {
+                console.error('Failed to unlock session:', err);
+              }
+            }}
+          >🔒</button>
         )}
         {currentStage && (
           <div className="stage-badge-wrapper" ref={stageMenuRef}>

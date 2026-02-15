@@ -1702,12 +1702,15 @@ class SessionManager extends EventEmitter {
     for (const planPath of (session.plans || [])) {
       const plan = this.planManager.getPlanContent(planPath);
       if (plan) {
+        // Plans explicitly associated with this session are always included.
+        // Only filter out plans whose workingDir explicitly mismatches.
         if (plan.workingDir) {
           const normalizedPlanDir = plan.workingDir.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
-          if (normalizedPlanDir === normalizedSessionDir) {
-            plans.push(plan);
+          if (normalizedPlanDir !== normalizedSessionDir) {
+            continue;
           }
         }
+        plans.push(plan);
       }
     }
     // Sort by modified time (newest first)
