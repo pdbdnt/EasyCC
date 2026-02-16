@@ -8,6 +8,8 @@ import SettingsModal from './components/SettingsModal';
 import ResizeHandle from './components/ResizeHandle';
 import HintBadge from './components/HintBadge';
 import KanbanBoard from './components/KanbanBoard';
+import AgentBoard from './components/AgentBoard';
+import AgentSidebar from './components/AgentSidebar';
 import ToastContainer from './components/Toast';
 import { useSessions } from './hooks/useSessions';
 import { useSessionGroups } from './hooks/useSessionGroups';
@@ -70,15 +72,17 @@ function isPaneFocusShortcut(e) {
     (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown');
 }
 
-const CTRL_O_TRANSITION_MS = 280;
+
 
 function App() {
-  const [currentView, setCurrentView] = useState('sessions'); // 'sessions' | 'kanban'
+  const [currentView, setCurrentView] = useState('sessions'); // 'sessions' | 'kanban' | 'agents'
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [detailsSession, setDetailsSession] = useState(null);
   const {
     sessions,
+    agents,
+    tasks,
     stages,
     sessionsByStage,
     selectedId,
@@ -95,6 +99,20 @@ function App() {
     moveSession,
     advanceSession,
     rejectSession,
+    createAgent,
+    updateAgent,
+    startAgent,
+    stopAgent,
+    restartAgent,
+    rewarmAgent,
+    createTask,
+    updateTask,
+    assignTaskAgents,
+    addTaskComment,
+    startTaskRun,
+    stopTaskRun,
+    deleteTask,
+    deleteAgent,
     connectionStatus
   } = useSessions();
   const { isVisible: sidebarVisible, toggle: toggleSidebar, hide: hideSidebar } = useContextSidebar();
@@ -119,6 +137,7 @@ function App() {
   const [pendingCloseSessionId, setPendingCloseSessionId] = useState(null);
   const [paneSizes, setPaneSizes] = useState([]); // flex ratios for each pane
   const [kanbanColumnFilter, setKanbanColumnFilter] = useState(null); // stage ID filter from kanban
+  const [kanbanProjectFilter, setKanbanProjectFilter] = useState(null); // Set of workingDirs from kanban project chips
   const [focusedColumnId, setFocusedColumnId] = useState(null); // stage ID when empty kanban column focused
   const [multiPaneLayout, setMultiPaneLayout] = useState('auto'); // 'auto' | 'row' | 'column'
   const [multiPaneSizes, setMultiPaneSizes] = useState(null); // null=equal, Array for row/col, {cols:[]} for grid
@@ -129,6 +148,7 @@ function App() {
     nonce: 0
   });
   const [flipTriggerNonce, setFlipTriggerNonce] = useState(0);
+  const [s2kFlipTriggerNonce, setS2kFlipTriggerNonce] = useState(0);
 
   // Refs for focus management
   const contextRef = useRef(null);
@@ -136,6 +156,11 @@ function App() {
   const closingSessionRef = useRef(false);
   const wasMultiSelectRef = useRef(false);
   const ctrlOTransitionTimerRef = useRef(null);
+  const kanbanCardRefsRef = useRef(new Map());
+  const kanbanRectsRef = useRef(null);
+  const sidebarCardRefsRef = useRef(new Map());
+  const kanbanProjectFilterRef = useRef(null);
+  const sidebarRectsRef = useRef(null);
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -146,6 +171,7 @@ function App() {
   const confirmBeforeLeave = settings?.ui?.confirmBeforeLeave ?? true;
 
   const selectedSession = sessions.find(s => s.id === selectedId);
+  const selectedAgent = selectedSession?.agentId ? agents.find(a => a.id === selectedSession.agentId) : null;
   const pendingCloseSession = sessions.find(s => s.id === pendingCloseSessionId);
 
   const focusActiveTerminal = useCallback(() => {
@@ -167,7 +193,9 @@ function App() {
     const reducedMotion = typeof window !== 'undefined' &&
       window.matchMedia &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const shouldAnimateCtrlO = reason === 'ctrl-o' && !reducedMotion;
+    // If user explicitly enabled animations in settings, override OS reduced-motion preference
+    const userExplicitlyEnabled = settings?.ui?.showFlipAnimation === true;
+    const shouldAnimateCtrlO = (reason === 'ctrl-o' || reason === 'kanban-select') && (!reducedMotion || userExplicitlyEnabled);
 
     if (shouldAnimateCtrlO) {
       const direction = fromView === 'kanban' && nextView === 'sessions'
@@ -181,16 +209,27 @@ function App() {
         setViewTransition((prev) => ({
           active: true,
           direction,
-          reason: 'ctrl-o',
+          reason,
           nonce: prev.nonce + 1
         }));
         if (direction === 'k2s') {
           setFlipTriggerNonce((n) => n + 1);
+        } else if (direction === 's2k') {
+          setS2kFlipTriggerNonce((n) => n + 1);
         }
+        // Scale transition timeout with animation speed setting
+        const speedMult = settings?.ui?.flipAnimationSpeed || 1;
+        const flipEnabled = settings?.ui?.showFlipAnimation !== false;
+        const transitionMs = flipEnabled ? Math.round(400 / speedMult) : 300;
+        const cssDuration = flipEnabled ? Math.round(300 / speedMult) : 300;
+        document.documentElement.style.setProperty('--ctrl-o-duration', `${cssDuration}ms`);
+        console.log('[FLIP-DEBUG] switchView:', { direction, speedMult, flipEnabled, transitionMs, cssDuration, flipAnimationSpeed: settings?.ui?.flipAnimationSpeed });
+
         ctrlOTransitionTimerRef.current = setTimeout(() => {
           setViewTransition((prev) => ({ ...prev, active: false }));
+          document.documentElement.style.removeProperty('--ctrl-o-duration');
           ctrlOTransitionTimerRef.current = null;
-        }, CTRL_O_TRANSITION_MS);
+        }, transitionMs);
       }
     } else {
       setViewTransition((prev) => (
@@ -199,7 +238,7 @@ function App() {
     }
 
     setCurrentView(nextView);
-  }, [currentView]);
+  }, [currentView, settings]);
 
   // Save pane layout on changes
   useEffect(() => {
@@ -618,9 +657,19 @@ function App() {
   }, [selectedId, groupedSessions, selectSession]);
 
   const handleSessionSelectFromKanban = useCallback((sessionId, stageId) => {
+    // Capture kanban card positions before switching for FLIP animation
+    const rects = new Map();
+    kanbanCardRefsRef.current.forEach((node, id) => {
+      if (node?.isConnected) {
+        const rect = node.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) rects.set(id, rect);
+      }
+    });
+    kanbanRectsRef.current = rects;
     selectSession(sessionId);
-    switchView('sessions', { reason: 'other', fromView: 'kanban' });
+    switchView('sessions', { reason: 'kanban-select', fromView: 'kanban' });
     setKanbanColumnFilter(stageId || null);
+    setKanbanProjectFilter(kanbanProjectFilterRef.current);
   }, [selectSession, switchView]);
 
   // Clear focused column when a session gets selected
@@ -789,7 +838,19 @@ function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         const currentView = currentViewRef.current;
-        if (currentView === 'kanban') {
+        if (currentView === 'kanban' || currentView === 'agents') {
+          // Capture kanban card positions BEFORE any state changes
+          const kanbanRects = new Map();
+          kanbanCardRefsRef.current.forEach((node, sessionId) => {
+            if (node?.isConnected) {
+              const rect = node.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                kanbanRects.set(sessionId, rect);
+              }
+            }
+          });
+          kanbanRectsRef.current = kanbanRects;
+
           // Switching to sessions: check focused column first, then selected session
           const focusedCol = focusedColumnIdRef.current;
           if (focusedCol) {
@@ -805,8 +866,21 @@ function App() {
               setKanbanColumnFilter(stageId || null);
             }
           }
+          setKanbanProjectFilter(kanbanProjectFilterRef.current);
           switchViewRef.current('sessions', { reason: 'ctrl-o', fromView: currentView });
         } else {
+          // Capture sidebar card positions BEFORE any state changes
+          const sidebarRects = new Map();
+          sidebarCardRefsRef.current.forEach((node, sessionId) => {
+            if (node?.isConnected) {
+              const rect = node.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                sidebarRects.set(sessionId, rect);
+              }
+            }
+          });
+          sidebarRectsRef.current = sidebarRects;
+
           // Switching to kanban: restore focused column if filter matches an empty stage
           const currentFilter = kanbanColumnFilterRef.current;
           if (currentFilter) {
@@ -978,8 +1052,8 @@ function App() {
     }
   }, [activeGroupId, selectedIds, sessionGroups]);
 
-  const handleCreateSession = async (name, workingDir, cliType) => {
-    const createdSession = await createSession(name, workingDir, cliType);
+  const handleCreateSession = async (name, workingDir, cliType, role = '') => {
+    const createdSession = await createSession(name, workingDir, cliType, { role });
     if (createdSession) {
       setShowNewSessionModal(false);
     }
@@ -988,6 +1062,23 @@ function App() {
 
   const handleClearKanbanFilter = useCallback(() => {
     setKanbanColumnFilter(null);
+  }, []);
+
+  const handleKanbanProjectFilterChange = useCallback((projects) => {
+    const snapshot = projects && projects.size > 0 ? new Set(projects) : null;
+    kanbanProjectFilterRef.current = snapshot;
+  }, []);
+
+  const handleClearKanbanProjectFilter = useCallback(() => {
+    setKanbanProjectFilter(null);
+  }, []);
+
+  const handleKanbanRectsConsumed = useCallback(() => {
+    kanbanRectsRef.current = null;
+  }, []);
+
+  const handleSidebarRectsConsumed = useCallback(() => {
+    sidebarRectsRef.current = null;
   }, []);
 
   const handleShowDetails = (session) => {
@@ -1036,9 +1127,14 @@ function App() {
     return success;
   };
 
-  const ctrlOTransitionClass = viewTransition.active && viewTransition.reason === 'ctrl-o' && viewTransition.direction
-    ? `ctrl-o-transition ctrl-o-transition-${viewTransition.direction}`
-    : '';
+  // Skip container CSS animation for s2k when FLIP is active — cards handle their own animation
+  const flipEnabled = settings?.ui?.showFlipAnimation !== false;
+  const ctrlOTransitionClass = viewTransition.active &&
+    (viewTransition.reason === 'ctrl-o' || viewTransition.reason === 'kanban-select') &&
+    viewTransition.direction &&
+    !(viewTransition.direction === 's2k' && flipEnabled)
+      ? `ctrl-o-transition ctrl-o-transition-${viewTransition.direction}`
+      : '';
 
   return (
     <div className={`app-container ${hintModeActive ? 'hint-mode-active' : ''}`}>
@@ -1058,55 +1154,89 @@ function App() {
             >
               Kanban
             </button>
+            <button
+              className={`view-toggle-btn ${currentView === 'agents' ? 'active' : ''}`}
+              onClick={() => switchView('agents', { reason: 'other', fromView: currentView })}
+            >
+              Agents
+            </button>
           </div>
         </div>
-        <Dashboard
-          sessions={sessions}
-          selectedId={selectedId}
-          selectedIds={selectedIds}
-          onSelectSession={handleSelectSession}
-          onToggleSelectSession={toggleSelectSession}
-          sessionIdToGroup={sessionIdToGroup}
-          sessionGroups={sessionGroups}
-          activeGroupId={activeGroupId}
-          onSaveGroup={handleSaveGroup}
-          onDeleteGroup={handleDeleteGroup}
-          onRenameGroup={renameGroup}
-          onNewSession={() => setShowNewSessionModal(true)}
-          onShowDetails={handleShowDetails}
-          onOpenSettings={() => setShowSettingsModal(true)}
-          onUpdateSession={updateSession}
-          onMoveSession={moveSession}
-          onKillSession={killSession}
-          onResumeSession={resumeSession}
-          connectionStatus={connectionStatus}
-          hintModeActive={hintModeActive}
-          typedChars={typedChars}
-          hintCodes={settings?.keyboard?.hintMode?.hints || {}}
-          settings={settings}
-          onUpdateSettings={updateSettings}
-          onGroupedSessionsChange={setGroupedSessions}
-          kanbanColumnFilter={kanbanColumnFilter}
-          onClearKanbanFilter={handleClearKanbanFilter}
-          stages={stages}
-          viewTransition={viewTransition}
-          flipTriggerNonce={flipTriggerNonce}
-        />
+        {currentView === 'kanban' ? (
+          <AgentSidebar
+            agents={agents}
+            sessions={sessions}
+            onCreateAgent={createAgent}
+            onUpdateAgent={updateAgent}
+            onDeleteAgent={deleteAgent}
+            onStartAgent={startAgent}
+            onStopAgent={stopAgent}
+            onRestartAgent={restartAgent}
+            onRewarmAgent={rewarmAgent}
+            addToast={addToast}
+          />
+        ) : (
+          <Dashboard
+            sessions={sessions}
+            selectedId={selectedId}
+            selectedIds={selectedIds}
+            onSelectSession={handleSelectSession}
+            onToggleSelectSession={toggleSelectSession}
+            sessionIdToGroup={sessionIdToGroup}
+            sessionGroups={sessionGroups}
+            activeGroupId={activeGroupId}
+            onSaveGroup={handleSaveGroup}
+            onDeleteGroup={handleDeleteGroup}
+            onRenameGroup={renameGroup}
+            onNewSession={() => setShowNewSessionModal(true)}
+            onShowDetails={handleShowDetails}
+            onOpenSettings={() => setShowSettingsModal(true)}
+            onUpdateSession={updateSession}
+            onMoveSession={moveSession}
+            onKillSession={killSession}
+            onResumeSession={resumeSession}
+            connectionStatus={connectionStatus}
+            hintModeActive={hintModeActive}
+            typedChars={typedChars}
+            hintCodes={settings?.keyboard?.hintMode?.hints || {}}
+            settings={settings}
+            onUpdateSettings={updateSettings}
+            onGroupedSessionsChange={setGroupedSessions}
+            kanbanColumnFilter={kanbanColumnFilter}
+            onClearKanbanFilter={handleClearKanbanFilter}
+            kanbanProjectFilter={kanbanProjectFilter}
+            onClearKanbanProjectFilter={handleClearKanbanProjectFilter}
+            stages={stages}
+            viewTransition={viewTransition}
+            flipTriggerNonce={flipTriggerNonce}
+            kanbanRects={kanbanRectsRef.current}
+            onKanbanRectsConsumed={handleKanbanRectsConsumed}
+            sidebarCardRefsRef={sidebarCardRefsRef}
+          />
+        )}
       </aside>
       <ResizeHandle onResize={handleSessionsResize} />
       {currentView === 'kanban' ? (
         <main className={`main-content ${ctrlOTransitionClass}`.trim()}>
           <KanbanBoard
             sessions={sessions}
+            agents={agents}
+            tasks={tasks}
             stages={stages}
             sessionsByStage={sessionsByStage}
             moveSession={moveSession}
             advanceSession={advanceSession}
             rejectSession={rejectSession}
-            settings={settings}
+            updateTask={updateTask}
+            deleteTask={deleteTask}
+            createTask={createTask}
+            assignTaskAgents={assignTaskAgents}
+            addTaskComment={addTaskComment}
+            startTaskRun={startTaskRun}
+            stopTaskRun={stopTaskRun}
             onUpdateSession={updateSession}
             onSessionSelect={handleSessionSelectFromKanban}
-            onCreateSession={(stageId) => {
+            onCreateSession={() => {
               setShowNewSessionModal(true);
             }}
             selectedSessionId={selectedId}
@@ -1114,9 +1244,35 @@ function App() {
             onPauseSession={pauseSession}
             onResumeSession={resumeSession}
             onKillSession={killSession}
+            settings={settings}
             addToast={addToast}
+            cardNodeRefs={kanbanCardRefsRef.current}
+            sidebarRects={sidebarRectsRef.current}
+            s2kFlipTriggerNonce={s2kFlipTriggerNonce}
+            onSidebarRectsConsumed={handleSidebarRectsConsumed}
+            viewTransition={viewTransition}
+            onProjectFilterChange={handleKanbanProjectFilterChange}
           />
         </main>
+      ) : currentView === 'agents' ? (
+        <AgentBoard
+          agents={agents}
+          sessions={sessions}
+          tasks={tasks}
+          onCreateAgent={createAgent}
+          onStartAgent={startAgent}
+          onStopAgent={stopAgent}
+          onRestartAgent={restartAgent}
+          onRewarmAgent={rewarmAgent}
+          onUpdateAgent={updateAgent}
+          onDeleteAgent={deleteAgent}
+          onCreateTask={createTask}
+          onUpdateTask={updateTask}
+          onDeleteTask={deleteTask}
+          onAssignTaskAgents={assignTaskAgents}
+          onAddTaskComment={addTaskComment}
+          addToast={addToast}
+        />
       ) : (
         <>
       {selectedSession && sidebarVisible && (
@@ -1136,6 +1292,7 @@ function App() {
             />
             <ContextSidebar
               session={selectedSession}
+              agent={selectedAgent}
               onClose={hideSidebar}
               onUpdateSession={updateSession}
               onFocus={() => setFocusedPanel('context')}

@@ -350,6 +350,50 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                 </p>
               </div>
 
+              <div className="form-group checkbox-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={localSettings.ui?.showFlipAnimation ?? true}
+                    onChange={e => updateSetting('ui', 'showFlipAnimation', e.target.checked)}
+                  />
+                  Animate cards on view switch (Ctrl+O)
+                </label>
+              </div>
+
+              {(localSettings.ui?.showFlipAnimation ?? true) && (
+                <div className="form-group">
+                  <label>Animation Speed</label>
+                  <select
+                    value={localSettings.ui?.flipAnimationSpeed ?? 1}
+                    onChange={e => updateSetting('ui', 'flipAnimationSpeed', parseFloat(e.target.value))}
+                  >
+                    <option value={0.1}>Super Slow (10x)</option>
+                    <option value={0.25}>Very Slow (4x)</option>
+                    <option value={0.5}>Slow (2x)</option>
+                    <option value={1}>Normal</option>
+                    <option value={2}>Fast (0.5x)</option>
+                    <option value={4}>Very Fast (0.25x)</option>
+                  </select>
+                </div>
+              )}
+
+              {(localSettings.ui?.showFlipAnimation ?? true) && (
+                <div className="form-group">
+                  <label>Max Animated Cards</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={localSettings.ui?.maxFlipAnimationCards ?? 60}
+                    onChange={e => updateSetting('ui', 'maxFlipAnimationCards', Math.max(1, Math.min(200, parseInt(e.target.value) || 60)))}
+                  />
+                  <p className="settings-description">
+                    Skip animation when card count exceeds this limit. Default: 60.
+                  </p>
+                </div>
+              )}
+
               <div className="form-group">
                 <label>Theme</label>
                 <select

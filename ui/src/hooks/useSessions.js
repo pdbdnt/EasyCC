@@ -1,8 +1,40 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useWebSocket } from './useWebSocket';
 
+async function fetchWithLocalFallback(path, options = {}) {
+  const attempts = [path];
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol;
+    const hostname = window.location.hostname;
+    const port = window.location.port;
+    const shouldProbeLocal = protocol === 'file:' || hostname === 'localhost';
+    if (shouldProbeLocal) {
+      if (port !== '5010') attempts.push(`http://localhost:5010${path}`);
+      if (port !== '5011') attempts.push(`http://localhost:5011${path}`);
+    }
+  }
+
+  let lastResponse = null;
+  for (const url of attempts) {
+    try {
+      const response = await fetch(url, options);
+      lastResponse = response;
+      if (response.status !== 404) {
+        return response;
+      }
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  return fetch(path, options);
+}
+
 export function useSessions() {
   const [sessions, setSessions] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [stages, setStages] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   // Derived compat field — last selected is the "primary" for context sidebar etc.
@@ -33,6 +65,8 @@ export function useSessions() {
     switch (data.type) {
       case 'init':
         setSessions(data.sessions || []);
+        setAgents(data.agents || []);
+        setTasks(data.tasks || []);
         // Auto-select first session if none selected
         setSelectedIds(prev => {
           if (prev.length === 0 && data.sessions?.length > 0) {
@@ -57,10 +91,34 @@ export function useSessions() {
 
       case 'sessionUpdated':
         setSessions(prev => prev.map(session =>
-          session.id === data.id
+          session.id === (data.id || data.sessionId)
             ? { ...session, ...data }
             : session
         ));
+        break;
+
+      case 'agentUpdated':
+        setAgents(prev => {
+          if (!data.agent) return prev;
+          if (data.agent.deletedAt) return prev.filter(a => a.id !== data.agent.id);
+          const idx = prev.findIndex(agent => agent.id === data.agent.id);
+          if (idx === -1) return [...prev, data.agent];
+          const next = [...prev];
+          next[idx] = data.agent;
+          return next;
+        });
+        break;
+
+      case 'taskUpdated':
+        setTasks(prev => {
+          if (!data.task) return prev;
+          if (data.task.archivedAt) return prev.filter(t => t.id !== data.task.id);
+          const idx = prev.findIndex(task => task.id === data.task.id);
+          if (idx === -1) return [...prev, data.task];
+          const next = [...prev];
+          next[idx] = data.task;
+          return next;
+        });
         break;
 
       case 'sessionMoved':
@@ -143,11 +201,11 @@ export function useSessions() {
 
   const createSession = useCallback(async (name, workingDir, cliType = 'claude', options = {}) => {
     try {
-      const { select = true, stage, priority, description } = options;
+      const { select = true, stage, priority, description, role } = options;
       const response = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, workingDir, cliType, stage, priority, description })
+        body: JSON.stringify({ name, workingDir, cliType, stage, priority, description, role })
       });
 
       if (!response.ok) {
@@ -323,6 +381,206 @@ export function useSessions() {
     }
   }, []);
 
+  const createAgent = useCallback(async (payload) => {
+    try {
+      const response = await fetch('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create agent');
+      }
+      const { agent } = await response.json();
+      // Don't optimistically add - let the WebSocket 'agentUpdated' handler add it
+      // to avoid duplicate entries from race between HTTP response and WS broadcast
+      setAgents(prev => {
+        if (prev.some(a => a.id === agent.id)) return prev;
+        return [...prev, agent];
+      });
+      return agent;
+    } catch (error) {
+      console.error('Error creating agent:', error);
+      alert(`Error: ${error.message}`);
+      return null;
+    }
+  }, []);
+
+  const updateAgent = useCallback(async (id, updates) => {
+    try {
+      const response = await fetch(`/api/agents/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to update agent');
+      }
+      const { agent } = await response.json();
+      setAgents(prev => prev.map(a => (a.id === id ? agent : a)));
+      return agent;
+    } catch (error) {
+      console.error('Error updating agent:', error);
+      alert(`Error: ${error.message}`);
+      return null;
+    }
+  }, []);
+
+  const startAgent = useCallback(async (id) => {
+    const response = await fetch(`/api/agents/${id}/start`, { method: 'POST' });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to start agent');
+    const payload = await response.json();
+    if (payload.agent) setAgents(prev => prev.map(a => (a.id === id ? payload.agent : a)));
+    if (payload.session) setSessions(prev => {
+      const exists = prev.some(s => s.id === payload.session.id);
+      return exists ? prev.map(s => (s.id === payload.session.id ? payload.session : s)) : [...prev, payload.session];
+    });
+    return payload;
+  }, []);
+
+  const stopAgent = useCallback(async (id) => {
+    const response = await fetch(`/api/agents/${id}/stop`, { method: 'POST' });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to stop agent');
+    const payload = await response.json();
+    if (payload.agent) setAgents(prev => prev.map(a => (a.id === id ? payload.agent : a)));
+    return payload;
+  }, []);
+
+  const restartAgent = useCallback(async (id) => {
+    const response = await fetch(`/api/agents/${id}/restart`, { method: 'POST' });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to restart agent');
+    const payload = await response.json();
+    if (payload.agent) setAgents(prev => prev.map(a => (a.id === id ? payload.agent : a)));
+    if (payload.session) setSessions(prev => {
+      const exists = prev.some(s => s.id === payload.session.id);
+      return exists ? prev.map(s => (s.id === payload.session.id ? payload.session : s)) : [...prev, payload.session];
+    });
+    return payload;
+  }, []);
+
+  const rewarmAgent = useCallback(async (id) => {
+    const response = await fetch(`/api/agents/${id}/rewarm`, { method: 'POST' });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to re-warm agent');
+    return response.json();
+  }, []);
+
+  const createTask = useCallback(async (payload) => {
+    const response = await fetchWithLocalFallback('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to create task');
+    const { task } = await response.json();
+    // Don't optimistically add - let the WebSocket 'taskUpdated' handler add it
+    // to avoid duplicate entries from race between HTTP response and WS broadcast
+    setTasks(prev => {
+      if (prev.some(t => t.id === task.id)) return prev;
+      return [...prev, task];
+    });
+    return task;
+  }, []);
+
+  const updateTask = useCallback(async (id, updates) => {
+    const response = await fetchWithLocalFallback(`/api/tasks/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to update task');
+    const { task } = await response.json();
+    setTasks(prev => prev.map(t => (t.id === id ? task : t)));
+    return task;
+  }, []);
+
+  const assignTaskAgents = useCallback(async (id, assignedAgents) => {
+    const response = await fetchWithLocalFallback(`/api/tasks/${id}/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignedAgents })
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to assign task agents');
+    const { task } = await response.json();
+    setTasks(prev => prev.map(t => (t.id === id ? task : t)));
+    return task;
+  }, []);
+
+  const addTaskComment = useCallback(async (id, payload) => {
+    const response = await fetchWithLocalFallback(`/api/tasks/${id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to add task comment');
+    const result = await response.json();
+    if (result.task) {
+      setTasks(prev => prev.map(t => (t.id === id ? result.task : t)));
+    }
+    return result;
+  }, []);
+
+  const startTaskRun = useCallback(async (id, agentId) => {
+    const response = await fetchWithLocalFallback(`/api/tasks/${id}/start-run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId })
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to start task run');
+    const payload = await response.json();
+    if (payload.task) {
+      setTasks(prev => prev.map(t => (t.id === id ? payload.task : t)));
+    }
+    if (payload.session) {
+      setSessions(prev => {
+        const exists = prev.some(s => s.id === payload.session.id);
+        return exists ? prev.map(s => (s.id === payload.session.id ? payload.session : s)) : [...prev, payload.session];
+      });
+    }
+    return payload;
+  }, []);
+
+  const stopTaskRun = useCallback(async (id, agentId) => {
+    const response = await fetchWithLocalFallback(`/api/tasks/${id}/stop-run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId })
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Failed to stop task run');
+    const payload = await response.json();
+    if (payload.task) {
+      setTasks(prev => prev.map(t => (t.id === id ? payload.task : t)));
+    }
+    return payload;
+  }, []);
+
+  const deleteTask = useCallback(async (id) => {
+    setTasks(prev => prev.filter(t => t.id !== id));
+    try {
+      const response = await fetchWithLocalFallback(`/api/tasks/${id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error((await response.json()).error || 'Failed to delete task');
+      return await response.json();
+    } catch (error) {
+      // Rollback: re-fetch tasks
+      const res = await fetchWithLocalFallback('/api/tasks');
+      if (res.ok) { const data = await res.json(); setTasks(data.tasks || []); }
+      throw error;
+    }
+  }, []);
+
+  const deleteAgent = useCallback(async (id) => {
+    setAgents(prev => prev.map(a => a.id === id ? { ...a, deletedAt: new Date().toISOString() } : a));
+    try {
+      const response = await fetch(`/api/agents/${id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error((await response.json()).error || 'Failed to delete agent');
+      return await response.json();
+    } catch (error) {
+      setAgents(prev => prev.map(a => a.id === id ? { ...a, deletedAt: null } : a));
+      throw error;
+    }
+  }, []);
+
   // Sessions grouped by stage
   const sessionsByStage = useMemo(() => {
     const grouped = {};
@@ -334,6 +592,8 @@ export function useSessions() {
 
   return useMemo(() => ({
     sessions,
+    agents,
+    tasks,
     stages,
     sessionsByStage,
     selectedId,
@@ -350,9 +610,23 @@ export function useSessions() {
     moveSession,
     advanceSession,
     rejectSession,
+    createAgent,
+    updateAgent,
+    startAgent,
+    stopAgent,
+    restartAgent,
+    rewarmAgent,
+    createTask,
+    updateTask,
+    assignTaskAgents,
+    addTaskComment,
+    startTaskRun,
+    stopTaskRun,
+    deleteTask,
+    deleteAgent,
     connectionStatus,
     isConnected
-  }), [sessions, stages, sessionsByStage, selectedId, selectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, connectionStatus, isConnected]);
+  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
 }
 
 export default useSessions;

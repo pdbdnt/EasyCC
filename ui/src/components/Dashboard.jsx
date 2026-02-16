@@ -4,7 +4,6 @@ import HintBadge from './HintBadge';
 import SavedPlansModal from './SavedPlansModal';
 import { getDirectoryName, getProjectDisplayName } from '../utils/projectUtils';
 
-const MAX_FLIP_ANIMATION_CARDS = 60;
 
 /**
  * Generate unique hint letter for a directory name, avoiding collisions
@@ -72,7 +71,12 @@ function Dashboard({
   activeGroupId = null,
   onSaveGroup,
   onDeleteGroup,
-  onRenameGroup
+  onRenameGroup,
+  kanbanRects = null,
+  onKanbanRectsConsumed,
+  sidebarCardRefsRef,
+  kanbanProjectFilter = null,
+  onClearKanbanProjectFilter
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
@@ -124,6 +128,7 @@ function Dashboard({
   const cardRefCallbacks = useRef(new Map());
   const previousCardRectsRef = useRef(new Map());
   const lastAnimatedNonceRef = useRef(0);
+  const runningAnimationsRef = useRef([]);
 
   // Get hint codes from settings or use defaults
   const newSessionHint = hintCodes.newSession || 'ns';
@@ -137,20 +142,26 @@ function Dashboard({
     const callback = (node) => {
       if (node) {
         cardNodeRefs.current.set(sessionId, node);
+        if (sidebarCardRefsRef) sidebarCardRefsRef.current.set(sessionId, node);
         return;
       }
       cardNodeRefs.current.delete(sessionId);
+      if (sidebarCardRefsRef) sidebarCardRefsRef.current.delete(sessionId);
     };
 
     cardRefCallbacks.current.set(sessionId, callback);
     return callback;
   }, []);
 
-  // Filter sessions by kanban column if active
+  // Filter sessions by kanban column and/or project if active
   const filteredSessions = useMemo(() => {
-    if (!kanbanColumnFilter) return sessions;
-    return sessions.filter(s => s.stage === kanbanColumnFilter);
-  }, [sessions, kanbanColumnFilter]);
+    let result = sessions;
+    if (kanbanColumnFilter) result = result.filter(s => s.stage === kanbanColumnFilter);
+    if (kanbanProjectFilter && kanbanProjectFilter.size > 0) {
+      result = result.filter(s => kanbanProjectFilter.has(s.workingDir));
+    }
+    return result;
+  }, [sessions, kanbanColumnFilter, kanbanProjectFilter]);
 
   // Total sessions per directory (unfiltered) for showing "filtered/total" counts
   const totalsByDir = useMemo(() => {
@@ -216,7 +227,7 @@ function Dashboard({
   useLayoutEffect(() => {
     const flipRequested = flipTriggerNonce > 0 && flipTriggerNonce !== lastAnimatedNonceRef.current;
     const shouldSampleRects = !!(viewTransition?.active || flipRequested);
-    const isCtrlOContext = !!(viewTransition?.reason === 'ctrl-o' || flipRequested);
+    const isCtrlOContext = !!(viewTransition?.reason === 'ctrl-o' || viewTransition?.reason === 'kanban-select' || flipRequested);
     if (!shouldSampleRects || !isCtrlOContext) return;
 
     const nextRects = new Map();
@@ -228,64 +239,107 @@ function Dashboard({
     const prefersReducedMotion = typeof window !== 'undefined' &&
       window.matchMedia &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const shouldAnimateFlip = !prefersReducedMotion &&
+    // If user explicitly enabled animations in settings, override OS reduced-motion preference
+    const userExplicitlyEnabled = settings?.ui?.showFlipAnimation === true;
+    const shouldAnimateFlip = (!prefersReducedMotion || userExplicitlyEnabled) &&
       viewTransition?.active &&
-      viewTransition?.reason === 'ctrl-o' &&
+      (viewTransition?.reason === 'ctrl-o' || viewTransition?.reason === 'kanban-select') &&
       viewTransition?.direction === 'k2s' &&
       flipRequested &&
       nextRects.size > 0 &&
-      nextRects.size <= MAX_FLIP_ANIMATION_CARDS;
+      nextRects.size <= (settings?.ui?.maxFlipAnimationCards ?? 60);
 
-    if (shouldAnimateFlip) {
-      const prevRects = previousCardRectsRef.current;
+    console.log('[FLIP-DEBUG] useLayoutEffect:', { flipRequested, shouldSampleRects, isCtrlOContext, viewTransitionActive: viewTransition?.active, viewTransitionDirection: viewTransition?.direction, viewTransitionReason: viewTransition?.reason, nextRectsSize: nextRects.size, shouldAnimateFlip, showFlipAnimation: settings?.ui?.showFlipAnimation, flipAnimationSpeed: settings?.ui?.flipAnimationSpeed, kanbanRectsSize: kanbanRects?.size ?? 'null', flipTriggerNonce, lastAnimatedNonce: lastAnimatedNonceRef.current });
 
+    if (shouldAnimateFlip && settings?.ui?.showFlipAnimation !== false) {
+      // Speed multiplier: lower = slower (0.1 = 10x slower, 1 = normal, 4 = 4x faster)
+      const speedMult = settings?.ui?.flipAnimationSpeed || 1;
+      const flipDuration = Math.round(350 / speedMult);
+      const fadeDuration = Math.round(200 / speedMult);
+      const staggerMs = Math.round(40 / speedMult);
+
+      // Temporarily allow overflow so cards can fly from kanban area
+      const sessionsListEl = document.querySelector('.sessions-list');
+      const sidebarEl = document.querySelector('.sidebar');
+      const savedOverflow = {
+        sidebar: sidebarEl?.style.overflow,
+        sessionsList: sessionsListEl?.style.overflow
+      };
+      if (sidebarEl) sidebarEl.style.overflow = 'visible';
+      if (sessionsListEl) sessionsListEl.style.overflow = 'visible';
+
+      const hasKanbanRects = kanbanRects && kanbanRects.size > 0;
+      const animations = [];
+
+      let animIndex = 0;
       nextRects.forEach((nextRect, sessionId) => {
         const node = cardNodeRefs.current.get(sessionId);
-        if (!node) return;
-        const prevRect = prevRects.get(sessionId);
+        if (!node || typeof node.animate !== 'function') return;
+        if (nextRect.width === 0 || nextRect.height === 0) return;
 
-        if (prevRect) {
-          const dx = prevRect.left - nextRect.left;
-          const dy = prevRect.top - nextRect.top;
-          if (dx || dy) {
-            if (typeof node.animate !== 'function') return;
-            node.style.willChange = 'transform';
-            const anim = node.animate(
-              [
-                { transform: `translate(${dx}px, ${dy}px)` },
-                { transform: 'translate(0, 0)' }
-              ],
-              {
-                duration: 180,
-                easing: 'cubic-bezier(0.22, 1, 0.36, 1)'
-              }
-            );
-            anim.onfinish = () => { node.style.willChange = ''; };
-            anim.oncancel = () => { node.style.willChange = ''; };
-          }
+        const kanbanRect = hasKanbanRects ? kanbanRects.get(sessionId) : null;
+        const staggerDelay = animIndex * staggerMs;
+
+        if (kanbanRect) {
+          // TRUE FLIP: fly from kanban position to sidebar position
+          const dx = kanbanRect.left - nextRect.left;
+          const dy = kanbanRect.top - nextRect.top;
+          console.log('[FLIP-DEBUG] Card FLIP:', sessionId, { dx, dy, flipDuration, staggerDelay });
+
+          // Elevate card above all UI during flight
+          node.style.position = 'relative';
+          node.style.zIndex = '9999';
+          node.style.willChange = 'transform, opacity';
+
+          const anim = node.animate(
+            [
+              { transform: `translate(${dx}px, ${dy}px)`, opacity: 0.7 },
+              { transform: 'translate(0, 0)', opacity: 1 }
+            ],
+            { duration: flipDuration, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', delay: staggerDelay, fill: 'backwards' }
+          );
+          anim.onfinish = () => {
+            node.style.willChange = '';
+            node.style.zIndex = '';
+            node.style.position = '';
+          };
+          animations.push(anim);
         } else {
-          if (typeof node.animate !== 'function') return;
+          // No kanban position — fade-in fallback
+          console.log('[FLIP-DEBUG] Card FADE:', sessionId, { fadeDuration, staggerDelay });
           node.style.willChange = 'transform, opacity';
           const anim = node.animate(
             [
-              { opacity: 0, transform: 'translateY(6px)' },
+              { opacity: 0, transform: 'translateY(8px)' },
               { opacity: 1, transform: 'translateY(0)' }
             ],
-            {
-              duration: 140,
-              easing: 'ease-out'
-            }
+            { duration: fadeDuration, easing: 'ease-out', delay: staggerDelay, fill: 'backwards' }
           );
           anim.onfinish = () => { node.style.willChange = ''; };
-          anim.oncancel = () => { node.style.willChange = ''; };
+          animations.push(anim);
         }
+        animIndex++;
       });
+
+      // Restore overflow after all animations complete
+      if (animations.length > 0) {
+        const maxDuration = flipDuration + (animIndex * staggerMs) + 50;
+        setTimeout(() => {
+          if (sidebarEl) sidebarEl.style.overflow = savedOverflow.sidebar || '';
+          if (sessionsListEl) sessionsListEl.style.overflow = savedOverflow.sessionsList || '';
+        }, maxDuration);
+      }
+
+      // Consume kanban rects
+      if (hasKanbanRects && onKanbanRectsConsumed) {
+        onKanbanRectsConsumed();
+      }
 
       lastAnimatedNonceRef.current = flipTriggerNonce;
     }
 
     previousCardRectsRef.current = nextRects;
-  }, [groupedSessions, viewTransition, flipTriggerNonce]);
+  }, [groupedSessions, viewTransition, flipTriggerNonce, kanbanRects, onKanbanRectsConsumed, settings]);
 
   // Notify parent about grouped sessions for navigation
   useEffect(() => {
@@ -367,6 +421,14 @@ function Dashboard({
         <div className="kanban-filter-chip">
           <span>Filtered: {kanbanColumnFilter.replace('_', ' ')}</span>
           <button onClick={onClearKanbanFilter} title="Clear filter">&times;</button>
+        </div>
+      )}
+      {kanbanProjectFilter && kanbanProjectFilter.size > 0 && (
+        <div className="kanban-filter-chip">
+          <span>Project: {kanbanProjectFilter.size === 1
+            ? getProjectDisplayName([...kanbanProjectFilter][0], settings?.projectAliases)
+            : `${kanbanProjectFilter.size} projects`}</span>
+          <button onClick={onClearKanbanProjectFilter} title="Clear project filter">&times;</button>
         </div>
       )}
       {selectedIds.length > 1 && (

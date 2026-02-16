@@ -31,7 +31,10 @@ const defaultSettings = {
   ui: {
     defaultView: 'list',
     theme: 'dark',
-    confirmBeforeLeave: true
+    confirmBeforeLeave: true,
+    showFlipAnimation: true,
+    flipAnimationSpeed: 1,
+    maxFlipAnimationCards: 60
   },
   session: {
     defaultWorkingDir: '',

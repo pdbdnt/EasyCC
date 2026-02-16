@@ -9,6 +9,8 @@ const PlanManager = require('./planManager');
 const SettingsManager = require('./settingsManager');
 const DataStore = require('./dataStore');
 const PlanVersionStore = require('./planVersionStore');
+const AgentStore = require('./agentStore');
+const TaskStore = require('./taskStore');
 const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
 
 const app = fastify({ logger: true });
@@ -17,6 +19,8 @@ const sessionManager = new SessionManager();
 const planManager = new PlanManager();
 const settingsManager = new SettingsManager();
 const planVersionStore = new PlanVersionStore();
+const agentStore = new AgentStore();
+const taskStore = new TaskStore();
 const { sessionStatusToStage } = require('./stagesConfig');
 
 const DEFAULT_FOLDERS_ROOT = 'C:\\Users\\denni\\apps';
@@ -41,6 +45,71 @@ function isPathWithinRoot(targetPath, rootPath) {
   const normalizedTarget = normalizeWindowsPath(targetPath).toLowerCase();
   const normalizedRoot = normalizeWindowsPath(rootPath).toLowerCase();
   return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}\\`);
+}
+
+function normalizeRoleInput(role) {
+  if (role === undefined || role === null) {
+    return { value: '' };
+  }
+  if (typeof role !== 'string') {
+    return { error: 'role must be a string' };
+  }
+
+  const normalized = role.replace(/\0/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (normalized.length > 4096) {
+    return { error: 'role must be 4096 characters or fewer' };
+  }
+
+  return { value: normalized };
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry) => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseMentionNames(text) {
+  if (typeof text !== 'string') return [];
+  const matches = text.match(/@([a-zA-Z0-9_-]+)/g) || [];
+  return matches.map((mention) => mention.slice(1).trim()).filter(Boolean);
+}
+
+function resolveMentionAgentIds(text, explicitMentions = []) {
+  const directIds = normalizeStringArray(explicitMentions);
+  const byName = parseMentionNames(text);
+  if (byName.length === 0) return directIds;
+  const agents = agentStore.listAgents();
+  const ids = new Set(directIds);
+  for (const name of byName) {
+    const matched = agents.find((agent) => agent.name.toLowerCase() === name.toLowerCase());
+    if (matched) ids.add(matched.id);
+  }
+  return [...ids];
+}
+
+function getActiveRunForAgent(task, agentId) {
+  const history = Array.isArray(task?.runHistory) ? task.runHistory : [];
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const run = history[i];
+    if (run?.agentId === agentId && !run.endedAt) {
+      return run;
+    }
+  }
+  return null;
+}
+
+function broadcastDashboard(payload) {
+  const message = JSON.stringify(payload);
+  for (const client of dashboardClients) {
+    try {
+      client.send(message);
+    } catch (error) {
+      console.error('Error sending to dashboard client:', error.message);
+    }
+  }
 }
 
 async function start() {
@@ -73,6 +142,180 @@ async function start() {
 
   // REST API Routes
 
+  // Agents API
+  app.get('/api/agents', async () => {
+    return { agents: agentStore.listAgents() };
+  });
+
+  app.post('/api/agents', async (request, reply) => {
+    const body = request.body || {};
+    const normalizedRole = normalizeRoleInput(body.role);
+    if (normalizedRole.error) {
+      return reply.status(400).send({ error: normalizedRole.error });
+    }
+
+    const agent = agentStore.createAgent({
+      name: typeof body.name === 'string' ? body.name : '',
+      role: normalizedRole.value,
+      cliType: body.cliType,
+      workingDir: body.workingDir,
+      notes: body.notes,
+      tags: normalizeStringArray(body.tags),
+      skills: normalizeStringArray(body.skills),
+      startupPrompt: typeof body.startupPrompt === 'string' ? body.startupPrompt : '',
+      stage: typeof body.stage === 'string' ? body.stage : 'todo',
+      priority: Number.isFinite(body.priority) ? body.priority : 0
+    });
+
+    broadcastDashboard({ type: 'agentUpdated', agent });
+    return reply.status(201).send({ agent });
+  });
+
+  app.patch('/api/agents/:id', async (request, reply) => {
+    const { id } = request.params;
+    const body = request.body || {};
+    const normalizedRole = normalizeRoleInput(body.role);
+    if (normalizedRole.error) {
+      return reply.status(400).send({ error: normalizedRole.error });
+    }
+
+    const updates = { ...body };
+    if (body.role !== undefined) updates.role = normalizedRole.value;
+    if (body.tags !== undefined) updates.tags = normalizeStringArray(body.tags);
+    if (body.skills !== undefined) updates.skills = normalizeStringArray(body.skills);
+    if (body.memory !== undefined) updates.memory = normalizeStringArray(body.memory);
+    const agent = agentStore.updateAgent(id, updates);
+    if (!agent) {
+      return reply.status(404).send({ error: 'Agent not found' });
+    }
+    broadcastDashboard({ type: 'agentUpdated', agent });
+    return { agent };
+  });
+
+  app.delete('/api/agents/:id', async (request, reply) => {
+    const { id } = request.params;
+    const agent = agentStore.deleteAgent(id);
+    if (!agent) {
+      return reply.status(404).send({ error: 'Agent not found' });
+    }
+    broadcastDashboard({ type: 'agentUpdated', agent });
+    return { agent };
+  });
+
+  app.post('/api/agents/:id/start', async (request, reply) => {
+    const { id } = request.params;
+    const agent = agentStore.getAgent(id);
+    if (!agent || agent.deletedAt) {
+      return reply.status(404).send({ error: 'Agent not found' });
+    }
+
+    if (agent.activeSessionId) {
+      const existing = sessionManager.getSession(agent.activeSessionId);
+      if (existing && existing.status !== 'completed') {
+        return { session: existing, agent };
+      }
+    }
+
+    try {
+      const session = sessionManager.createSession(
+        agent.name,
+        agent.workingDir,
+        agent.cliType,
+        { stage: agent.stage || 'todo', priority: agent.priority || 0, description: '' },
+        agent.role || '',
+        { agentId: agent.id }
+      );
+      const updatedAgent = agentStore.updateAgent(id, {
+        activeSessionId: session.id,
+        lastActiveAt: new Date().toISOString(),
+        sessionHistory: [...(agent.sessionHistory || []), session.id]
+      });
+      const liveSession = sessionManager.sessions.get(session.id);
+      if (liveSession) {
+        sessionManager.runStartupSequence(liveSession, updatedAgent || agent);
+      }
+      broadcastDashboard({ type: 'agentUpdated', agent: updatedAgent || agent });
+      return { session, agent: updatedAgent || agent };
+    } catch (error) {
+      return reply.status(500).send({ error: error.message });
+    }
+  });
+
+  app.post('/api/agents/:id/stop', async (request, reply) => {
+    const { id } = request.params;
+    const agent = agentStore.getAgent(id);
+    if (!agent || agent.deletedAt) {
+      return reply.status(404).send({ error: 'Agent not found' });
+    }
+    if (!agent.activeSessionId) {
+      return { success: true, agent };
+    }
+    const snapshotBeforeStop = sessionManager.getSession(agent.activeSessionId);
+    sessionManager.killSession(agent.activeSessionId);
+    appendAgentMemoryFromSession(agent.id, snapshotBeforeStop);
+    const updatedAgent = agentStore.updateAgent(id, {
+      activeSessionId: null,
+      lastActiveAt: new Date().toISOString()
+    });
+    broadcastDashboard({ type: 'agentUpdated', agent: updatedAgent || agent });
+    return { success: true, agent: updatedAgent || agent };
+  });
+
+  app.post('/api/agents/:id/restart', async (request, reply) => {
+    const { id } = request.params;
+    const agent = agentStore.getAgent(id);
+    if (!agent || agent.deletedAt) {
+      return reply.status(404).send({ error: 'Agent not found' });
+    }
+    if (agent.activeSessionId) {
+      const snapshotBeforeStop = sessionManager.getSession(agent.activeSessionId);
+      sessionManager.killSession(agent.activeSessionId);
+      appendAgentMemoryFromSession(id, snapshotBeforeStop);
+      agentStore.updateAgent(id, { activeSessionId: null });
+    }
+    const refreshed = agentStore.getAgent(id);
+    try {
+      const session = sessionManager.createSession(
+        refreshed.name,
+        refreshed.workingDir,
+        refreshed.cliType,
+        { stage: refreshed.stage || 'todo', priority: refreshed.priority || 0, description: '' },
+        refreshed.role || '',
+        { agentId: refreshed.id }
+      );
+      const updatedAgent = agentStore.updateAgent(id, {
+        activeSessionId: session.id,
+        lastActiveAt: new Date().toISOString(),
+        sessionHistory: [...(refreshed.sessionHistory || []), session.id]
+      });
+      const liveSession = sessionManager.sessions.get(session.id);
+      if (liveSession) {
+        sessionManager.runStartupSequence(liveSession, updatedAgent || refreshed);
+      }
+      broadcastDashboard({ type: 'agentUpdated', agent: updatedAgent || refreshed });
+      return { session, agent: updatedAgent || refreshed };
+    } catch (error) {
+      return reply.status(500).send({ error: error.message });
+    }
+  });
+
+  app.post('/api/agents/:id/rewarm', async (request, reply) => {
+    const { id } = request.params;
+    const agent = agentStore.getAgent(id);
+    if (!agent || !agent.activeSessionId) {
+      return reply.status(404).send({ error: 'Agent or active session not found' });
+    }
+    const snapshot = sessionManager.getSession(agent.activeSessionId);
+    if (snapshot?.status === 'paused') {
+      sessionManager.resumeSession(agent.activeSessionId);
+    }
+    const ok = sessionManager.rewarmSession(agent.activeSessionId, agent);
+    if (!ok) {
+      return reply.status(400).send({ error: 'Could not re-warm agent session' });
+    }
+    return { success: true };
+  });
+
   // List all sessions
   app.get('/api/sessions', async () => {
     return { sessions: sessionManager.getAllSessions() };
@@ -80,7 +323,11 @@ async function start() {
 
   // Create a new session
   app.post('/api/sessions', async (request, reply) => {
-    const { name, workingDir, cliType, stage, priority, description } = request.body || {};
+    const { name, workingDir, cliType, stage, priority, description, role } = request.body || {};
+    const normalizedRole = normalizeRoleInput(role);
+    if (normalizedRole.error) {
+      return reply.status(400).send({ error: normalizedRole.error });
+    }
 
     // Validate cliType
     const validCliTypes = ['claude', 'codex', 'terminal'];
@@ -94,7 +341,7 @@ async function start() {
         stage: stage || 'todo',
         priority: priority || 0,
         description: description || ''
-      });
+      }, normalizedRole.value);
 
       return reply.status(201).send({ session });
     } catch (error) {
@@ -142,9 +389,19 @@ async function start() {
   // Update session metadata
   app.patch('/api/sessions/:id', async (request, reply) => {
     const { id } = request.params;
-    const { name, notes, tags, cliType } = request.body || {};
+    const { name, notes, tags, cliType, role } = request.body || {};
+    const normalizedRole = normalizeRoleInput(role);
+    if (normalizedRole.error) {
+      return reply.status(400).send({ error: normalizedRole.error });
+    }
 
-    const session = sessionManager.updateSessionMeta(id, { name, notes, tags, cliType });
+    const session = sessionManager.updateSessionMeta(id, {
+      name,
+      notes,
+      tags,
+      cliType,
+      role: role === undefined ? undefined : normalizedRole.value
+    });
 
     if (!session) {
       return reply.status(404).send({ error: 'Session not found' });
@@ -784,6 +1041,221 @@ async function start() {
     return { comments: session.comments || [] };
   });
 
+  // Task cards API (first-class task entities)
+  app.get('/api/tasks', async () => {
+    return { tasks: taskStore.listTasks() };
+  });
+
+  app.post('/api/tasks', async (request, reply) => {
+    const body = request.body || {};
+    if (!body.title || !String(body.title).trim()) {
+      return reply.status(400).send({ error: 'title is required' });
+    }
+    const task = taskStore.createTask({
+      title: String(body.title),
+      description: typeof body.description === 'string' ? body.description : '',
+      planContent: typeof body.planContent === 'string' ? body.planContent : '',
+      assignedAgents: normalizeStringArray(body.assignedAgents),
+      stage: typeof body.stage === 'string' ? body.stage : 'todo',
+      priority: Number.isFinite(body.priority) ? body.priority : 0,
+      blockedBy: normalizeStringArray(body.blockedBy),
+      blocks: normalizeStringArray(body.blocks)
+    });
+    broadcastDashboard({ type: 'taskUpdated', task });
+    return reply.status(201).send({ task });
+  });
+
+  app.get('/api/tasks/:id', async (request, reply) => {
+    const task = taskStore.getTask(request.params.id);
+    if (!task) return reply.status(404).send({ error: 'Task not found' });
+    return { task };
+  });
+
+  app.patch('/api/tasks/:id', async (request, reply) => {
+    const task = taskStore.updateTask(request.params.id, request.body || {});
+    if (!task) return reply.status(404).send({ error: 'Task not found' });
+    broadcastDashboard({ type: 'taskUpdated', task });
+    return { task };
+  });
+
+  app.delete('/api/tasks/:id', async (request, reply) => {
+    const task = taskStore.deleteTask(request.params.id);
+    if (!task) return reply.status(404).send({ error: 'Task not found' });
+    broadcastDashboard({ type: 'taskUpdated', task });
+    return { task };
+  });
+
+  app.post('/api/tasks/:id/assign', async (request, reply) => {
+    const { assignedAgents } = request.body || {};
+    const task = taskStore.updateTask(request.params.id, { assignedAgents: normalizeStringArray(assignedAgents) });
+    if (!task) return reply.status(404).send({ error: 'Task not found' });
+    broadcastDashboard({ type: 'taskUpdated', task });
+    return { task };
+  });
+
+  app.post('/api/tasks/:id/start-run', async (request, reply) => {
+    const task = taskStore.getTask(request.params.id);
+    if (!task || task.archivedAt) return reply.status(404).send({ error: 'Task not found' });
+
+    const { agentId } = request.body || {};
+    if (!agentId || typeof agentId !== 'string') {
+      return reply.status(400).send({ error: 'agentId is required' });
+    }
+
+    const agent = agentStore.getAgent(agentId);
+    if (!agent || agent.deletedAt) {
+      return reply.status(404).send({ error: 'Agent not found' });
+    }
+
+    let session = null;
+    if (agent.activeSessionId) {
+      session = sessionManager.getSession(agent.activeSessionId);
+    }
+
+    if (!session || session.status === 'completed') {
+      try {
+        const created = sessionManager.createSession(
+          agent.name,
+          agent.workingDir,
+          agent.cliType,
+          { stage: agent.stage || 'todo', priority: agent.priority || 0, description: '' },
+          agent.role || '',
+          { agentId: agent.id, taskId: task.id }
+        );
+        session = created;
+        const updatedAgent = agentStore.updateAgent(agent.id, {
+          activeSessionId: created.id,
+          lastActiveAt: new Date().toISOString(),
+          sessionHistory: [...(agent.sessionHistory || []), created.id]
+        });
+        if (updatedAgent) {
+          broadcastDashboard({ type: 'agentUpdated', agent: updatedAgent });
+        }
+      } catch (error) {
+        return reply.status(500).send({ error: error.message });
+      }
+    } else {
+      const updatedSession = sessionManager.updateSessionMeta(session.id, { taskId: task.id });
+      if (updatedSession) {
+        session = updatedSession;
+      }
+    }
+
+    const freshTask = taskStore.getTask(task.id);
+    const existingRun = getActiveRunForAgent(freshTask, agent.id);
+    if (!existingRun || existingRun.sessionId !== session.id) {
+      taskStore.appendRun(task.id, {
+        sessionId: session.id,
+        agentId: agent.id,
+        startedAt: new Date().toISOString(),
+        status: 'active'
+      });
+    }
+
+    const taskWithRun = taskStore.getTask(task.id);
+    broadcastDashboard({ type: 'taskUpdated', task: taskWithRun });
+    return { task: taskWithRun, session };
+  });
+
+  app.post('/api/tasks/:id/stop-run', async (request, reply) => {
+    const task = taskStore.getTask(request.params.id);
+    if (!task || task.archivedAt) return reply.status(404).send({ error: 'Task not found' });
+
+    const { agentId } = request.body || {};
+    if (!agentId || typeof agentId !== 'string') {
+      return reply.status(400).send({ error: 'agentId is required' });
+    }
+
+    const agent = agentStore.getAgent(agentId);
+    if (!agent || agent.deletedAt) {
+      return reply.status(404).send({ error: 'Agent not found' });
+    }
+
+    const activeRun = getActiveRunForAgent(task, agent.id);
+    const targetSessionId = activeRun?.sessionId || null;
+    if (!targetSessionId) {
+      return reply.status(400).send({ error: 'No active run for this agent on this task' });
+    }
+
+    const session = sessionManager.getSession(targetSessionId);
+    if (session && session.status !== 'completed' && session.status !== 'killed') {
+      sessionManager.killSession(targetSessionId);
+    }
+
+    taskStore.closeRun(task.id, {
+      sessionId: targetSessionId,
+      agentId: agent.id,
+      endedAt: new Date().toISOString(),
+      status: 'stopped'
+    });
+
+    const updatedTask = taskStore.getTask(task.id);
+    broadcastDashboard({ type: 'taskUpdated', task: updatedTask });
+    return { task: updatedTask };
+  });
+
+  app.post('/api/tasks/:id/comments', async (request, reply) => {
+    const body = request.body || {};
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    if (!text) return reply.status(400).send({ error: 'Comment text is required' });
+    const mentions = resolveMentionAgentIds(text, body.mentions);
+    const comment = taskStore.addComment(request.params.id, {
+      author: body.author || 'user',
+      text,
+      mentions
+    });
+    if (!comment) return reply.status(404).send({ error: 'Task not found' });
+
+    const delivered = [];
+    const skipped = [];
+
+    // Mention delivery: prefer active run linked to this task, fall back to active agent session.
+    for (const agentId of mentions) {
+      const agent = agentStore.getAgent(agentId);
+      if (!agent) {
+        skipped.push({ agentId, reason: 'agent_not_found' });
+        continue;
+      }
+      let targetSessionId = null;
+      const activeRun = getActiveRunForAgent(taskStore.getTask(request.params.id), agent.id);
+      if (activeRun?.sessionId) {
+        targetSessionId = activeRun.sessionId;
+      } else if (agent.activeSessionId) {
+        targetSessionId = agent.activeSessionId;
+      }
+      if (!targetSessionId) {
+        skipped.push({ agentId, reason: 'no_active_session' });
+        continue;
+      }
+      const instruction = `[Task mention] ${text}\nPlease acknowledge and execute this instruction if applicable.\r`;
+      const ok = sessionManager.sendInput(targetSessionId, instruction);
+      if (ok) {
+        delivered.push({ agentId, sessionId: targetSessionId });
+      } else {
+        skipped.push({ agentId, reason: 'input_rejected', sessionId: targetSessionId });
+      }
+    }
+
+    const task = taskStore.getTask(request.params.id);
+    broadcastDashboard({ type: 'taskUpdated', task });
+    return { comment, task, delivered, skipped };
+  });
+
+  app.post('/api/tasks/:id/auto-comment', async (request, reply) => {
+    const body = request.body || {};
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    if (!text) return reply.status(400).send({ error: 'Comment text is required' });
+    const comment = taskStore.addComment(request.params.id, {
+      author: body.author || 'agent',
+      text,
+      mentions: normalizeStringArray(body.mentions)
+    });
+    if (!comment) return reply.status(404).send({ error: 'Task not found' });
+    const task = taskStore.getTask(request.params.id);
+    broadcastDashboard({ type: 'taskUpdated', task });
+    return { comment, task };
+  });
+
   // ============================================
   // Stages API
   // ============================================
@@ -827,7 +1299,9 @@ async function start() {
       // Send initial sessions list
       socket.send(JSON.stringify({
         type: 'init',
-        sessions: sessionManager.getAllSessions()
+        sessions: sessionManager.getAllSessions(),
+        agents: agentStore.listAgents(),
+        tasks: taskStore.listTasks()
       }));
 
       socket.on('close', () => {
@@ -917,6 +1391,51 @@ async function start() {
 
   // Session manager event handlers
 
+  const clearActiveSessionFromAgents = (sessionId) => {
+    const agents = agentStore.listAgents({ includeDeleted: true });
+    for (const agent of agents) {
+      if (agent.activeSessionId === sessionId) {
+        const updated = agentStore.updateAgent(agent.id, {
+          activeSessionId: null,
+          lastActiveAt: new Date().toISOString()
+        });
+        if (updated) {
+          broadcastDashboard({ type: 'agentUpdated', agent: updated });
+        }
+      }
+    }
+  };
+
+  const appendAgentMemoryFromSession = (agentId, sessionSnapshot) => {
+    if (!agentId || !sessionSnapshot) return;
+    const agent = agentStore.getAgent(agentId);
+    if (!agent || agent.memoryEnabled === false) return;
+    const history = Array.isArray(sessionSnapshot.promptHistory) ? sessionSnapshot.promptHistory : [];
+    const latest = history.slice(-3).map((entry) => entry?.text).filter(Boolean);
+    if (latest.length === 0) return;
+    const memory = [...(agent.memory || []), ...latest.map((text) => `Session ${sessionSnapshot.id.slice(0, 8)}: ${text.slice(0, 180)}`)];
+    const deduped = [...new Set(memory)].slice(-50);
+    const updated = agentStore.updateAgent(agent.id, { memory: deduped });
+    if (updated) {
+      broadcastDashboard({ type: 'agentUpdated', agent: updated });
+    }
+  };
+
+  const closeTaskRunForSession = (sessionSnapshot, status = 'completed') => {
+    if (!sessionSnapshot?.taskId || !sessionSnapshot?.id) return;
+    const closed = taskStore.closeRun(sessionSnapshot.taskId, {
+      sessionId: sessionSnapshot.id,
+      agentId: sessionSnapshot.agentId || null,
+      endedAt: new Date().toISOString(),
+      status
+    });
+    if (!closed) return;
+    const updatedTask = taskStore.getTask(sessionSnapshot.taskId);
+    if (updatedTask) {
+      broadcastDashboard({ type: 'taskUpdated', task: updatedTask });
+    }
+  };
+
   // Broadcast output to terminal clients
   sessionManager.on('output', ({ sessionId, data }) => {
     const clients = terminalClients.get(sessionId);
@@ -961,6 +1480,35 @@ async function start() {
         }
       }
     }
+
+    const session = sessionManager.getSession(sessionId);
+    if (session?.agentId) {
+      const agent = agentStore.getAgent(session.agentId);
+      if (agent) {
+        const updated = agentStore.updateAgent(agent.id, {
+          activeSessionId: sessionId,
+          lastActiveAt: new Date().toISOString()
+        });
+        if (updated) {
+          broadcastDashboard({ type: 'agentUpdated', agent: updated });
+        }
+
+        if (status === 'idle') {
+          const tasks = taskStore.listTasks().filter((task) => (task.assignedAgents || []).includes(agent.id));
+          for (const task of tasks) {
+            taskStore.addComment(task.id, {
+              author: agent.id,
+              text: `Auto-update: ${agent.name} reached idle state on session ${sessionId.slice(0, 8)}.`,
+              mentions: []
+            });
+            const updatedTask = taskStore.getTask(task.id);
+            if (updatedTask) {
+              broadcastDashboard({ type: 'taskUpdated', task: updatedTask });
+            }
+          }
+        }
+      }
+    }
   });
 
   // Broadcast session updates to dashboard clients
@@ -997,7 +1545,7 @@ async function start() {
   });
 
   // Broadcast session killed to dashboard clients
-  sessionManager.on('sessionKilled', ({ sessionId }) => {
+  sessionManager.on('sessionKilled', ({ sessionId, session }) => {
     const message = JSON.stringify({
       type: 'sessionKilled',
       sessionId
@@ -1024,10 +1572,12 @@ async function start() {
       }
       terminalClients.delete(sessionId);
     }
+    closeTaskRunForSession(session, 'killed');
+    clearActiveSessionFromAgents(sessionId);
   });
 
   // Broadcast session ended to clients
-  sessionManager.on('sessionEnded', ({ sessionId }) => {
+  sessionManager.on('sessionEnded', ({ sessionId, session }) => {
     const message = JSON.stringify({
       type: 'sessionEnded',
       sessionId
@@ -1046,6 +1596,9 @@ async function start() {
       clearTimeout(kanbanSyncTimers.get(sessionId));
       kanbanSyncTimers.delete(sessionId);
     }
+    closeTaskRunForSession(session, 'completed');
+    clearActiveSessionFromAgents(sessionId);
+    appendAgentMemoryFromSession(session?.agentId, session);
   });
 
   // Clear debounce timer on session kill

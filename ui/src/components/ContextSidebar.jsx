@@ -219,10 +219,13 @@ function PlansWidget({
 
 // ─── Main Component ─────────────────────────────────────────────────
 
-function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseButton = false, widgetLayout, onWidgetLayoutChange }) {
+function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFocus, hideCloseButton = false, widgetLayout, onWidgetLayoutChange }) {
   const [plans, setPlans] = useState([]);
   const [loadingPlans, setLoadingPlans] = useState(false);
   const [notes, setNotes] = useState(session?.notes || '');
+  const [roleDraft, setRoleDraft] = useState(session?.role || '');
+  const [isEditingRole, setIsEditingRole] = useState(false);
+  const [isRoleExpanded, setIsRoleExpanded] = useState(false);
   const [expandedPlanIndex, setExpandedPlanIndex] = useState(null);
   const [archivedPlanKeys, setArchivedPlanKeys] = useState([]);
   const [showPromptsModal, setShowPromptsModal] = useState(false);
@@ -289,6 +292,12 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
   useEffect(() => {
     setNotes(session?.notes || '');
   }, [session?.id, session?.notes]);
+
+  useEffect(() => {
+    setRoleDraft(session?.role || '');
+    setIsEditingRole(false);
+    setIsRoleExpanded(false);
+  }, [session?.id, session?.role]);
 
   useEffect(() => {
     if (!session?.id) {
@@ -424,6 +433,19 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
   const handleNotesBlur = () => {
     if (notes !== (session?.notes || '')) {
       onUpdateSession?.(session.id, { notes });
+    }
+  };
+
+  const handleSaveRole = async () => {
+    if (!session?.id) return;
+    const normalizedRole = roleDraft.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (normalizedRole === (session?.role || '')) {
+      setIsEditingRole(false);
+      return;
+    }
+    const success = await onUpdateSession?.(session.id, { role: normalizedRole });
+    if (success !== false) {
+      setIsEditingRole(false);
     }
   };
 
@@ -857,6 +879,74 @@ function ContextSidebar({ session, onClose, onUpdateSession, onFocus, hideCloseB
           )}
         </div>
       </div>
+
+      <div className="claude-session-row role-row">
+        <span className="claude-session-label">Role:</span>
+        {isEditingRole ? (
+          <div className="role-edit-container">
+            <textarea
+              className="context-notes"
+              value={roleDraft}
+              onChange={(e) => setRoleDraft(e.target.value)}
+              rows={4}
+              placeholder="Optional role/system prompt"
+            />
+            <div className="role-edit-actions">
+              <button
+                className="claude-session-link-btn"
+                onClick={handleSaveRole}
+              >
+                Save
+              </button>
+              <button
+                className="claude-session-link-btn"
+                onClick={() => {
+                  setRoleDraft(session?.role || '');
+                  setIsEditingRole(false);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <span
+              className="claude-session-id"
+              title={session.role || 'No role configured'}
+              onClick={() => setIsRoleExpanded(!isRoleExpanded)}
+            >
+              {!session.role
+                ? 'None'
+                : isRoleExpanded
+                  ? session.role
+                  : `${session.role.slice(0, 64)}${session.role.length > 64 ? '...' : ''}`}
+            </span>
+            <button
+              className="claude-session-link-btn"
+              onClick={() => setIsEditingRole(true)}
+              title="Edit role (applies on next resume/restart)"
+            >
+              Edit
+            </button>
+          </>
+        )}
+      </div>
+
+      {agent && (
+        <div className="claude-session-row role-row">
+          <span className="claude-session-label">Agent:</span>
+          <span className="claude-session-id" title={agent.id}>
+            {agent.name} ({agent.cliType})
+          </span>
+          <span className="claude-session-id" title="Skills">
+            {(agent.skills || []).join(', ') || 'No skills'}
+          </span>
+          <span className="claude-session-id" title="Session history">
+            history: {(agent.sessionHistory || []).length}
+          </span>
+        </div>
+      )}
 
       {/* Fixed rows: CLI Type + Claude Session */}
       <div className="cli-type-selector-row">

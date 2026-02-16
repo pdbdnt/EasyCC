@@ -108,6 +108,9 @@ class SessionManager extends EventEmitter {
           claudeSessionId: sessionData.claudeSessionId,
           claudeSessionName: sessionData.claudeSessionName || null,
           notes: sessionData.notes || '',
+          role: this.sanitizeRole(sessionData.role || ''),
+          agentId: sessionData.agentId || null,
+          taskId: sessionData.taskId || null,
           tags: sessionData.tags || [],
           plans: sessionData.plans || [],
           promptBuffer: '',
@@ -377,6 +380,293 @@ class SessionManager extends EventEmitter {
     return windowsPath;
   }
 
+  sanitizeRole(role) {
+    if (typeof role !== 'string') {
+      return '';
+    }
+    const normalized = role.replace(/\0/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    return normalized.slice(0, 4096);
+  }
+
+  spawnTerminalProcess(workingDir) {
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+      return pty.spawn('powershell.exe', ['-NoLogo'], {
+        name: 'xterm-color',
+        cols: 120,
+        rows: 30,
+        cwd: workingDir,
+        env: process.env
+      });
+    }
+
+    const shell = process.env.SHELL || '/bin/bash';
+    return pty.spawn(shell, [], {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 30,
+      cwd: workingDir,
+      env: process.env
+    });
+  }
+
+  spawnCodexProcess(workingDir, { resume = false } = {}) {
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+      const wslPath = this.convertToWslPath(workingDir).replace(/"/g, '\\"');
+      const codexCommand = resume
+        ? `wsl bash -ic 'codex -C \"${wslPath}\" resume --last'`
+        : `wsl bash -ic 'codex --dangerously-bypass-approvals-and-sandbox -C \"${wslPath}\"'`;
+      return pty.spawn('cmd.exe', ['/c', codexCommand], {
+        name: 'xterm-color',
+        cols: 120,
+        rows: 30,
+        env: process.env
+      });
+    }
+
+    const args = resume
+      ? ['-C', workingDir, 'resume', '--last']
+      : ['--dangerously-bypass-approvals-and-sandbox', '-C', workingDir];
+    return pty.spawn('codex', args, {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 30,
+      cwd: workingDir,
+      env: process.env
+    });
+  }
+
+  spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '' } = {}) {
+    const args = ['--dangerously-skip-permissions'];
+    if (resumeId) {
+      args.push('--resume', resumeId);
+    } else if (sessionId) {
+      args.push('--session-id', sessionId);
+    }
+    const sanitizedRole = this.sanitizeRole(role);
+    if (sanitizedRole) {
+      args.push('--append-system-prompt', sanitizedRole);
+    }
+
+    return pty.spawn('claude', args, {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 30,
+      cwd: workingDir,
+      env: process.env
+    });
+  }
+
+  clearRoleInjectionWorkflow(session) {
+    if (!session || !session.roleInjection) return;
+    if (session.roleInjection.retryTimer) {
+      clearTimeout(session.roleInjection.retryTimer);
+    }
+    if (session.roleInjection.timeoutTimer) {
+      clearTimeout(session.roleInjection.timeoutTimer);
+    }
+    session.roleInjection = null;
+  }
+
+  isCodexReadyForInput(data) {
+    return /Ask Codex to do anything/i.test(data) ||
+      /\?\s*for shortcuts/i.test(data) ||
+      /Would you like to run/i.test(data) ||
+      /Implement this plan\?/i.test(data);
+  }
+
+  injectCodexRole(session, reason = 'ready') {
+    if (!session?.pty || !session.roleInjection || session.roleInjection.injected) {
+      return false;
+    }
+
+    const role = session.roleInjection.role;
+    if (!role) {
+      this.clearRoleInjectionWorkflow(session);
+      return false;
+    }
+
+    const instruction = `System role instruction:\n${role}\n\nAcknowledge and continue following this role.`;
+    session.pty.write(`${instruction}\r`);
+    debugLog(`Session ${session.id}: injected Codex role (${reason})`);
+    this.clearRoleInjectionWorkflow(session);
+    session.startupSequence = null;
+    return true;
+  }
+
+  injectClaudeRoleReminder(session, reason = 'ready') {
+    if (!session?.pty || !session.roleInjection || session.roleInjection.injected) {
+      return false;
+    }
+
+    const role = session.roleInjection.role;
+    if (!role) {
+      this.clearRoleInjectionWorkflow(session);
+      return false;
+    }
+
+    const instruction = `Role reminder for this resumed session:\n${role}\n\nPlease continue following this role for all responses.`;
+    session.pty.write(`${instruction}\r`);
+    debugLog(`Session ${session.id}: injected Claude resume role reminder (${reason})`);
+    this.clearRoleInjectionWorkflow(session);
+    session.startupSequence = null;
+    return true;
+  }
+
+  setupRoleInjectionWorkflow(session, phase = 'create') {
+    this.clearRoleInjectionWorkflow(session);
+    const role = this.sanitizeRole(session?.role || '');
+    if (!role || !session?.pty) {
+      return;
+    }
+
+    if (session.cliType === 'codex') {
+      session.roleInjection = {
+        cliType: 'codex',
+        phase,
+        role,
+        retryTimer: setTimeout(() => {
+          if (session.roleInjection && !session.roleInjection.injected) {
+            this.injectCodexRole(session, 'retry-5s');
+          }
+        }, 5000),
+        timeoutTimer: setTimeout(() => {
+          if (session.roleInjection && !session.roleInjection.injected) {
+            debugLog(`Session ${session.id}: role injection skipped (Codex readiness timeout after 30s)`);
+            this.clearRoleInjectionWorkflow(session);
+          }
+        }, 30000)
+      };
+      return;
+    }
+
+    if (session.cliType === 'claude' && phase === 'resume') {
+      session.roleInjection = {
+        cliType: 'claude',
+        phase,
+        role,
+        retryTimer: setTimeout(() => {
+          if (session.roleInjection && !session.roleInjection.injected) {
+            this.injectClaudeRoleReminder(session, 'fallback-5s');
+          }
+        }, 5000),
+        timeoutTimer: setTimeout(() => {
+          if (session.roleInjection && !session.roleInjection.injected) {
+            debugLog(`Session ${session.id}: role reminder skipped (Claude resume timeout after 30s)`);
+            this.clearRoleInjectionWorkflow(session);
+          }
+        }, 30000)
+      };
+    }
+  }
+
+  tryRoleInjectionOnOutput(session, data) {
+    if (!session?.roleInjection) return;
+    if (session.roleInjection.cliType === 'codex' && this.isCodexReadyForInput(data)) {
+      this.injectCodexRole(session, 'prompt-detected');
+      return;
+    }
+    if (session.roleInjection.cliType === 'claude') {
+      const nextStatus = this.detectStatus(data, session.status);
+      if (nextStatus === 'idle') {
+        this.injectClaudeRoleReminder(session, 'prompt-detected');
+      }
+    }
+  }
+
+  runStartupSequence(session, agent, { force = false } = {}) {
+    if (!session || !agent || !session.pty) {
+      return;
+    }
+    if (session.startupSequence?.active && !force) {
+      return;
+    }
+
+    const commands = [];
+    if (Array.isArray(agent.skills)) {
+      for (const skill of agent.skills) {
+        if (typeof skill !== 'string' || !skill.trim()) continue;
+        commands.push(skill.trim().startsWith('/') ? skill.trim() : `/${skill.trim()}`);
+      }
+    }
+    if (agent.memoryEnabled !== false && Array.isArray(agent.memory) && agent.memory.length > 0) {
+      const memoryText = agent.memory
+        .filter((entry) => typeof entry === 'string' && entry.trim())
+        .slice(-10)
+        .map((entry) => `- ${entry.trim()}`)
+        .join('\n');
+      if (memoryText) {
+        commands.push(`Use this persistent agent memory context:\n${memoryText}`);
+      }
+    }
+    if (typeof agent.startupPrompt === 'string' && agent.startupPrompt.trim()) {
+      commands.push(agent.startupPrompt.trim());
+    }
+
+    if (commands.length === 0) {
+      return;
+    }
+
+    session.startupSequence = {
+      active: true,
+      queue: [...commands],
+      waitingForIdle: true,
+      sentCount: 0,
+      lastSentAt: 0,
+      completedAt: null
+    };
+  }
+
+  processStartupSequenceOnOutput(session, data) {
+    if (!session?.startupSequence?.active || !session.pty) {
+      return;
+    }
+    const startup = session.startupSequence;
+    if (!startup.queue.length) {
+      startup.active = false;
+      startup.completedAt = new Date().toISOString();
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      return;
+    }
+
+    const nextStatus = this.detectStatus(data, session.status);
+    const ready = nextStatus === 'idle' || /Would you like to proceed/i.test(data) || /Ask Codex to do anything/i.test(data);
+    const now = Date.now();
+    if (!ready) return;
+    if (now - startup.lastSentAt < 1200) return;
+
+    const nextCommand = startup.queue.shift();
+    if (!nextCommand) {
+      startup.active = false;
+      startup.completedAt = new Date().toISOString();
+      return;
+    }
+
+    session.pty.write(`${nextCommand}\r`);
+    startup.sentCount += 1;
+    startup.lastSentAt = now;
+    this.emit('output', {
+      sessionId: session.id,
+      data: `\r\n\x1b[36m[startup] sent: ${nextCommand.slice(0, 64)}${nextCommand.length > 64 ? '...' : ''}\x1b[0m\r\n`
+    });
+
+    if (!startup.queue.length) {
+      startup.active = false;
+      startup.completedAt = new Date().toISOString();
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    }
+  }
+
+  rewarmSession(id, agent) {
+    const session = this.sessions.get(id);
+    if (!session || !session.pty) {
+      return false;
+    }
+    this.runStartupSequence(session, agent, { force: true });
+    return true;
+  }
+
   /**
    * Create a new Claude CLI session
    * @param {string} name - Session name
@@ -384,79 +674,21 @@ class SessionManager extends EventEmitter {
    * @param {string} cliType - CLI type ('claude' or 'codex')
    * @returns {object} Session snapshot
    */
-  createSession(name, workingDir = process.cwd(), cliType = 'claude', stageOpts = {}) {
+  createSession(name, workingDir = process.cwd(), cliType = 'claude', stageOpts = {}, role = '', sessionMeta = {}) {
     const id = uuidv4();
     const claudeSessionId = uuidv4(); // Generate Claude session ID upfront
     const now = new Date();
+    const sanitizedRole = this.sanitizeRole(role);
 
-    // Determine shell and command based on platform and CLI type
-    const isWindows = process.platform === 'win32';
     let ptyProcess;
 
     try {
-      if (isWindows) {
-        if (cliType === 'terminal') {
-          // Plain terminal - launch PowerShell
-          ptyProcess = pty.spawn('powershell.exe', ['-NoLogo'], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: workingDir,
-            env: process.env
-          });
-        } else if (cliType === 'codex') {
-          // Codex via WSL with path conversion - use bash -ic to load user's PATH
-          const wslPath = this.convertToWslPath(workingDir);
-          const codexCommand = `wsl bash -ic 'codex --dangerously-bypass-approvals-and-sandbox -C ${wslPath}'`;
-          ptyProcess = pty.spawn('cmd.exe', ['/c', codexCommand], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            env: process.env
-          });
-        } else {
-          // Claude (existing logic)
-          const claudeCommand = `claude --dangerously-skip-permissions --session-id ${claudeSessionId}`;
-          ptyProcess = pty.spawn('cmd.exe', ['/c', claudeCommand], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: workingDir,
-            env: process.env
-          });
-        }
+      if (cliType === 'terminal') {
+        ptyProcess = this.spawnTerminalProcess(workingDir);
+      } else if (cliType === 'codex') {
+        ptyProcess = this.spawnCodexProcess(workingDir, { resume: false });
       } else {
-        // Unix - spawn directly
-        if (cliType === 'terminal') {
-          // Plain terminal - launch default shell
-          const shell = process.env.SHELL || '/bin/bash';
-          ptyProcess = pty.spawn(shell, [], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: workingDir,
-            env: process.env
-          });
-        } else if (cliType === 'codex') {
-          ptyProcess = pty.spawn('codex', [
-            '--dangerously-bypass-approvals-and-sandbox',
-            '-C', workingDir
-          ], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: workingDir,
-            env: process.env
-          });
-        } else {
-          ptyProcess = pty.spawn('claude', ['--dangerously-skip-permissions', '--session-id', claudeSessionId], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: workingDir,
-            env: process.env
-          });
-        }
+        ptyProcess = this.spawnClaudeProcess(workingDir, { sessionId: claudeSessionId, role: sanitizedRole });
       }
     } catch (error) {
       const cliName = cliType === 'codex' ? 'Codex' : cliType === 'terminal' ? 'Terminal' : 'Claude';
@@ -476,6 +708,9 @@ class SessionManager extends EventEmitter {
       cliType,  // 'claude' or 'codex'
       claudeSessionId: cliType === 'claude' ? claudeSessionId : null, // Only for Claude sessions
       notes: '',
+      role: sanitizedRole,
+      agentId: sessionMeta.agentId || null,
+      taskId: sessionMeta.taskId || null,
       tags: [],
       plans: [],
       promptBuffer: '',      // Characters accumulated until Enter
@@ -485,6 +720,8 @@ class SessionManager extends EventEmitter {
       lastSubmittedInputAtMs: 0, // Timestamp of last submitted input (Enter/newline)
       statusDebounceTimer: null,  // Timer for debouncing status changes
       pendingStatus: null,        // Status waiting to be applied
+      roleInjection: null,
+      startupSequence: null,
       // Kanban stage fields
       stage: stageOpts.stage || 'todo',
       stageEnteredAt: now.toISOString(),
@@ -514,6 +751,8 @@ class SessionManager extends EventEmitter {
 
       // Try to detect Claude session ID from output
       this.detectClaudeSessionId(data, session);
+      this.tryRoleInjectionOnOutput(session, data);
+      this.processStartupSequenceOnOutput(session, data);
 
       // Detect status from output (skip during resize — PTY redraws old content)
       if (!session.resizingUntil || Date.now() > session.resizingUntil) {
@@ -573,6 +812,7 @@ class SessionManager extends EventEmitter {
       }
 
       session.status = 'completed';
+      const endedSnapshot = this.getSessionSnapshot(session);
       this.dataStore.deleteSession(id);
       this.emit('statusChange', {
         sessionId: id,
@@ -581,10 +821,11 @@ class SessionManager extends EventEmitter {
         exitCode,
         signal
       });
-      this.emit('sessionEnded', { sessionId: id, exitCode, signal });
+      this.emit('sessionEnded', { sessionId: id, exitCode, signal, session: endedSnapshot });
     });
 
     this.sessions.set(id, session);
+    this.setupRoleInjectionWorkflow(session, 'create');
 
     // Save to persistent storage
     this.dataStore.saveSession(session);
@@ -726,6 +967,7 @@ class SessionManager extends EventEmitter {
       clearTimeout(session.statusDebounceTimer);
       session.statusDebounceTimer = null;
     }
+    this.clearRoleInjectionWorkflow(session);
 
     // Kill the PTY process
     try {
@@ -769,7 +1011,6 @@ class SessionManager extends EventEmitter {
       return false;
     }
 
-    const isWindows = process.platform === 'win32';
     const cliType = session.cliType || 'claude';
     let ptyProcess;
     let claudeFallbackAttempted = false;
@@ -777,47 +1018,13 @@ class SessionManager extends EventEmitter {
     let suppressNextExit = false;
 
     const createFreshClaudeProcess = () => {
-      if (isWindows) {
-        return pty.spawn('cmd.exe', ['/c', 'claude --dangerously-skip-permissions'], {
-          name: 'xterm-color',
-          cols: 120,
-          rows: 30,
-          cwd: session.workingDir,
-          env: process.env
-        });
-      }
-
-      return pty.spawn('claude', ['--dangerously-skip-permissions'], {
-        name: 'xterm-color',
-        cols: 120,
-        rows: 30,
-        cwd: session.workingDir,
-        env: process.env
+      return this.spawnClaudeProcess(session.workingDir, {
+        role: this.sanitizeRole(session.role || '')
       });
     };
 
     const createFreshCodexProcess = () => {
-      if (isWindows) {
-        const wslPath = this.convertToWslPath(session.workingDir);
-        const codexCommand = `wsl bash -ic 'codex --dangerously-bypass-approvals-and-sandbox -C \"${wslPath}\"'`;
-        return pty.spawn('cmd.exe', ['/c', codexCommand], {
-          name: 'xterm-color',
-          cols: 120,
-          rows: 30,
-          env: process.env
-        });
-      }
-
-      return pty.spawn('codex', [
-        '--dangerously-bypass-approvals-and-sandbox',
-        '-C', session.workingDir
-      ], {
-        name: 'xterm-color',
-        cols: 120,
-        rows: 30,
-        cwd: session.workingDir,
-        env: process.env
-      });
+      return this.spawnCodexProcess(session.workingDir, { resume: false });
     };
 
     const handleClaudeResumeFallback = () => {
@@ -898,6 +1105,8 @@ class SessionManager extends EventEmitter {
         }
 
         this.detectClaudeSessionId(data, session);
+        this.tryRoleInjectionOnOutput(session, data);
+        this.processStartupSequenceOnOutput(session, data);
 
         if (cliType === 'claude' && /No conversation found with session ID/i.test(data)) {
           handleClaudeResumeFallback();
@@ -972,6 +1181,7 @@ class SessionManager extends EventEmitter {
 
         debugLog(`Session ${id} marked COMPLETED (exitCode=${exitCode}, signal=${signal})`);
         session.status = 'completed';
+        const endedSnapshot = this.getSessionSnapshot(session);
         this.dataStore.deleteSession(id);
         this.emit('statusChange', {
           sessionId: id,
@@ -980,77 +1190,22 @@ class SessionManager extends EventEmitter {
           exitCode,
           signal
         });
-        this.emit('sessionEnded', { sessionId: id, exitCode, signal });
+        this.emit('sessionEnded', { sessionId: id, exitCode, signal, session: endedSnapshot });
       });
     };
 
     try {
       if (cliType === 'terminal') {
-        // Plain terminal - just launch a fresh shell
-        if (isWindows) {
-          ptyProcess = pty.spawn('powershell.exe', ['-NoLogo'], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: session.workingDir,
-            env: process.env
-          });
-        } else {
-          const shell = process.env.SHELL || '/bin/bash';
-          ptyProcess = pty.spawn(shell, [], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: session.workingDir,
-            env: process.env
-          });
-        }
+        ptyProcess = this.spawnTerminalProcess(session.workingDir);
       } else if (cliType === 'codex') {
         // Resume Codex in the same working directory to avoid cross-project jumps.
-        if (isWindows) {
-          const wslPath = this.convertToWslPath(session.workingDir);
-          const codexResumeCommand = `wsl bash -ic 'codex -C \"${wslPath}\" resume --last'`;
-          ptyProcess = pty.spawn('cmd.exe', ['/c', codexResumeCommand], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            env: process.env
-          });
-        } else {
-          ptyProcess = pty.spawn('codex', ['-C', session.workingDir, 'resume', '--last'], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: session.workingDir,
-            env: process.env
-          });
-        }
+        ptyProcess = this.spawnCodexProcess(session.workingDir, { resume: true });
       } else {
-        // Claude: use --resume to continue an existing session, or --continue for continuation
-        const args = session.claudeSessionId
-          ? ['--dangerously-skip-permissions', '--resume', session.claudeSessionId]
-          : ['--dangerously-skip-permissions'];
-
-        if (isWindows) {
-          const claudeCommand = session.claudeSessionId
-            ? `claude --dangerously-skip-permissions --resume ${session.claudeSessionId}`
-            : 'claude --dangerously-skip-permissions';
-          ptyProcess = pty.spawn('cmd.exe', ['/c', claudeCommand], {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: session.workingDir,
-            env: process.env
-          });
-        } else {
-          ptyProcess = pty.spawn('claude', args, {
-            name: 'xterm-color',
-            cols: 120,
-            rows: 30,
-            cwd: session.workingDir,
-            env: process.env
-          });
-        }
+        // Claude: resume existing session when possible, and append role for consistency.
+        ptyProcess = this.spawnClaudeProcess(session.workingDir, {
+          resumeId: session.claudeSessionId || null,
+          role: this.sanitizeRole(session.role || '')
+        });
       }
     } catch (error) {
       console.error(`Failed to resume session ${id}:`, error.message);
@@ -1062,6 +1217,7 @@ class SessionManager extends EventEmitter {
 
     // Re-setup PTY handlers
     wirePtyHandlers(ptyProcess);
+    this.setupRoleInjectionWorkflow(session, 'resume');
 
     // Save to persistent storage
     this.dataStore.saveSession(session);
@@ -1096,7 +1252,9 @@ class SessionManager extends EventEmitter {
     // Update allowed fields
     if (meta.name !== undefined) session.name = meta.name;
     if (meta.notes !== undefined) session.notes = meta.notes;
+    if (meta.role !== undefined) session.role = this.sanitizeRole(meta.role);
     if (meta.tags !== undefined) session.tags = meta.tags;
+    if (meta.taskId !== undefined) session.taskId = meta.taskId || null;
     if (meta.cliType !== undefined && ['claude', 'codex', 'terminal'].includes(meta.cliType)) {
       session.cliType = meta.cliType;
     }
@@ -1377,6 +1535,7 @@ class SessionManager extends EventEmitter {
     if (session.statusDebounceTimer) {
       clearTimeout(session.statusDebounceTimer);
     }
+    this.clearRoleInjectionWorkflow(session);
 
     // Close Claude sessions watcher
     if (session.claudeIndexWatcher) {
@@ -1402,8 +1561,9 @@ class SessionManager extends EventEmitter {
     // Remove from persistent storage
     this.dataStore.deleteSession(id);
 
+    const endedSnapshot = this.getSessionSnapshot(session);
     this.sessions.delete(id);
-    this.emit('sessionKilled', { sessionId: id });
+    this.emit('sessionKilled', { sessionId: id, session: endedSnapshot });
 
     return true;
   }
@@ -1635,6 +1795,9 @@ class SessionManager extends EventEmitter {
       claudeSessionId: session.claudeSessionId || null,
       claudeSessionName: session.claudeSessionName || null,
       notes: session.notes || '',
+      role: session.role || '',
+      agentId: session.agentId || null,
+      taskId: session.taskId || null,
       tags: session.tags || [],
       plans: session.plans || [],
       promptHistory: session.promptHistory || [],
@@ -1652,6 +1815,15 @@ class SessionManager extends EventEmitter {
       completedAt: session.completedAt || null,
       updatedAt: session.updatedAt || null,
       comments: session.comments || []
+      ,
+      startupSequence: session.startupSequence
+        ? {
+            active: !!session.startupSequence.active,
+            remaining: session.startupSequence.queue?.length || 0,
+            sentCount: session.startupSequence.sentCount || 0,
+            completedAt: session.startupSequence.completedAt || null
+          }
+        : null
     };
   }
 
@@ -2116,6 +2288,8 @@ class SessionManager extends EventEmitter {
     this.planManager.stopWatching();
 
     for (const [id, session] of this.sessions) {
+      this.clearRoleInjectionWorkflow(session);
+      session.startupSequence = null;
       if (session.pty) {
         session.pty.kill();  // Kill PTY process only
       }

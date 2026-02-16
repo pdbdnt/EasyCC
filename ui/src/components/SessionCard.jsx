@@ -155,6 +155,11 @@ function SessionCard({
                   {groupInfo.name.length > 8 ? groupInfo.name.substring(0, 8) + '..' : groupInfo.name}
                 </span>
               )}
+              {session.agentId && (
+                <span className="group-badge" title={`Agent: ${session.agentId}`}>
+                  AG:{session.agentId.slice(0, 6)}
+                </span>
+              )}
             </>
           )}
         </span>

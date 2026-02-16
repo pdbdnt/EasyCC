@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { forwardRef, useRef, useEffect, useCallback } from 'react';
 
 function getDisplayTask(session) {
   if (session.currentTask && session.currentTask.length > 5) {
@@ -14,7 +14,7 @@ function getDisplayTask(session) {
   return session.description || '';
 }
 
-function TaskCard({
+const TaskCard = forwardRef(function TaskCard({
   session,
   onClick,
   onDragStart,
@@ -25,13 +25,23 @@ function TaskCard({
   stageId,
   onResetPlacement,
   onLockPlacement
-}) {
+}, forwardedRef) {
   const isSelected = session.id === selectedSessionId;
-  const cardRef = useRef(null);
+  const internalRef = useRef(null);
+
+  // Merged ref callback - writes to both internal and forwarded refs
+  const cardRef = useCallback((node) => {
+    internalRef.current = node;
+    if (typeof forwardedRef === 'function') {
+      forwardedRef(node);
+    } else if (forwardedRef) {
+      forwardedRef.current = node;
+    }
+  }, [forwardedRef]);
 
   useEffect(() => {
-    if (isSelected && cardRef.current) {
-      cardRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (isSelected && internalRef.current) {
+      internalRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
   }, [isSelected]);
 
@@ -192,6 +202,6 @@ function TaskCard({
       )}
     </div>
   );
-}
+});
 
 export default TaskCard;

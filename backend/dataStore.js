@@ -2,13 +2,12 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Handles persistent storage of session, task, and stage data to disk
+ * Handles persistent storage of session and stage data to disk
  */
 class DataStore {
   constructor(dataDir = path.join(__dirname, '..', 'data')) {
     this.dataDir = dataDir;
     this.sessionsFile = path.join(dataDir, 'sessions.json');
-    this.tasksFile = path.join(dataDir, 'tasks.json');
     this.stagesFile = path.join(dataDir, 'stages.json');
     this.ensureDataDir();
   }
@@ -65,6 +64,9 @@ class DataStore {
         claudeSessionId: session.claudeSessionId || null,
         claudeSessionName: session.claudeSessionName || null,
         notes: session.notes || '',
+        role: session.role || '',
+        agentId: session.agentId || null,
+        taskId: session.taskId || null,
         tags: session.tags || [],
         plans: session.plans || [],
         currentTask: session.currentTask || '',
@@ -127,7 +129,7 @@ class DataStore {
       }
 
       // Update allowed metadata fields
-      const allowedFields = ['name', 'notes', 'tags', 'plans', 'claudeSessionId', 'status', 'lastActivity',
+      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'status', 'lastActivity',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt',
         'rejectionHistory', 'completedAt', 'updatedAt', 'comments'];
 
@@ -193,92 +195,6 @@ class DataStore {
   writeSessionsFile(sessions) {
     const data = JSON.stringify({ sessions }, null, 2);
     fs.writeFileSync(this.sessionsFile, data, 'utf8');
-  }
-
-  // ============================================
-  // Task Persistence Methods
-  // ============================================
-
-  /**
-   * Load all tasks from disk
-   * @returns {object} Tasks data with tasks object and stages array
-   */
-  loadTasks() {
-    try {
-      if (!fs.existsSync(this.tasksFile)) {
-        return { tasks: {}, stages: [] };
-      }
-
-      const data = fs.readFileSync(this.tasksFile, 'utf8');
-      const parsed = JSON.parse(data);
-      return {
-        tasks: parsed.tasks || {},
-        stages: parsed.stages || []
-      };
-    } catch (error) {
-      console.error('Error loading tasks:', error.message);
-      return { tasks: {}, stages: [] };
-    }
-  }
-
-  /**
-   * Save tasks and stages to disk
-   * @param {object} data - Object with tasks and stages
-   */
-  saveTasks(data) {
-    try {
-      const fileData = JSON.stringify({
-        tasks: data.tasks || {},
-        stages: data.stages || []
-      }, null, 2);
-      fs.writeFileSync(this.tasksFile, fileData, 'utf8');
-    } catch (error) {
-      console.error('Error saving tasks:', error.message);
-    }
-  }
-
-  /**
-   * Save a single task (updates the tasks file)
-   * @param {object} task - Task object to save
-   */
-  saveTask(task) {
-    try {
-      const data = this.loadTasks();
-      data.tasks[task.id] = task;
-      this.saveTasks(data);
-    } catch (error) {
-      console.error('Error saving task:', error.message);
-    }
-  }
-
-  /**
-   * Delete a task from disk
-   * @param {string} taskId - Task ID to delete
-   * @returns {boolean} Success status
-   */
-  deleteTask(taskId) {
-    try {
-      const data = this.loadTasks();
-      if (!data.tasks[taskId]) {
-        return false;
-      }
-      delete data.tasks[taskId];
-      this.saveTasks(data);
-      return true;
-    } catch (error) {
-      console.error('Error deleting task:', error.message);
-      return false;
-    }
-  }
-
-  /**
-   * Get a single task by ID
-   * @param {string} taskId - Task ID
-   * @returns {object|null} Task object or null
-   */
-  getTask(taskId) {
-    const data = this.loadTasks();
-    return data.tasks[taskId] || null;
   }
 
   // ============================================

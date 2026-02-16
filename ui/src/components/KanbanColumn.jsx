@@ -1,40 +1,27 @@
-import { useState, useEffect, useRef } from 'react';
-import TaskCard from './TaskCard';
-import { getProjectDisplayName } from '../utils/projectUtils';
+import { useState } from 'react';
+import KanbanTaskCard from './KanbanTaskCard';
 
 function KanbanColumn({
   stage,
-  sessions = [],
-  onSessionClick,
-  onSessionDrop,
-  onAddSession,
+  tasks = [],
+  agentsById,
+  onTaskClick,
+  onTaskDrop,
+  onAddTask,
   onDragStart,
   onDragEnd,
-  draggingSessionId,
-  onSessionSelect,
-  selectedSessionId,
-  onResetPlacement,
-  onLockPlacement,
-  focusedColumnId,
-  projectAliases
+  draggingTaskId,
+  bulkMode,
+  selectedTaskIds,
+  onToggleTaskSelect,
+  onToggleSelectAll
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
-  const isFocused = stage.id === focusedColumnId;
-  const columnRef = useRef(null);
-
-  // Auto-scroll focused column into view
-  useEffect(() => {
-    if (isFocused && columnRef.current) {
-      columnRef.current.scrollIntoView({ inline: 'nearest', behavior: 'smooth' });
-    }
-  }, [isFocused]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (!isDragOver) {
-      setIsDragOver(true);
-    }
+    if (!isDragOver) setIsDragOver(true);
   };
 
   const handleDragLeave = (e) => {
@@ -46,121 +33,62 @@ function KanbanColumn({
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragOver(false);
-    const sessionId = e.dataTransfer.getData('text/plain');
-    if (sessionId) {
-      onSessionDrop?.(sessionId, stage.id);
+    const taskId = e.dataTransfer.getData('text/plain');
+    if (taskId) {
+      onTaskDrop?.(taskId, stage.id);
     }
   };
 
-  const getPoolTypeLabel = (poolType) => {
-    switch (poolType) {
-      case 'specialized': return 'Specialized agents';
-      case 'shared': return 'Shared pool';
-      case 'human': return 'Human review';
-      case 'none': return stage.id === 'done' ? 'Completed' : 'No agents';
-      default: return poolType;
-    }
-  };
-
-  const getPoolTypeIcon = (poolType) => {
-    switch (poolType) {
-      case 'specialized': return '🤖';
-      case 'shared': return '👥';
-      case 'human': return '👤';
-      case 'none': return stage.id === 'done' ? '✅' : '📋';
-      default: return '📋';
-    }
-  };
-
-  // Count sessions by status
-  const active = sessions.filter(s => ['active', 'thinking', 'editing'].includes(s.status)).length;
-  const paused = sessions.filter(s => s.status === 'paused').length;
+  const allSelected = bulkMode && tasks.length > 0 && tasks.every(t => selectedTaskIds?.has(t.id));
 
   return (
     <div
-      ref={columnRef}
-      className={`kanban-column ${isDragOver ? 'drag-over' : ''} ${isFocused ? 'column-focused' : ''}`}
+      className={`kanban-column ${isDragOver ? 'drag-over' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       <div className="kanban-column-header" style={{ borderTopColor: stage.color }}>
         <div className="column-title-row">
-          <span className="column-icon">{getPoolTypeIcon(stage.poolType)}</span>
-          <h3 className="column-title">{stage.name}</h3>
-          <span className="column-count">{sessions.length}</span>
-        </div>
-        <div className="column-meta">
-          <span className="column-pool-type">{getPoolTypeLabel(stage.poolType)}</span>
-          {stage.agentPool > 0 && (
-            <span className="column-agent-pool">
-              {stage.agentPool} agent{stage.agentPool !== 1 ? 's' : ''}
-            </span>
+          {bulkMode && tasks.length > 0 && (
+            <input
+              type="checkbox"
+              className="kanban-bulk-checkbox"
+              checked={allSelected}
+              onChange={() => onToggleSelectAll?.(stage.id)}
+              title="Select all in column"
+            />
           )}
+          <h3 className="column-title">{stage.name}</h3>
+          <span className="column-count">{tasks.length}</span>
         </div>
-        {(active > 0 || paused > 0) && (
-          <div className="column-status-summary">
-            {active > 0 && <span className="status-in-progress">{active} active</span>}
-            {paused > 0 && <span className="status-blocked">{paused} paused</span>}
-          </div>
-        )}
       </div>
 
       <div className="kanban-column-body">
-        {sessions.length === 0 ? (
-          <div className="column-empty">
-            {isDragOver ? 'Drop here' : (isFocused ? 'Press Enter or Ctrl+O to watch' : 'No sessions')}
-          </div>
-        ) : (() => {
-          const sorted = [...sessions].sort((a, b) => {
-            const statusOrder = { active: 0, thinking: 0, editing: 0, idle: 1, waiting: 1, paused: 2, completed: 3 };
-            const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
-            if (statusDiff !== 0) return statusDiff;
-            return (b.priority || 0) - (a.priority || 0);
-          });
-
-          // Group by project
-          const groups = new Map();
-          for (const session of sorted) {
-            const project = session.workingDir || 'Unassigned';
-            if (!groups.has(project)) groups.set(project, []);
-            groups.get(project).push(session);
-          }
-
-          return Array.from(groups.entries()).map(([project, projectSessions]) => (
-            <div key={project} className="kanban-project-group">
-              {groups.size > 1 && (
-                <div className="kanban-project-subheader">
-                  {getProjectDisplayName(project, projectAliases)}
-                </div>
-              )}
-              {projectSessions.map(session => (
-                <TaskCard
-                  key={session.id}
-                  session={session}
-                  onClick={onSessionClick}
-                  onDragStart={onDragStart}
-                  onDragEnd={onDragEnd}
-                  isDragging={draggingSessionId === session.id}
-                  onSessionSelect={onSessionSelect}
-                  selectedSessionId={selectedSessionId}
-                  stageId={stage.id}
-                  onResetPlacement={onResetPlacement}
-                  onLockPlacement={onLockPlacement}
-                />
-              ))}
-            </div>
-          ));
-        })()}
+        {tasks.length === 0 ? (
+          <div className="column-empty">{isDragOver ? 'Drop here' : 'No tasks'}</div>
+        ) : (
+          tasks.map((task) => (
+            <KanbanTaskCard
+              key={task.id}
+              task={task}
+              agentsById={agentsById}
+              onClick={onTaskClick}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              isDragging={draggingTaskId === task.id}
+              selectable={bulkMode}
+              selected={selectedTaskIds?.has(task.id)}
+              onToggleSelect={onToggleTaskSelect}
+            />
+          ))
+        )}
       </div>
 
       {stage.id === 'todo' && (
         <div className="kanban-column-footer">
-          <button
-            className="btn-add-task"
-            onClick={() => onAddSession?.(stage.id)}
-          >
-            + Add Session
+          <button className="btn-add-task" onClick={() => onAddTask?.(stage.id)}>
+            + Add Task
           </button>
         </div>
       )}
