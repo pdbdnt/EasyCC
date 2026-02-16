@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react';
 
-function ResizeHandle({ onResize, direction = 'horizontal', onDoubleClick }) {
+function ResizeHandle({ onResize, onResizeEnd, direction = 'horizontal', onDoubleClick }) {
   const startRef = useRef(0);
   const isDraggingRef = useRef(false);
   const isVertical = direction === 'vertical';
@@ -24,13 +24,14 @@ function ResizeHandle({ onResize, direction = 'horizontal', onDoubleClick }) {
       document.removeEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      if (onResizeEnd) onResizeEnd();
     };
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
     document.body.style.cursor = isVertical ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
-  }, [isVertical, onResize]);
+  }, [isVertical, onResize, onResizeEnd]);
 
   return (
     <div

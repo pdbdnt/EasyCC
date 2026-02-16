@@ -54,8 +54,14 @@ class SettingsManager {
         defaultWorkingDir: '',
         autoResumeOnStart: true
       },
-      projectAliases: {}
-
+      projectAliases: {},
+      contextWidgetLayout: {
+        rows: [
+          { widgets: ['notes', 'prompts'], ratio: 0.5, colRatios: [0.5, 0.5] },
+          { widgets: ['plans'], ratio: 0.5, colRatios: [1] },
+        ],
+        hiddenWidgets: [],
+      }
     };
   }
 

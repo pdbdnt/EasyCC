@@ -1139,6 +1139,8 @@ function App() {
               onClose={hideSidebar}
               onUpdateSession={updateSession}
               onFocus={() => setFocusedPanel('context')}
+              widgetLayout={settings.contextWidgetLayout}
+              onWidgetLayoutChange={(layout) => updateSettings({ contextWidgetLayout: layout })}
             />
           </aside>
           <ResizeHandle onResize={handleContextResize} />
