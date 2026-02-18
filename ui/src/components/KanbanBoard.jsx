@@ -30,6 +30,8 @@ function KanbanBoard({
   onPauseSession,
   onResumeSession,
   onKillSession,
+  onResetPlacement,
+  onLockPlacement,
   addToast,
   cardNodeRefs,
   sidebarRects,
@@ -369,6 +371,7 @@ function KanbanBoard({
               key={stage.id}
               stage={stage}
               sessions={(filteredSessionsByStage && filteredSessionsByStage[stage.id]) || []}
+              settings={settings}
               onSessionClick={(session) => setViewingSession(session)}
               onSessionDrop={handleSessionDrop}
               onAddSession={onCreateSession}
@@ -379,6 +382,8 @@ function KanbanBoard({
               selectedSessionId={selectedSessionId}
               focusedColumnId={focusedColumnId}
               cardNodeRefs={cardNodeRefs}
+              onResetPlacement={onResetPlacement}
+              onLockPlacement={onLockPlacement}
             />
           )
         ))}

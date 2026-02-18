@@ -9,6 +9,8 @@ const PlanManager = require('./planManager');
 const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStatusToStage } = require('./stagesConfig');
 const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInputUtils');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
+const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
+const MEDIUM_OUTPUT_BUFFER_CHUNKS = 3000;
 
 // Debug logger that writes to file
 const DEBUG_LOG_FILE = path.join(__dirname, '..', 'data', 'debug.log');
@@ -23,7 +25,7 @@ function debugLog(message) {
  * Ring buffer for storing terminal output with a maximum size
  */
 class RingBuffer {
-  constructor(maxSize = 750) {
+  constructor(maxSize = DEFAULT_OUTPUT_BUFFER_CHUNKS) {
     this.buffer = [];
     this.maxSize = maxSize;
   }
@@ -93,6 +95,7 @@ class SessionManager extends EventEmitter {
       const canResume = cliType === 'codex' || cliType === 'terminal' || sessionData.claudeSessionId;
 
       if (canResume) {
+        const outputBufferSize = this.getOutputBufferSize(cliType);
         const session = {
           id: sessionData.id,
           name: sessionData.name,
@@ -101,7 +104,7 @@ class SessionManager extends EventEmitter {
           currentTask: sessionData.currentTask || '',
           createdAt: new Date(sessionData.createdAt),
           lastActivity: new Date(sessionData.lastActivity),
-          outputBuffer: new RingBuffer(750),
+          outputBuffer: new RingBuffer(outputBufferSize),
           pty: null,
           workingDir: sessionData.workingDir,
           cliType: cliType,
@@ -142,6 +145,19 @@ class SessionManager extends EventEmitter {
         console.log(`Cleaned up orphaned session (no claudeSessionId): ${sessionData.name} (${id})`);
       }
     }
+  }
+
+  /**
+   * Determine output replay buffer size by CLI type.
+   * Terminal and Codex sessions can emit long plan/output blocks and benefit from larger replay.
+   * @param {string} cliType
+   * @returns {number}
+   */
+  getOutputBufferSize(cliType) {
+    if (cliType === 'terminal' || cliType === 'codex') {
+      return MEDIUM_OUTPUT_BUFFER_CHUNKS;
+    }
+    return DEFAULT_OUTPUT_BUFFER_CHUNKS;
   }
 
   /**
@@ -568,7 +584,7 @@ class SessionManager extends EventEmitter {
       return;
     }
     if (session.roleInjection.cliType === 'claude') {
-      const nextStatus = this.detectStatus(data, session.status);
+      const nextStatus = this.detectStatus(data, session.status, session.cliType);
       if (nextStatus === 'idle') {
         this.injectClaudeRoleReminder(session, 'prompt-detected');
       }
@@ -618,6 +634,34 @@ class SessionManager extends EventEmitter {
     };
   }
 
+  appendTaskContext(sessionId, taskContext) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.pty) return;
+
+    let prompt = `You have been assigned a task:\n\nTitle: ${taskContext.title}`;
+    if (taskContext.description) {
+      prompt += `\n\nDescription:\n${taskContext.description}`;
+    }
+    if (taskContext.comments?.length) {
+      prompt += `\n\nRecent comments:\n` +
+        taskContext.comments.map(c => `- ${c.author}: ${c.text}`).join('\n');
+    }
+    prompt += '\n\nPlease begin working on this task.';
+
+    if (session.startupSequence?.active && session.startupSequence.queue) {
+      session.startupSequence.queue.push(prompt);
+    } else {
+      session.startupSequence = {
+        active: true,
+        queue: [prompt],
+        waitingForIdle: true,
+        sentCount: 0,
+        lastSentAt: 0,
+        completedAt: null
+      };
+    }
+  }
+
   processStartupSequenceOnOutput(session, data) {
     if (!session?.startupSequence?.active || !session.pty) {
       return;
@@ -630,7 +674,7 @@ class SessionManager extends EventEmitter {
       return;
     }
 
-    const nextStatus = this.detectStatus(data, session.status);
+    const nextStatus = this.detectStatus(data, session.status, session.cliType);
     const ready = nextStatus === 'idle' || /Would you like to proceed/i.test(data) || /Ask Codex to do anything/i.test(data);
     const now = Date.now();
     if (!ready) return;
@@ -702,7 +746,7 @@ class SessionManager extends EventEmitter {
       currentTask: '',
       createdAt: now,
       lastActivity: now,
-      outputBuffer: new RingBuffer(750),
+      outputBuffer: new RingBuffer(this.getOutputBufferSize(cliType)),
       pty: ptyProcess,
       workingDir,
       cliType,  // 'claude' or 'codex'
@@ -756,7 +800,7 @@ class SessionManager extends EventEmitter {
 
       // Detect status from output (skip during resize — PTY redraws old content)
       if (!session.resizingUntil || Date.now() > session.resizingUntil) {
-        const newStatus = this.detectStatus(data, session.status);
+        const newStatus = this.detectStatus(data, session.status, session.cliType);
         if (newStatus !== session.status) {
           this.updateSessionStatus(session, newStatus);
         }
@@ -1116,7 +1160,7 @@ class SessionManager extends EventEmitter {
 
         // Detect status from output (skip during resize — PTY redraws old content)
         if (!session.resizingUntil || Date.now() > session.resizingUntil) {
-          const newStatus = this.detectStatus(data, session.status);
+          const newStatus = this.detectStatus(data, session.status, session.cliType);
           if (newStatus !== session.status && newStatus !== 'paused') {
             this.updateSessionStatus(session, newStatus);
           }
@@ -1290,7 +1334,8 @@ class SessionManager extends EventEmitter {
       }
 
       const idleTime = Date.now() - session.lastActivity.getTime();
-      const canGoIdle = ['active', 'editing', 'waiting', 'thinking'].includes(session.status);
+      const canGoIdle = ['active', 'editing', 'waiting', 'thinking'].includes(session.status) &&
+        this.canTransitionToIdle(session);
       if (idleTime > 5000 && canGoIdle) {
         session.status = 'idle';
         this.emit('statusChange', {
@@ -1303,12 +1348,23 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Whether inactivity should auto-transition this session to idle.
+   * Codex can run long silent commands, so output silence is not a reliable idle signal.
+   * @param {object} session - Session object
+   * @returns {boolean}
+   */
+  canTransitionToIdle(session) {
+    return (session?.cliType || 'claude') !== 'codex';
+  }
+
+  /**
    * Detect session status from terminal output
    * @param {string} data - Terminal output data
    * @param {string} currentStatus - Current session status
+   * @param {string} cliType - CLI type ('claude', 'codex', 'terminal')
    * @returns {string} Detected status
    */
-  detectStatus(data, currentStatus) {
+  detectStatus(data, currentStatus, cliType = 'claude') {
     // Don't change status if paused
     if (currentStatus === 'paused') {
       return 'paused';
@@ -1381,6 +1437,20 @@ class SessionManager extends EventEmitter {
       }
     }
 
+    // Codex-specific prompt footer means work is done and user input is expected.
+    // This is a stronger signal than inactivity for Codex runs.
+    if (cliType === 'codex') {
+      const codexPromptReadyPatterns = [
+        /Ask Codex to do anything/i,
+        /\?\s*for shortcuts/i
+      ];
+      for (const pattern of codexPromptReadyPatterns) {
+        if (pattern.test(data)) {
+          return 'idle';
+        }
+      }
+    }
+
     // Detect waiting for input
     const waitingPatterns = [
       /^\s*>\s*$/m,
@@ -1390,8 +1460,6 @@ class SessionManager extends EventEmitter {
       /\[Y\/n\]/i,
       /\[y\/N\]/i,
       // Codex CLI patterns
-      /Ask Codex to do anything/i,    // Codex idle prompt
-      /\?\s*for shortcuts/i,          // Codex footer when idle
       /Would you like to run/i,       // Codex approval prompt
       /Implement this plan\?/i,       // Codex plan mode prompt
       // Claude multi-choice prompts
@@ -1482,19 +1550,28 @@ class SessionManager extends EventEmitter {
    * @param {string} newStatus - New status to apply
    */
   updateSessionStatus(session, newStatus) {
-    // Clear existing timer
+    // If same as current status, cancel any pending transition
+    if (newStatus === session.status) {
+      session.pendingStatus = null;
+      if (session.statusDebounceTimer) {
+        clearTimeout(session.statusDebounceTimer);
+        session.statusDebounceTimer = null;
+      }
+      return;
+    }
+
+    // If already pending the same status, let existing timer run (don't reset).
+    // This prevents continuous output from starving the debounce timer.
+    if (session.pendingStatus === newStatus && session.statusDebounceTimer) {
+      return;
+    }
+
+    // Different pending status — clear old timer and start new one
     if (session.statusDebounceTimer) {
       clearTimeout(session.statusDebounceTimer);
       session.statusDebounceTimer = null;
     }
 
-    // If same status, nothing to do
-    if (newStatus === session.status) {
-      session.pendingStatus = null;
-      return;
-    }
-
-    // Store pending status
     session.pendingStatus = newStatus;
 
     // Debounce: only emit after 500ms of stability

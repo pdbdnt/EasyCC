@@ -14,7 +14,7 @@ import ToastContainer from './components/Toast';
 import { useSessions } from './hooks/useSessions';
 import { useSessionGroups } from './hooks/useSessionGroups';
 import { useContextSidebar } from './hooks/useContextSidebar';
-import { useSettings } from './hooks/useSettings';
+import { useSettings, matchKeyCombo } from './hooks/useSettings';
 import { useHintMode } from './hooks/useHintMode';
 import { useToast } from './hooks/useToast';
 import { registerHint, unregisterHint } from './utils/hintRegistry';
@@ -99,6 +99,8 @@ function App() {
     moveSession,
     advanceSession,
     rejectSession,
+    resetPlacement,
+    lockPlacement,
     createAgent,
     updateAgent,
     startAgent,
@@ -587,6 +589,8 @@ function App() {
   // Session navigation functions
   const navigateSession = useCallback((direction) => {
     if (!selectedId || groupedSessions.length === 0) return;
+    const hasScopedFilter = !!kanbanColumnFilter || !!(kanbanProjectFilter && kanbanProjectFilter.size > 0);
+    const preferredWorkingDir = selectedSession?.workingDir || null;
 
     // Find current session's group
     let currentGroupIndex = -1;
@@ -606,7 +610,30 @@ function App() {
 
     if (currentGroupIndex === -1) {
       // Selected session is no longer in the filtered list (e.g., moved to another kanban stage).
-      // Fall back to the first session in the first group.
+      // Prefer another session in the same project when possible.
+      if (preferredWorkingDir) {
+        const sameProjectGroup = groupedSessions.find(([, sessionsInGroup]) =>
+          sessionsInGroup.some(item => item.session.workingDir === preferredWorkingDir)
+        );
+        if (sameProjectGroup) {
+          const [, projectSessions] = sameProjectGroup;
+          if (projectSessions.length > 0) {
+            const target = direction === 'prev'
+              ? projectSessions[projectSessions.length - 1]
+              : projectSessions[0];
+            selectSession(target.session.id);
+            return;
+          }
+        }
+      }
+
+      // When scoped filtering is active, avoid jumping across projects.
+      if (hasScopedFilter) {
+        selectSession(null);
+        return;
+      }
+
+      // No scoped filter: retain legacy fallback to first visible group.
       if (groupedSessions.length > 0) {
         const [, firstGroup] = groupedSessions[0];
         if (firstGroup.length > 0) {
@@ -625,7 +652,7 @@ function App() {
       const prevIndex = (currentIndexInGroup - 1 + sessionsInGroup.length) % sessionsInGroup.length;
       selectSession(sessionsInGroup[prevIndex].session.id);
     }
-  }, [selectedId, groupedSessions, selectSession]);
+  }, [selectedId, groupedSessions, selectSession, kanbanColumnFilter, kanbanProjectFilter, selectedSession]);
 
   const navigateGroup = useCallback((direction) => {
     if (groupedSessions.length === 0) return;
@@ -777,6 +804,7 @@ function App() {
   const switchViewRef = useRef(switchView);
   const focusedColumnIdRef = useRef(focusedColumnId);
   const kanbanColumnFilterRef = useRef(kanbanColumnFilter);
+  const navigationKeysRef = useRef(settings.keyboard?.navigation);
 
   // Sync refs during render (no effect needed)
   hintModeActiveRef.current = hintModeActive;
@@ -795,6 +823,7 @@ function App() {
   switchViewRef.current = switchView;
   focusedColumnIdRef.current = focusedColumnId;
   kanbanColumnFilterRef.current = kanbanColumnFilter;
+  navigationKeysRef.current = settings.keyboard?.navigation;
 
   // Mount-once keyboard handler -- reads all dynamic values from refs
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -963,21 +992,22 @@ function App() {
         }
       }
 
-      // Session navigation: Ctrl+[ ] ; ' (works even when terminal is focused)
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
-        if (e.code === 'BracketRight' || e.key === ']') {
+      // Session navigation (configurable via Settings > Keyboard)
+      const navKeys = navigationKeysRef.current;
+      if (navKeys) {
+        if (matchKeyCombo(e, navKeys.nextSession)) {
           e.preventDefault();
           navigateSessionRef.current('next');
         }
-        if (e.code === 'BracketLeft' || e.key === '[') {
+        if (matchKeyCombo(e, navKeys.prevSession)) {
           e.preventDefault();
           navigateSessionRef.current('prev');
         }
-        if (e.key === "'") {
+        if (matchKeyCombo(e, navKeys.nextGroup)) {
           e.preventDefault();
           navigateGroupRef.current('next');
         }
-        if (e.key === ';') {
+        if (matchKeyCombo(e, navKeys.prevGroup)) {
           e.preventDefault();
           navigateGroupRef.current('prev');
         }
@@ -1193,6 +1223,7 @@ function App() {
             onOpenSettings={() => setShowSettingsModal(true)}
             onUpdateSession={updateSession}
             onMoveSession={moveSession}
+            onResetPlacement={resetPlacement}
             onKillSession={killSession}
             onResumeSession={resumeSession}
             connectionStatus={connectionStatus}
@@ -1244,6 +1275,8 @@ function App() {
             onPauseSession={pauseSession}
             onResumeSession={resumeSession}
             onKillSession={killSession}
+            onResetPlacement={resetPlacement}
+            onLockPlacement={lockPlacement}
             settings={settings}
             addToast={addToast}
             cardNodeRefs={kanbanCardRefsRef.current}

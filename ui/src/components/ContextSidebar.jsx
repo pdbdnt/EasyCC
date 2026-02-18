@@ -119,6 +119,7 @@ function PlansWidget({
   handleAddPlan, planPickerRef,
   showPastePlan, setShowPastePlan, pastedPlanName, setPastedPlanName,
   pastedPlanContent, setPastedPlanContent, savingPlan, handleSavePastedPlan,
+  pastePlanError, setPastePlanError,
   session,
 }) {
   return (
@@ -130,20 +131,36 @@ function PlansWidget({
             className="paste-plan-name"
             placeholder="Plan name (optional)"
             value={pastedPlanName}
-            onChange={e => setPastedPlanName(e.target.value)}
+            onChange={e => {
+              setPastedPlanName(e.target.value);
+              if (pastePlanError) setPastePlanError('');
+            }}
           />
           <textarea
             className="paste-plan-textarea"
             placeholder="Paste plan content here..."
             value={pastedPlanContent}
-            onChange={e => setPastedPlanContent(e.target.value)}
+            onChange={e => {
+              setPastedPlanContent(e.target.value);
+              if (pastePlanError) setPastePlanError('');
+            }}
             rows={6}
             autoFocus
           />
+          {pastePlanError && (
+            <p className="text-muted small" style={{ color: '#ff7b72' }}>
+              {pastePlanError}
+            </p>
+          )}
           <div className="paste-plan-actions">
             <button
               className="btn btn-secondary btn-small"
-              onClick={() => { setShowPastePlan(false); setPastedPlanContent(''); setPastedPlanName(''); }}
+              onClick={() => {
+                setShowPastePlan(false);
+                setPastedPlanContent('');
+                setPastedPlanName('');
+                setPastePlanError('');
+              }}
               disabled={savingPlan}
             >
               Cancel
@@ -241,6 +258,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
   const [showPastePlan, setShowPastePlan] = useState(false);
   const [pastedPlanContent, setPastedPlanContent] = useState('');
   const [pastedPlanName, setPastedPlanName] = useState('');
+  const [pastePlanError, setPastePlanError] = useState('');
   const [savingPlan, setSavingPlan] = useState(false);
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
   const widgetPickerRef = useRef(null);
@@ -406,6 +424,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
 
   const handleSavePastedPlan = async () => {
     if (!pastedPlanContent.trim()) return;
+    setPastePlanError('');
     setSavingPlan(true);
     try {
       const response = await fetch('/api/plans', {
@@ -413,18 +432,33 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: pastedPlanContent, name: pastedPlanName || 'pasted-plan', sessionId: session.id }),
       });
-      if (response.ok) {
-        setShowPastePlan(false);
-        setPastedPlanContent('');
-        setPastedPlanName('');
-        const plansRes = await fetch(`/api/sessions/${session.id}/plans`);
-        if (plansRes.ok) {
-          const { plans: planData } = await plansRes.json();
-          setPlans(planData || []);
+
+      if (!response.ok) {
+        let message = 'Failed to save pasted plan';
+        try {
+          const errorData = await response.json();
+          if (errorData?.error) {
+            message = errorData.error;
+          }
+        } catch {
+          // Keep default error text when response body is not JSON
         }
+        setPastePlanError(message);
+        return;
+      }
+
+      setShowPastePlan(false);
+      setPastedPlanContent('');
+      setPastedPlanName('');
+      setPastePlanError('');
+      const plansRes = await fetch(`/api/sessions/${session.id}/plans`);
+      if (plansRes.ok) {
+        const { plans: planData } = await plansRes.json();
+        setPlans(planData || []);
       }
     } catch (error) {
       console.error('Error saving pasted plan:', error);
+      setPastePlanError(error?.message || 'Failed to save pasted plan');
     } finally {
       setSavingPlan(false);
     }
@@ -760,7 +794,14 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
       return (
         <div className="widget-header-actions">
           {plans.length > 0 && <span className="section-count">{plans.length}</span>}
-          <button className="widget-header-action" onClick={() => setShowPastePlan(!showPastePlan)} title="Paste a plan">
+          <button
+            className="widget-header-action"
+            onClick={() => {
+              setShowPastePlan(!showPastePlan);
+              setPastePlanError('');
+            }}
+            title="Paste a plan"
+          >
             Paste
           </button>
           <div className="plan-picker-wrapper" ref={planPickerRef}>
@@ -812,6 +853,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
             showPastePlan={showPastePlan} setShowPastePlan={setShowPastePlan}
             pastedPlanName={pastedPlanName} setPastedPlanName={setPastedPlanName}
             pastedPlanContent={pastedPlanContent} setPastedPlanContent={setPastedPlanContent}
+            pastePlanError={pastePlanError} setPastePlanError={setPastePlanError}
             savingPlan={savingPlan} handleSavePastedPlan={handleSavePastedPlan}
             session={session}
           />
@@ -821,7 +863,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
     }
   }, [notes, recentPrompts, plans, loadingPlans, expandedPlanIndex, archivedPlanKeys,
       showPlanPicker, availablePlans, loadingAvailable, showPastePlan, pastedPlanName,
-      pastedPlanContent, savingPlan, session, handleNotesBlur, handleOpenPlanPicker,
+      pastedPlanContent, pastePlanError, savingPlan, session, handleNotesBlur, handleOpenPlanPicker,
       handleAddPlan, handleSavePastedPlan, handleTogglePlanArchive]);
 
   // ─── Render ─────────────────────────────────────────────────────

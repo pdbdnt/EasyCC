@@ -12,6 +12,7 @@ const PlanVersionStore = require('./planVersionStore');
 const AgentStore = require('./agentStore');
 const TaskStore = require('./taskStore');
 const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
+const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
@@ -45,6 +46,51 @@ function isPathWithinRoot(targetPath, rootPath) {
   const normalizedTarget = normalizeWindowsPath(targetPath).toLowerCase();
   const normalizedRoot = normalizeWindowsPath(rootPath).toLowerCase();
   return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}\\`);
+}
+
+function normalizePathKey(filePath) {
+  if (!filePath || typeof filePath !== 'string') return '';
+  const resolved = path.resolve(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function listProjectPlans(workingDir) {
+  if (!workingDir || typeof workingDir !== 'string') {
+    return [];
+  }
+
+  const plansDir = path.join(workingDir, 'plans');
+  if (!fs.existsSync(plansDir)) {
+    return [];
+  }
+
+  try {
+    const files = fs.readdirSync(plansDir);
+    const plans = [];
+
+    for (const file of files) {
+      if (!file.endsWith('.md')) {
+        continue;
+      }
+
+      const filePath = path.join(plansDir, file);
+      const stats = fs.statSync(filePath);
+      plans.push({
+        filename: file,
+        name: file.replace('.md', '').replace(/-/g, ' '),
+        path: filePath,
+        createdAt: stats.birthtime.toISOString(),
+        modifiedAt: stats.mtime.toISOString(),
+        size: stats.size
+      });
+    }
+
+    plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+    return plans;
+  } catch (error) {
+    console.error('Error listing project plans:', error.message);
+    return [];
+  }
 }
 
 function normalizeRoleInput(role) {
@@ -162,9 +208,7 @@ async function start() {
       notes: body.notes,
       tags: normalizeStringArray(body.tags),
       skills: normalizeStringArray(body.skills),
-      startupPrompt: typeof body.startupPrompt === 'string' ? body.startupPrompt : '',
-      stage: typeof body.stage === 'string' ? body.stage : 'todo',
-      priority: Number.isFinite(body.priority) ? body.priority : 0
+      startupPrompt: typeof body.startupPrompt === 'string' ? body.startupPrompt : ''
     });
 
     broadcastDashboard({ type: 'agentUpdated', agent });
@@ -221,7 +265,7 @@ async function start() {
         agent.name,
         agent.workingDir,
         agent.cliType,
-        { stage: agent.stage || 'todo', priority: agent.priority || 0, description: '' },
+        {},
         agent.role || '',
         { agentId: agent.id }
       );
@@ -279,7 +323,7 @@ async function start() {
         refreshed.name,
         refreshed.workingDir,
         refreshed.cliType,
-        { stage: refreshed.stage || 'todo', priority: refreshed.priority || 0, description: '' },
+        {},
         refreshed.role || '',
         { agentId: refreshed.id }
       );
@@ -554,14 +598,19 @@ async function start() {
       return reply.status(400).send({ error: 'Plan content is required' });
     }
 
-    const fs = require('fs');
-    const path = require('path');
-    const os = require('os');
-
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const safeName = (name || 'pasted-plan').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 40);
     const filename = `${safeName}-${timestamp}.md`;
-    const plansDir = path.join(os.homedir(), '.claude', 'plans');
+    const session = sessionId ? sessionManager.getSession(sessionId) : null;
+    const useProjectPlans = Boolean(
+      session &&
+      (session.cliType === 'codex' || session.cliType === 'terminal') &&
+      session.workingDir
+    );
+    const plansDir = useProjectPlans
+      ? path.join(session.workingDir, 'plans')
+      : path.join(os.homedir(), '.claude', 'plans');
+    const scope = useProjectPlans ? 'project' : 'claude-home';
 
     if (!fs.existsSync(plansDir)) {
       fs.mkdirSync(plansDir, { recursive: true });
@@ -571,17 +620,10 @@ async function start() {
     fs.writeFileSync(planPath, content, 'utf8');
 
     if (sessionId) {
-      const session = sessionManager.getSession(sessionId);
-      if (session) {
-        if (!session.plans) session.plans = [];
-        if (!session.plans.includes(planPath)) {
-          session.plans.push(planPath);
-        }
-        dataStore.saveSession(session);
-      }
+      sessionManager.addOrUpdatePlanInSession(sessionId, planPath);
     }
 
-    return { success: true, path: planPath, filename };
+    return { success: true, path: planPath, filename, scope };
   });
 
   // List plans not yet associated with a session
@@ -593,11 +635,23 @@ async function start() {
       return reply.status(404).send({ error: 'Session not found' });
     }
 
-    const allPlans = planManager.listPlans();
+    const plansByPath = new Map();
     const sessionPlans = session.plans || [];
 
-    // Filter out plans already associated with this session
-    const available = allPlans.filter(p => !sessionPlans.includes(p.path));
+    for (const plan of planManager.listPlans()) {
+      plansByPath.set(normalizePathKey(plan.path), plan);
+    }
+
+    if ((session.cliType === 'codex' || session.cliType === 'terminal') && session.workingDir) {
+      for (const plan of listProjectPlans(session.workingDir)) {
+        plansByPath.set(normalizePathKey(plan.path), plan);
+      }
+    }
+
+    const sessionPlanKeys = new Set(sessionPlans.map((planPath) => normalizePathKey(planPath)));
+    const available = [...plansByPath.values()]
+      .filter((plan) => !sessionPlanKeys.has(normalizePathKey(plan.path)))
+      .sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
     return { plans: available };
   });
 
@@ -1107,7 +1161,18 @@ async function start() {
       return reply.status(404).send({ error: 'Agent not found' });
     }
 
+    // Build task context to send to agent
+    const taskContext = {
+      title: task.title || '',
+      description: task.description || '',
+      comments: (task.comments || []).slice(-5).map(c => ({
+        author: c.author || 'unknown',
+        text: (c.text || '').slice(0, 500)
+      }))
+    };
+
     let session = null;
+    let createdNewSession = false;
     if (agent.activeSessionId) {
       session = sessionManager.getSession(agent.activeSessionId);
     }
@@ -1118,11 +1183,12 @@ async function start() {
           agent.name,
           agent.workingDir,
           agent.cliType,
-          { stage: agent.stage || 'todo', priority: agent.priority || 0, description: '' },
+          {},
           agent.role || '',
           { agentId: agent.id, taskId: task.id }
         );
         session = created;
+        createdNewSession = true;
         const updatedAgent = agentStore.updateAgent(agent.id, {
           activeSessionId: created.id,
           lastActiveAt: new Date().toISOString(),
@@ -1139,6 +1205,18 @@ async function start() {
       if (updatedSession) {
         session = updatedSession;
       }
+    }
+
+    // Inject task context into agent session
+    if (createdNewSession) {
+      // Task context will be appended to startup sequence
+      sessionManager.appendTaskContext(session.id, taskContext);
+    } else {
+      // Session already running - send task context directly
+      const instruction = `You have been assigned a new task:\n\nTitle: ${taskContext.title}` +
+        (taskContext.description ? `\n\nDescription:\n${taskContext.description}` : '') +
+        `\n\nPlease begin working on this task.\r`;
+      sessionManager.sendInput(session.id, instruction);
     }
 
     const freshTask = taskStore.getTask(task.id);
@@ -1344,9 +1422,10 @@ async function start() {
         const output = sessionManager.getSessionOutput(id);
         if (output && output.length > 0) {
           try {
+            const replay = prepareTerminalReplayPayload(output);
             socket.send(JSON.stringify({
               type: 'output',
-              data: output.join('')
+              data: replay.data
             }));
           } catch (e) {
             // Socket may have closed
@@ -1574,6 +1653,13 @@ async function start() {
     }
     closeTaskRunForSession(session, 'killed');
     clearActiveSessionFromAgents(sessionId);
+    if (session?.agentId) {
+      const ended = taskStore.endRunsByAgent(session.agentId, 'killed');
+      for (const { taskId } of ended) {
+        const t = taskStore.getTask(taskId);
+        if (t) broadcastDashboard({ type: 'taskUpdated', task: t });
+      }
+    }
   });
 
   // Broadcast session ended to clients
@@ -1599,6 +1685,13 @@ async function start() {
     closeTaskRunForSession(session, 'completed');
     clearActiveSessionFromAgents(sessionId);
     appendAgentMemoryFromSession(session?.agentId, session);
+    if (session?.agentId) {
+      const ended = taskStore.endRunsByAgent(session.agentId, 'completed');
+      for (const { taskId } of ended) {
+        const t = taskStore.getTask(taskId);
+        if (t) broadcastDashboard({ type: 'taskUpdated', task: t });
+      }
+    }
   });
 
   // Clear debounce timer on session kill

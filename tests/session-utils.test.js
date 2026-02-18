@@ -8,6 +8,7 @@ const {
 } = require('../backend/sessionInputUtils');
 const { generateSessionName, ensureUniqueSessionName } = require('../backend/sessionNaming');
 const { sessionStatusToStage } = require('../backend/stagesConfig');
+const SessionManager = require('../backend/sessionManager');
 
 test('hasSubmittedInput: typing without Enter is not submitted input', () => {
   assert.equal(hasSubmittedInput('hello world'), false);
@@ -85,4 +86,37 @@ test('generateSessionName: uses expected prefix by cli type', () => {
 test('session status mapping keeps idle in in_review', () => {
   assert.equal(sessionStatusToStage('idle'), 'in_review');
   assert.equal(sessionStatusToStage('active'), 'in_progress');
+});
+
+test('detectStatus: codex footer prompt is treated as idle', () => {
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    '? for shortcuts',
+    'active',
+    'codex'
+  );
+  assert.equal(status, 'idle');
+});
+
+test('detectStatus: codex approval prompt is treated as waiting', () => {
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    'Would you like to run this command?',
+    'active',
+    'codex'
+  );
+  assert.equal(status, 'waiting');
+});
+
+test('canTransitionToIdle: codex false, non-codex true', () => {
+  assert.equal(SessionManager.prototype.canTransitionToIdle.call({}, { cliType: 'codex' }), false);
+  assert.equal(SessionManager.prototype.canTransitionToIdle.call({}, { cliType: 'claude' }), true);
+  assert.equal(SessionManager.prototype.canTransitionToIdle.call({}, { cliType: 'terminal' }), true);
+});
+
+test('getOutputBufferSize: terminal/codex larger than claude', () => {
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'terminal'), 3000);
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex'), 3000);
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'claude'), 750);
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);
 });

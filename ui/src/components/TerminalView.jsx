@@ -136,7 +136,7 @@ const TerminalView = forwardRef(function TerminalView({
     fontFamily: "Consolas, Monaco, 'Courier New', monospace",
     cursorStyle: 'block',
     cursorBlink: true,
-    scrollback: 2000
+    scrollback: 5000
   };
 
   const keyboardSettings = settings?.keyboard || {
@@ -148,7 +148,9 @@ const TerminalView = forwardRef(function TerminalView({
 
   useEffect(() => {
     keyboardSettingsRef.current = keyboardSettings;
-  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.cancelKey, keyboardSettings.clearKey]);
+  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.cancelKey, keyboardSettings.clearKey,
+      keyboardSettings.navigation?.prevSession, keyboardSettings.navigation?.nextSession,
+      keyboardSettings.navigation?.prevGroup, keyboardSettings.navigation?.nextGroup]);
 
   useEffect(() => {
     overrideKeysRef.current = overrideKeys;
@@ -286,10 +288,17 @@ const TerminalView = forwardRef(function TerminalView({
       }
 
       // Intercept app-level shortcuts so xterm doesn't consume them
-      // Session navigation: Ctrl+[ Ctrl+] Ctrl+; Ctrl+'
-      if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
-        if (event.code === 'BracketLeft' || event.code === 'BracketRight' ||
-            event.key === ';' || event.key === "'" || event.key.toLowerCase() === 'w') {
+      // Ctrl+W close session
+      if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && event.key.toLowerCase() === 'w') {
+        return false;
+      }
+      // Session navigation (configurable keys)
+      const navKeys = keyboardSettingsRef.current?.navigation;
+      if (navKeys) {
+        if (matchKeyCombo(event, navKeys.nextSession) ||
+            matchKeyCombo(event, navKeys.prevSession) ||
+            matchKeyCombo(event, navKeys.nextGroup) ||
+            matchKeyCombo(event, navKeys.prevGroup)) {
           return false;
         }
       }

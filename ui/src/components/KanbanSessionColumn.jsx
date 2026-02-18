@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import TaskCard from './TaskCard';
+import { getProjectDisplayName } from '../utils/projectUtils';
 
 function KanbanSessionColumn({
   stage,
   sessions = [],
+  settings,
   onSessionClick,
   onSessionDrop,
   onAddSession,
@@ -18,6 +20,16 @@ function KanbanSessionColumn({
   focusedColumnId
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const session of sessions) {
+      const project = session.workingDir || 'Unassigned';
+      if (!map.has(project)) map.set(project, []);
+      map.get(project).push(session);
+    }
+    return map;
+  }, [sessions]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -58,24 +70,33 @@ function KanbanSessionColumn({
         {sessions.length === 0 ? (
           <div className="column-empty">{isDragOver ? 'Drop here' : 'No sessions'}</div>
         ) : (
-          sessions.map((session) => (
-            <TaskCard
-              key={session.id}
-              ref={cardNodeRefs ? (node => {
-                if (node) cardNodeRefs.set(session.id, node);
-                else cardNodeRefs.delete(session.id);
-              }) : undefined}
-              session={session}
-              onClick={onSessionClick}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              isDragging={draggingSessionId === session.id}
-              onSessionSelect={onSessionSelect}
-              selectedSessionId={selectedSessionId}
-              stageId={stage.id}
-              onResetPlacement={onResetPlacement}
-              onLockPlacement={onLockPlacement}
-            />
+          Array.from(groups.entries()).map(([project, projectSessions]) => (
+            <div key={project} className="kanban-project-group">
+              {groups.size > 1 && (
+                <div className="kanban-project-subheader">
+                  {getProjectDisplayName(project, settings?.projectAliases)}
+                </div>
+              )}
+              {projectSessions.map((session) => (
+                <TaskCard
+                  key={session.id}
+                  ref={cardNodeRefs ? (node => {
+                    if (node) cardNodeRefs.set(session.id, node);
+                    else cardNodeRefs.delete(session.id);
+                  }) : undefined}
+                  session={session}
+                  onClick={onSessionClick}
+                  onDragStart={onDragStart}
+                  onDragEnd={onDragEnd}
+                  isDragging={draggingSessionId === session.id}
+                  onSessionSelect={onSessionSelect}
+                  selectedSessionId={selectedSessionId}
+                  stageId={stage.id}
+                  onResetPlacement={onResetPlacement}
+                  onLockPlacement={onLockPlacement}
+                />
+              ))}
+            </div>
           ))
         )}
       </div>

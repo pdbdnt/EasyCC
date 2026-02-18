@@ -2,20 +2,6 @@ import { useMemo, useState } from 'react';
 import NewAgentModal from './NewAgentModal';
 import AgentChipSelector from './AgentChipSelector';
 
-const PRIORITIES = [
-  { value: 0, label: 'P0', cssClass: 'p0' },
-  { value: 1, label: 'P1', cssClass: 'p1' },
-  { value: 2, label: 'P2', cssClass: 'p2' },
-  { value: 3, label: 'P3', cssClass: 'p3' }
-];
-
-const STAGE_OPTIONS = [
-  { id: 'todo', label: 'To Do' },
-  { id: 'in_progress', label: 'In Progress' },
-  { id: 'in_review', label: 'In Review' },
-  { id: 'done', label: 'Done' }
-];
-
 function getInitials(name) {
   if (!name) return '?';
   const parts = name.trim().split(/[\s-]+/);
@@ -264,6 +250,9 @@ function AgentBoard({
                 <div>
                   <h3>{selectedAgent.name}</h3>
                   <span className="agent-detail-subtitle">{selectedAgent.cliType} agent</span>
+                  <span className="agent-detail-dates">
+                    Created: {formatDate(selectedAgent.createdAt)} · Last active: {formatDate(selectedAgent.lastActiveAt)}
+                  </span>
                 </div>
               </div>
               <div className="agent-detail-actions">
@@ -419,55 +408,6 @@ function AgentBoard({
                     onChange={e => onUpdateAgent?.(selectedAgent.id, { startupPrompt: e.target.value })}
                     placeholder="Initial prompt on start"
                   />
-                </div>
-              )}
-            </div>
-
-            {/* Collapsible: Info (Stage, Priority, Dates) */}
-            <div className="agent-card-section">
-              <div className="agent-card-section-header" onClick={() => toggleSection(selectedAgent.id, 'info')}>
-                <span>Info</span>
-                <span className="agent-section-toggle">{isSectionOpen(selectedAgent.id, 'info') ? '\u25B4' : '\u25BE'}</span>
-              </div>
-              {isSectionOpen(selectedAgent.id, 'info') && (
-                <div className="agent-card-section-body">
-                  <div className="agent-detail-info-grid">
-                    <div className="agent-detail-info-row">
-                      <span className="agent-detail-info-label">Stage</span>
-                      <select
-                        value={selectedAgent.stage || 'todo'}
-                        onChange={e => onUpdateAgent?.(selectedAgent.id, { stage: e.target.value })}
-                        className="agent-detail-info-select"
-                      >
-                        {STAGE_OPTIONS.map(s => (
-                          <option key={s.id} value={s.id}>{s.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="agent-detail-info-row">
-                      <span className="agent-detail-info-label">Priority</span>
-                      <div className="agent-detail-priority-selector">
-                        {PRIORITIES.map(p => (
-                          <button
-                            key={p.value}
-                            className={`task-modal-priority-badge ${p.cssClass} ${(selectedAgent.priority || 0) === p.value ? 'active' : ''}`}
-                            onClick={() => onUpdateAgent?.(selectedAgent.id, { priority: p.value })}
-                            type="button"
-                          >
-                            {p.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="agent-detail-info-row">
-                      <span className="agent-detail-info-label">Created</span>
-                      <span className="agent-detail-info-value">{formatDate(selectedAgent.createdAt)}</span>
-                    </div>
-                    <div className="agent-detail-info-row">
-                      <span className="agent-detail-info-label">Last Active</span>
-                      <span className="agent-detail-info-value">{formatDate(selectedAgent.lastActiveAt)}</span>
-                    </div>
-                  </div>
                 </div>
               )}
             </div>

@@ -163,6 +163,30 @@ class TaskStore {
     this.saveAll(tasks);
     return task.runHistory[idx];
   }
+
+  endRunsByAgent(agentId, status = 'completed') {
+    const tasks = this.load();
+    const ended = [];
+    for (const task of Object.values(tasks)) {
+      if (!Array.isArray(task.runHistory)) continue;
+      let modified = false;
+      for (const run of task.runHistory) {
+        if (run.agentId === agentId && !run.endedAt) {
+          run.endedAt = new Date().toISOString();
+          run.status = status;
+          modified = true;
+          ended.push({ taskId: task.id, run });
+        }
+      }
+      if (modified) {
+        task.updatedAt = new Date().toISOString();
+      }
+    }
+    if (ended.length > 0) {
+      this.saveAll(tasks);
+    }
+    return ended;
+  }
 }
 
 module.exports = TaskStore;

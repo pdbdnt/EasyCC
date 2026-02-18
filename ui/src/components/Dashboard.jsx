@@ -52,6 +52,7 @@ function Dashboard({
   onOpenSettings,
   onUpdateSession,
   onMoveSession,
+  onResetPlacement,
   onKillSession,
   onResumeSession,
   connectionStatus,
@@ -613,6 +614,7 @@ function Dashboard({
                       onShowDetails={onShowDetails}
                       onUpdate={onUpdateSession}
                       onMoveSession={onMoveSession}
+                      onResetPlacement={onResetPlacement}
                       hintModeActive={hintModeActive}
                       typedChars={typedChars}
                       hintCode={hintCode}

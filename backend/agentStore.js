@@ -56,8 +56,6 @@ class AgentStore {
       plans: Array.isArray(config.plans) ? config.plans : [],
       memory: Array.isArray(config.memory) ? config.memory : [],
       memoryEnabled: config.memoryEnabled !== false,
-      stage: typeof config.stage === 'string' ? config.stage : 'todo',
-      priority: Number.isFinite(config.priority) ? config.priority : 0,
       activeSessionId: null,
       sessionHistory: [],
       createdAt: now,
@@ -76,7 +74,7 @@ class AgentStore {
     const agent = agents[id];
     const allowed = [
       'name', 'role', 'cliType', 'workingDir', 'notes', 'tags', 'skills', 'startupPrompt',
-      'plans', 'memory', 'memoryEnabled', 'stage', 'priority', 'activeSessionId',
+      'plans', 'memory', 'memoryEnabled', 'activeSessionId',
       'sessionHistory', 'lastActiveAt', 'deletedAt'
     ];
     for (const field of allowed) {

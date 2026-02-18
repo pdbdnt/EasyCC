@@ -52,7 +52,22 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
 
       const combo = formatKeyCombo(event);
       if (combo) {
-        updateSetting('keyboard', recordingKey, combo);
+        const navKeys = ['prevSession', 'nextSession', 'prevGroup', 'nextGroup'];
+        if (navKeys.includes(recordingKey)) {
+          setLocalSettings(prev => ({
+            ...prev,
+            keyboard: {
+              ...prev.keyboard,
+              navigation: {
+                ...prev.keyboard?.navigation,
+                [recordingKey]: combo
+              }
+            }
+          }));
+          setHasChanges(true);
+        } else {
+          updateSetting('keyboard', recordingKey, combo);
+        }
         setRecordingKey(null);
       }
     };
@@ -81,6 +96,20 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
     pasteKey: 'Paste',
     cancelKey: 'Cancel (SIGINT)',
     clearKey: 'Clear Screen'
+  };
+
+  const navigationLabels = {
+    prevSession: 'Previous Session',
+    nextSession: 'Next Session',
+    prevGroup: 'Previous Group',
+    nextGroup: 'Next Group'
+  };
+
+  const navigationSettings = localSettings.keyboard?.navigation || {
+    prevSession: 'Ctrl+E',
+    nextSession: 'Ctrl+R',
+    prevGroup: 'Ctrl+3',
+    nextGroup: 'Ctrl+4'
   };
 
   const hintLabels = {
@@ -170,10 +199,38 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
               </p>
               <div className="keyboard-shortcuts-list">
                 {Object.entries(localSettings.keyboard)
-                  .filter(([key]) => key !== 'hintMode')
+                  .filter(([key]) => key !== 'hintMode' && key !== 'navigation')
                   .map(([key, value]) => (
                   <div className="shortcut-row" key={key}>
                     <label className="shortcut-label">{keyboardLabels[key] || key}</label>
+                    <div className="shortcut-input-group">
+                      <input
+                        type="text"
+                        className={`shortcut-input ${recordingKey === key ? 'recording' : ''}`}
+                        value={recordingKey === key ? 'Press key...' : value}
+                        readOnly
+                      />
+                      <button
+                        className={`btn btn-small ${recordingKey === key ? 'btn-danger' : 'btn-secondary'}`}
+                        onClick={() => recordingKey === key ? setRecordingKey(null) : startRecording(key)}
+                      >
+                        {recordingKey === key ? 'Cancel' : 'Record'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="settings-divider" />
+
+              <h4 className="settings-subtitle">Session Navigation</h4>
+              <p className="settings-description">
+                Shortcuts for switching between sessions and groups.
+              </p>
+              <div className="keyboard-shortcuts-list">
+                {Object.entries(navigationSettings).map(([key, value]) => (
+                  <div className="shortcut-row" key={key}>
+                    <label className="shortcut-label">{navigationLabels[key] || key}</label>
                     <div className="shortcut-input-group">
                       <input
                         type="text"
@@ -269,8 +326,8 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                   type="number"
                   min="500"
                   max="20000"
-                  value={localSettings.terminal.scrollback ?? 2000}
-                  onChange={e => updateSetting('terminal', 'scrollback', Math.max(500, Math.min(20000, parseInt(e.target.value, 10) || 2000)))}
+                  value={localSettings.terminal.scrollback ?? 5000}
+                  onChange={e => updateSetting('terminal', 'scrollback', Math.max(500, Math.min(20000, parseInt(e.target.value, 10) || 5000)))}
                 />
               </div>
 

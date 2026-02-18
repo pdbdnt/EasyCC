@@ -62,19 +62,58 @@ class PlanManager extends EventEmitter {
   }
 
   /**
+   * Resolve a plan reference to a file path.
+   * Accepts either a filename in the managed plans directory or a full file path.
+   * @param {string} planRef - Filename or full path
+   * @returns {object|null} Resolved metadata
+   */
+  resolvePlanReference(planRef) {
+    if (typeof planRef !== 'string') {
+      return null;
+    }
+
+    const trimmedRef = planRef.trim();
+    if (!trimmedRef) {
+      return null;
+    }
+
+    const baseName = trimmedRef.split(/[\\/]/).pop();
+    const candidatePaths = [];
+
+    if (path.isAbsolute(trimmedRef) || /[\\/]/.test(trimmedRef)) {
+      candidatePaths.push(trimmedRef);
+    }
+
+    if (baseName) {
+      candidatePaths.push(path.join(this.plansDir, baseName));
+    }
+
+    for (const candidate of candidatePaths) {
+      if (!candidate || !candidate.toLowerCase().endsWith('.md')) {
+        continue;
+      }
+
+      const resolvedPath = path.resolve(candidate);
+      if (fs.existsSync(resolvedPath)) {
+        return { filePath: resolvedPath, filename: path.basename(resolvedPath) };
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Get content of a specific plan file
-   * @param {string} filename - Plan filename
+   * @param {string} planRef - Plan filename or path
    * @returns {object|null} Plan content and metadata
    */
-  getPlanContent(filename) {
+  getPlanContent(planRef) {
     try {
-      // Security: prevent directory traversal
-      const safeFilename = path.basename(filename);
-      const filePath = path.join(this.plansDir, safeFilename);
-
-      if (!fs.existsSync(filePath)) {
+      const resolved = this.resolvePlanReference(planRef);
+      if (!resolved) {
         return null;
       }
+      const { filePath, filename } = resolved;
 
       const content = fs.readFileSync(filePath, 'utf8');
       const stats = fs.statSync(filePath);
@@ -85,8 +124,8 @@ class PlanManager extends EventEmitter {
                               content.match(/Path[:\s]+([^\n]+)/i);
 
       return {
-        filename: safeFilename,
-        name: safeFilename.replace('.md', '').replace(/-/g, ' '),
+        filename,
+        name: filename.replace('.md', '').replace(/-/g, ' '),
         path: filePath,
         content: content,
         workingDir: workingDirMatch ? workingDirMatch[1].trim() : null,

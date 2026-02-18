@@ -10,6 +10,12 @@ const defaultSettings = {
     pasteKey: 'Ctrl+V',
     cancelKey: 'Ctrl+C',
     clearKey: 'Ctrl+L',
+    navigation: {
+      prevSession: 'Ctrl+E',
+      nextSession: 'Ctrl+R',
+      prevGroup: 'Ctrl+3',
+      nextGroup: 'Ctrl+4'
+    },
     hintMode: {
       enabled: true,
       triggerKey: '`',
@@ -26,7 +32,7 @@ const defaultSettings = {
     fontFamily: "Consolas, Monaco, 'Courier New', monospace",
     cursorStyle: 'block',
     cursorBlink: true,
-    scrollback: 2000
+    scrollback: 5000
   },
   ui: {
     defaultView: 'list',

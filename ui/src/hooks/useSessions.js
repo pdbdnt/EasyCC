@@ -381,6 +381,30 @@ export function useSessions() {
     }
   }, []);
 
+  const resetPlacement = useCallback(async (sessionId) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/reset-placement`, { method: 'POST' });
+      if (res.ok) {
+        const { session } = await res.json();
+        setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, ...session } : s));
+      }
+    } catch (err) {
+      console.error('Failed to reset placement:', err);
+    }
+  }, []);
+
+  const lockPlacement = useCallback(async (sessionId) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/lock-placement`, { method: 'POST' });
+      if (res.ok) {
+        const { session } = await res.json();
+        setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, ...session } : s));
+      }
+    } catch (err) {
+      console.error('Failed to lock placement:', err);
+    }
+  }, []);
+
   const createAgent = useCallback(async (payload) => {
     try {
       const response = await fetch('/api/agents', {
@@ -610,6 +634,8 @@ export function useSessions() {
     moveSession,
     advanceSession,
     rejectSession,
+    resetPlacement,
+    lockPlacement,
     createAgent,
     updateAgent,
     startAgent,
@@ -626,7 +652,7 @@ export function useSessions() {
     deleteAgent,
     connectionStatus,
     isConnected
-  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
+  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
 }
 
 export default useSessions;

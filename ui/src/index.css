@@ -5067,6 +5067,11 @@ textarea::placeholder {
   font-size: 12px;
   color: var(--text-muted);
 }
+.agent-detail-dates {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
 
 .agent-detail-actions {
   display: flex;
