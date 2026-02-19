@@ -899,6 +899,58 @@ async function start() {
     }
   });
 
+  // Get recent git commits for a working directory
+  app.get('/api/git-commits', async (request, reply) => {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+
+    const { workingDir, limit = '20' } = request.query;
+    if (!workingDir) {
+      return reply.status(400).send({ error: 'workingDir query param is required' });
+    }
+
+    // Check if directory is a git repo
+    try {
+      await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
+        cwd: workingDir,
+        timeout: 5000
+      });
+    } catch {
+      return { commits: [], isGitRepo: false };
+    }
+
+    // Fetch commits (use record separator %x1e between commits to handle multi-line bodies)
+    try {
+      const n = Math.max(1, Math.min(parseInt(limit, 10) || 20, 100));
+      const { stdout } = await execFileAsync('git', [
+        'log', '--format=%H%x00%s%x00%b%x00%aI%x1e', `-n`, `${n}`
+      ], { cwd: workingDir, timeout: 5000 });
+
+      if (!stdout.trim()) {
+        return { commits: [], isGitRepo: true };
+      }
+
+      const commits = stdout.split('\x1e')
+        .map(record => record.trim())
+        .filter(record => record.length > 0)
+        .map(record => {
+          const parts = record.split('\0');
+          return {
+            hash: parts[0] ? parts[0].substring(0, 7) : '',
+            fullHash: parts[0] || '',
+            subject: parts[1] || '',
+            body: (parts[2] || '').trim(),
+            date: parts[3] || ''
+          };
+        });
+
+      return { commits, isGitRepo: true };
+    } catch {
+      return { commits: [], isGitRepo: true };
+    }
+  });
+
   // Settings API
 
   // Get current settings

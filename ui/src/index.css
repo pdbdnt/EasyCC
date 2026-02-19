@@ -2326,6 +2326,141 @@ textarea::placeholder {
   cursor: default;
 }
 
+/* Copy path button - same pattern as open/delete buttons */
+.saved-plan-copy-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.saved-plan-header:hover .saved-plan-copy-btn {
+  opacity: 0.6;
+}
+
+.saved-plan-copy-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent-blue);
+}
+
+/* Git Commit Divider in Saved Plans Timeline */
+.git-commit-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 2px 0;
+  cursor: pointer;
+}
+
+.git-commit-divider:hover .git-commit-hash {
+  background: rgba(74, 158, 255, 0.2);
+}
+
+.git-commit-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+
+.git-commit-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.git-commit-icon {
+  color: var(--accent-yellow);
+  font-size: 8px;
+}
+
+.git-commit-hash {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--accent-blue);
+  background: rgba(74, 158, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.git-commit-message {
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-date {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Uncommitted badge on plans newer than latest commit */
+.uncommitted-badge {
+  font-size: 9px;
+  color: var(--accent-yellow);
+  background: rgba(255, 204, 0, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 6px;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Expanded git commit body */
+.git-commit-body {
+  margin: 0 12px 4px;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.git-commit-body-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.git-commit-copy-btn {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.git-commit-copy-btn:hover {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+.git-commit-body-text {
+  margin: 0;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
 /* Session Info Grid (Summary + Notes 2-column) */
 .session-info-grid {
   display: grid;
