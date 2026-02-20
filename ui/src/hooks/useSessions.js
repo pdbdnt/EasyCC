@@ -272,10 +272,12 @@ export function useSessions() {
     }
   }, []);
 
-  const resumeSession = useCallback(async (id) => {
+  const resumeSession = useCallback(async (id, { fresh = false } = {}) => {
     try {
       const response = await fetch(`/api/sessions/${id}/resume`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fresh })
       });
 
       if (!response.ok) {

@@ -99,8 +99,10 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
   };
 
   const navigationLabels = {
-    prevSession: 'Previous Session',
-    nextSession: 'Next Session',
+    prevSession: 'Previous Session (in project)',
+    nextSession: 'Next Session (in project)',
+    prevSessionGlobal: 'Previous Session (all projects)',
+    nextSessionGlobal: 'Next Session (all projects)',
     prevGroup: 'Previous Group',
     nextGroup: 'Next Group'
   };
@@ -108,6 +110,8 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
   const navigationSettings = localSettings.keyboard?.navigation || {
     prevSession: 'Ctrl+E',
     nextSession: 'Ctrl+R',
+    prevSessionGlobal: 'Ctrl+D',
+    nextSessionGlobal: 'Ctrl+F',
     prevGroup: 'Ctrl+3',
     nextGroup: 'Ctrl+4'
   };

@@ -13,6 +13,8 @@ const defaultSettings = {
     navigation: {
       prevSession: 'Ctrl+E',
       nextSession: 'Ctrl+R',
+      prevSessionGlobal: 'Ctrl+D',
+      nextSessionGlobal: 'Ctrl+F',
       prevGroup: 'Ctrl+3',
       nextGroup: 'Ctrl+4'
     },

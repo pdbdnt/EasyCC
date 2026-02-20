@@ -109,6 +109,7 @@ class SessionManager extends EventEmitter {
           workingDir: sessionData.workingDir,
           cliType: cliType,
           claudeSessionId: sessionData.claudeSessionId,
+          previousClaudeSessionIds: sessionData.previousClaudeSessionIds || [],
           claudeSessionName: sessionData.claudeSessionName || null,
           notes: sessionData.notes || '',
           role: this.sanitizeRole(sessionData.role || ''),
@@ -751,6 +752,7 @@ class SessionManager extends EventEmitter {
       workingDir,
       cliType,  // 'claude' or 'codex'
       claudeSessionId: cliType === 'claude' ? claudeSessionId : null, // Only for Claude sessions
+      previousClaudeSessionIds: [],
       notes: '',
       role: sanitizedRole,
       agentId: sessionMeta.agentId || null,
@@ -1043,9 +1045,11 @@ class SessionManager extends EventEmitter {
   /**
    * Resume a paused session
    * @param {string} id - Session ID
+   * @param {object} options - Resume options
+   * @param {boolean} options.fresh - Start a fresh CLI session instead of resuming
    * @returns {boolean} Success status
    */
-  resumeSession(id) {
+  resumeSession(id, { fresh = false } = {}) {
     const session = this.sessions.get(id);
     if (!session) {
       return false;
@@ -1060,9 +1064,11 @@ class SessionManager extends EventEmitter {
     let claudeFallbackAttempted = false;
     let codexFallbackAttempted = false;
     let suppressNextExit = false;
+    let shouldResyncClaudeSession = false;
 
-    const createFreshClaudeProcess = () => {
+    const createFreshClaudeProcess = ({ sessionId = null } = {}) => {
       return this.spawnClaudeProcess(session.workingDir, {
+        sessionId,
         role: this.sanitizeRole(session.role || '')
       });
     };
@@ -1238,18 +1244,42 @@ class SessionManager extends EventEmitter {
       });
     };
 
+    if (fresh) {
+      session.outputBuffer = new RingBuffer(this.getOutputBufferSize(cliType));
+
+      if (cliType === 'claude') {
+        const oldClaudeSessionId = session.claudeSessionId;
+        if (oldClaudeSessionId) {
+          const history = Array.isArray(session.previousClaudeSessionIds)
+            ? session.previousClaudeSessionIds
+            : [];
+          const withoutCurrent = history.filter((value) => value !== oldClaudeSessionId);
+          withoutCurrent.push(oldClaudeSessionId);
+          session.previousClaudeSessionIds = withoutCurrent.slice(-20);
+        }
+
+        session.claudeSessionId = uuidv4();
+        session.claudeSessionName = null;
+        shouldResyncClaudeSession = true;
+      }
+    }
+
     try {
       if (cliType === 'terminal') {
         ptyProcess = this.spawnTerminalProcess(session.workingDir);
       } else if (cliType === 'codex') {
         // Resume Codex in the same working directory to avoid cross-project jumps.
-        ptyProcess = this.spawnCodexProcess(session.workingDir, { resume: true });
+        ptyProcess = this.spawnCodexProcess(session.workingDir, { resume: !fresh });
       } else {
-        // Claude: resume existing session when possible, and append role for consistency.
-        ptyProcess = this.spawnClaudeProcess(session.workingDir, {
-          resumeId: session.claudeSessionId || null,
-          role: this.sanitizeRole(session.role || '')
-        });
+        if (fresh) {
+          ptyProcess = createFreshClaudeProcess({ sessionId: session.claudeSessionId });
+        } else {
+          // Claude: resume existing session when possible, and append role for consistency.
+          ptyProcess = this.spawnClaudeProcess(session.workingDir, {
+            resumeId: session.claudeSessionId || null,
+            role: this.sanitizeRole(session.role || '')
+          });
+        }
       }
     } catch (error) {
       console.error(`Failed to resume session ${id}:`, error.message);
@@ -1262,6 +1292,21 @@ class SessionManager extends EventEmitter {
     // Re-setup PTY handlers
     wirePtyHandlers(ptyProcess);
     this.setupRoleInjectionWorkflow(session, 'resume');
+
+    if (cliType === 'claude') {
+      if (session.claudeIndexWatcher) {
+        try {
+          session.claudeIndexWatcher.close();
+        } catch (e) {
+          // Ignore watcher close errors
+        }
+        session.claudeIndexWatcher = null;
+      }
+      this.watchClaudeSessionForUpdates(session);
+      if (shouldResyncClaudeSession) {
+        this.syncWithClaudeSession(session);
+      }
+    }
 
     // Save to persistent storage
     this.dataStore.saveSession(session);
@@ -1870,6 +1915,7 @@ class SessionManager extends EventEmitter {
       workingDir: session.workingDir,
       cliType: session.cliType || 'claude',
       claudeSessionId: session.claudeSessionId || null,
+      previousClaudeSessionIds: session.previousClaudeSessionIds || [],
       claudeSessionName: session.claudeSessionName || null,
       notes: session.notes || '',
       role: session.role || '',

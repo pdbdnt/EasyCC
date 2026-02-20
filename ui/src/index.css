@@ -929,6 +929,12 @@ body {
   margin-bottom: 20px;
 }
 
+.paused-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
 /* Modal large variant */
 .modal-large {
   max-width: 600px;
@@ -2050,6 +2056,45 @@ textarea::placeholder {
   color: var(--text-muted);
 }
 
+/* Per-folder stage count badge */
+.session-group-stage-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Stage dot indicator */
+.stage-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.in-progress .stage-dot { background: #3b82f6; }
+.in-review .stage-dot { background: #f59e0b; }
+
+/* Global stage summary bar */
+.session-stage-summary {
+  display: flex;
+  gap: 12px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.stage-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .session-group-hint {
   background: var(--accent-primary);
   color: #000;
@@ -2107,6 +2152,30 @@ textarea::placeholder {
   opacity: 1 !important;
   color: var(--status-active);
   background: rgba(68, 255, 68, 0.15);
+}
+
+.group-fresh-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.session-group-header:hover .group-fresh-btn {
+  opacity: 0.6;
+}
+
+.group-fresh-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent-primary);
+  background: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.15);
 }
 
 .group-gear-btn {
@@ -3545,6 +3614,74 @@ textarea::placeholder {
 .filter-select:focus {
   outline: none;
   border-color: var(--accent-blue);
+}
+
+/* Sessions Filter Bar */
+.sessions-filter-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.filter-select-compact {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.project-filter-dropdown {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+}
+
+.project-filter-btn {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+}
+
+.dropdown-caret {
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.project-filter-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 0;
+  z-index: 100;
+  max-height: 200px;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.project-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.project-filter-item:hover {
+  background: var(--bg-active);
+}
+
+.project-filter-item input[type="checkbox"] {
+  accent-color: var(--accent-blue);
 }
 
 /* Kanban Columns Container */

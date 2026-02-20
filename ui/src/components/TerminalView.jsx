@@ -605,6 +605,10 @@ const TerminalView = forwardRef(function TerminalView({
     onResumeSession?.(session.id);
   };
 
+  const handleStartFresh = () => {
+    onResumeSession?.(session.id, { fresh: true });
+  };
+
   const handleNameDoubleClick = () => {
     setIsEditingName(true);
     setEditName(session.name);
@@ -713,10 +717,15 @@ const TerminalView = forwardRef(function TerminalView({
             <div className="paused-content">
               <div className="paused-icon">⏸️</div>
               <h3>Session Paused</h3>
-              <p>Click Resume to continue this session</p>
-              <button className="btn btn-primary" onClick={handleResume}>
-                Resume Session
-              </button>
+              <p>Resume the previous session or start a new one</p>
+              <div className="paused-actions">
+                <button className="btn btn-primary" onClick={handleResume}>
+                  Resume Session
+                </button>
+                <button className="btn btn-secondary" onClick={handleStartFresh}>
+                  Start Fresh
+                </button>
+              </div>
             </div>
           </div>
         )}

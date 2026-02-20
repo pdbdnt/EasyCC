@@ -482,7 +482,8 @@ async function start() {
   // Resume a paused session
   app.post('/api/sessions/:id/resume', async (request, reply) => {
     const { id } = request.params;
-    const success = sessionManager.resumeSession(id);
+    const { fresh } = request.body || {};
+    const success = sessionManager.resumeSession(id, { fresh: !!fresh });
 
     if (!success) {
       return reply.status(400).send({ error: 'Could not resume session (not found or not paused)' });
@@ -619,6 +620,10 @@ async function start() {
 
     const planPath = path.join(plansDir, filename);
     fs.writeFileSync(planPath, content, 'utf8');
+
+    // Bootstrap into versioning system so PlanViewer shows toolbar + Save button
+    planVersionStore.markDirty(planPath, content);
+    planVersionStore.createVersion(planPath);
 
     if (sessionId) {
       sessionManager.addOrUpdatePlanInSession(sessionId, planPath);
@@ -1732,7 +1737,7 @@ async function start() {
 
     // Clear debounce timer
     if (kanbanSyncTimers.has(sessionId)) {
-      clearTimeout(kanbanSyncTimers.get(sessionId));
+      clearTimeout(kanbanSyncTimers.get(sessionId)?.timer);
       kanbanSyncTimers.delete(sessionId);
     }
     closeTaskRunForSession(session, 'completed');
@@ -1750,7 +1755,7 @@ async function start() {
   // Clear debounce timer on session kill
   sessionManager.on('sessionKilled', ({ sessionId }) => {
     if (kanbanSyncTimers.has(sessionId)) {
-      clearTimeout(kanbanSyncTimers.get(sessionId));
+      clearTimeout(kanbanSyncTimers.get(sessionId)?.timer);
       kanbanSyncTimers.delete(sessionId);
     }
   });
@@ -1780,31 +1785,29 @@ async function start() {
   });
 
   // Debounced auto-sync: session status → session's own stage (3s stability)
+  // kanbanSyncTimers values: { timer, targetStage } — tracks pending target
+  // so repeated events for the same target don't restart the debounce window.
   sessionManager.on('statusChange', ({ sessionId, status }) => {
-    const existingTimer = kanbanSyncTimers.get(sessionId);
+    const existing = kanbanSyncTimers.get(sessionId);
 
     // Codex mid-work approvals: don't auto-move to in_review
     const session = sessionManager.getSession(sessionId);
     if (session?.cliType === 'codex' && status === 'waiting') {
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-      }
+      if (existing) clearTimeout(existing.timer);
       kanbanSyncTimers.delete(sessionId);
       return;
     }
 
     // Don't auto-move sessions out of 'todo' until user has submitted input
     if (session?.stage === 'todo' && !session?.lastSubmittedInputAtMs) {
-      if (existingTimer) clearTimeout(existingTimer);
+      if (existing) clearTimeout(existing.timer);
       kanbanSyncTimers.delete(sessionId);
       return;
     }
 
     const targetStage = sessionStatusToStage(status);
     if (!targetStage) {
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-      }
+      if (existing) clearTimeout(existing.timer);
       kanbanSyncTimers.delete(sessionId);
       return;
     }
@@ -1818,11 +1821,15 @@ async function start() {
       }
     }
 
-
-    // Replace prior pending transition with the latest actionable status.
-    if (existingTimer) {
-      clearTimeout(existingTimer);
+    // KEY FIX: If a timer is already pending for the SAME target stage,
+    // let it fire — don't restart the debounce window. This prevents
+    // continuous streaming output from indefinitely resetting the timer.
+    if (existing && existing.targetStage === targetStage) {
+      return;
     }
+
+    // Different target or no existing timer — (re)start debounce
+    if (existing) clearTimeout(existing.timer);
 
     // Set 3s debounce timer
     const timer = setTimeout(() => {
@@ -1834,7 +1841,7 @@ async function start() {
       }
     }, 3000);
 
-    kanbanSyncTimers.set(sessionId, timer);
+    kanbanSyncTimers.set(sessionId, { timer, targetStage });
   });
 
   // ============================================

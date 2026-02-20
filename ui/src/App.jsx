@@ -588,25 +588,56 @@ function App() {
   }, [focusActiveTerminal]);
 
   // Session navigation functions
+  // Navigate within current project only (Ctrl+E/Ctrl+R)
   const navigateSession = useCallback((direction) => {
     if (!selectedId || groupedSessions.length === 0) return;
 
-    // Flatten all visible sessions across groups, skipping collapsed groups
+    // Find the group containing the selected session
+    let currentGroup = null;
+    for (const [, sessionsInGroup] of groupedSessions) {
+      if (sessionsInGroup.some(item => item.session.id === selectedId)) {
+        currentGroup = sessionsInGroup;
+        break;
+      }
+    }
+    if (!currentGroup) return;
+
+    // Filter out paused sessions within this group
+    const eligible = currentGroup.filter(item => item.session.status !== 'paused');
+    if (eligible.length === 0) return;
+
+    const currentIndex = eligible.findIndex(item => item.session.id === selectedId);
+    if (currentIndex === -1) {
+      selectSession(eligible[0].session.id);
+      return;
+    }
+
+    if (direction === 'next') {
+      const nextIndex = (currentIndex + 1) % eligible.length;
+      selectSession(eligible[nextIndex].session.id);
+    } else {
+      const prevIndex = (currentIndex - 1 + eligible.length) % eligible.length;
+      selectSession(eligible[prevIndex].session.id);
+    }
+  }, [selectedId, groupedSessions, selectSession]);
+
+  // Navigate across all projects (Ctrl+D/Ctrl+F) — skip paused + collapsed
+  const navigateSessionGlobal = useCallback((direction) => {
+    if (!selectedId || groupedSessions.length === 0) return;
+
     const visibleSessions = [];
     for (const [dirName, sessionsInGroup] of groupedSessions) {
       if (collapsedGroups.has(dirName)) continue;
       for (const item of sessionsInGroup) {
+        if (item.session.status === 'paused') continue;
         visibleSessions.push(item);
       }
     }
 
     if (visibleSessions.length === 0) return;
-
-    // Find current session in the flat list
     const currentIndex = visibleSessions.findIndex(item => item.session.id === selectedId);
 
     if (currentIndex === -1) {
-      // Current session not in visible list (collapsed or filtered out) — pick first or last
       const target = direction === 'next' ? visibleSessions[0] : visibleSessions[visibleSessions.length - 1];
       selectSession(target.session.id);
       return;
@@ -692,25 +723,31 @@ function App() {
   // Keyboard shortcuts for panel resize and session navigation
   // Kanban arrow key navigation
   const navigateKanban = useCallback((key) => {
-    const sortSessions = (list) => {
-      return [...list].sort((a, b) => {
-        const statusOrder = { active: 0, thinking: 0, editing: 0, idle: 1, waiting: 1, paused: 2, completed: 3 };
-        const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
-        if (statusDiff !== 0) return statusDiff;
-        return (b.priority || 0) - (a.priority || 0);
-      });
+    // Build visual order matching KanbanSessionColumn render: grouped by project, original order within
+    const buildVisualOrder = (stageSessions) => {
+      const groups = new Map();
+      for (const s of stageSessions) {
+        const project = s.workingDir || 'Unassigned';
+        if (!groups.has(project)) groups.set(project, []);
+        groups.get(project).push(s);
+      }
+      const flat = [];
+      for (const [, projectSessions] of groups) {
+        flat.push(...projectSessions);
+      }
+      return flat;
     };
 
     let currentColIndex = -1;
     let currentSessionIndex = -1;
     const columnSessions = stages.map((stage, i) => {
-      const sorted = sortSessions(sessionsByStage[stage.id] || []);
-      const idx = sorted.findIndex(s => s.id === selectedId);
+      const visual = buildVisualOrder(sessionsByStage[stage.id] || []);
+      const idx = visual.findIndex(s => s.id === selectedId);
       if (idx !== -1) {
         currentColIndex = i;
         currentSessionIndex = idx;
       }
-      return sorted;
+      return visual;
     });
 
     // If no session selected but a column is focused, use that as current position
@@ -761,6 +798,7 @@ function App() {
   const stagesRef = useRef(stages);
   const sessionsByStageRef = useRef(sessionsByStage);
   const navigateSessionRef = useRef(navigateSession);
+  const navigateSessionGlobalRef = useRef(navigateSessionGlobal);
   const navigateGroupRef = useRef(navigateGroup);
   const navigateKanbanRef = useRef(navigateKanban);
   const createSplitPaneRef = useRef(createSplitPane);
@@ -780,6 +818,7 @@ function App() {
   stagesRef.current = stages;
   sessionsByStageRef.current = sessionsByStage;
   navigateSessionRef.current = navigateSession;
+  navigateSessionGlobalRef.current = navigateSessionGlobal;
   navigateGroupRef.current = navigateGroup;
   navigateKanbanRef.current = navigateKanban;
   createSplitPaneRef.current = createSplitPane;
@@ -969,6 +1008,14 @@ function App() {
         if (matchKeyCombo(e, navKeys.prevSession)) {
           e.preventDefault();
           navigateSessionRef.current('prev');
+        }
+        if (navKeys.nextSessionGlobal && matchKeyCombo(e, navKeys.nextSessionGlobal)) {
+          e.preventDefault();
+          navigateSessionGlobalRef.current('next');
+        }
+        if (navKeys.prevSessionGlobal && matchKeyCombo(e, navKeys.prevSessionGlobal)) {
+          e.preventDefault();
+          navigateSessionGlobalRef.current('prev');
         }
         if (matchKeyCombo(e, navKeys.nextGroup)) {
           e.preventDefault();
@@ -1201,6 +1248,7 @@ function App() {
             onUpdateSettings={updateSettings}
             onGroupedSessionsChange={setGroupedSessions}
             onCollapsedGroupsChange={setCollapsedGroups}
+            initialCollapsedGroups={collapsedGroups}
             kanbanColumnFilter={kanbanColumnFilter}
             onClearKanbanFilter={handleClearKanbanFilter}
             kanbanProjectFilter={kanbanProjectFilter}

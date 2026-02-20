@@ -78,9 +78,10 @@ function Dashboard({
   sidebarCardRefsRef,
   kanbanProjectFilter = null,
   onClearKanbanProjectFilter,
-  onCollapsedGroupsChange
+  onCollapsedGroupsChange,
+  initialCollapsedGroups
 }) {
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups || new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
   const [showGroupNameInput, setShowGroupNameInput] = useState(false);
   const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
@@ -88,6 +89,12 @@ function Dashboard({
   const [editingAlias, setEditingAlias] = useState(null); // workingDir being edited
   const [aliasInput, setAliasInput] = useState('');
   const aliasInputRef = useRef(null);
+
+  // Local sidebar filters
+  const [stageFilter, setStageFilter] = useState('');
+  const [projectFilters, setProjectFilters] = useState(new Set());
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const projectDropdownRef = useRef(null);
 
   const projectAliases = settings?.projectAliases || {};
 
@@ -126,6 +133,46 @@ function Dashboard({
       aliasInputRef.current.select();
     }
   }, [editingAlias]);
+
+  // Toggle a project in the multi-select filter
+  const toggleProjectFilter = useCallback((path) => {
+    setProjectFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  // Derive unique projects from all sessions for filter dropdown
+  const uniqueProjects = useMemo(() => {
+    const map = new Map();
+    sessions.forEach(s => {
+      if (s.workingDir && !map.has(s.workingDir)) {
+        map.set(s.workingDir, getProjectDisplayName(s.workingDir, settings?.projectAliases));
+      }
+    });
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [sessions, settings?.projectAliases]);
+
+  // Close project dropdown on outside click or Escape
+  useEffect(() => {
+    if (!projectDropdownOpen) return;
+    const handleMouseDown = (e) => {
+      if (projectDropdownRef.current && !projectDropdownRef.current.contains(e.target)) {
+        setProjectDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setProjectDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [projectDropdownOpen]);
   const cardNodeRefs = useRef(new Map());
   const cardRefCallbacks = useRef(new Map());
   const previousCardRectsRef = useRef(new Map());
@@ -155,15 +202,19 @@ function Dashboard({
     return callback;
   }, []);
 
-  // Filter sessions by kanban column and/or project if active
+  // Filter sessions by kanban column and/or project if active (external + local)
   const filteredSessions = useMemo(() => {
     let result = sessions;
+    // External kanban filters (from kanban view navigation)
     if (kanbanColumnFilter) result = result.filter(s => s.stage === kanbanColumnFilter);
     if (kanbanProjectFilter && kanbanProjectFilter.size > 0) {
       result = result.filter(s => kanbanProjectFilter.has(s.workingDir));
     }
+    // Local sidebar filters
+    if (stageFilter) result = result.filter(s => s.stage === stageFilter);
+    if (projectFilters.size > 0) result = result.filter(s => projectFilters.has(s.workingDir));
     return result;
-  }, [sessions, kanbanColumnFilter, kanbanProjectFilter]);
+  }, [sessions, kanbanColumnFilter, kanbanProjectFilter, stageFilter, projectFilters]);
 
   // Total sessions per directory (unfiltered) for showing "filtered/total" counts
   const totalsByDir = useMemo(() => {
@@ -173,6 +224,28 @@ function Dashboard({
       totals.set(dirName, (totals.get(dirName) || 0) + 1);
     });
     return totals;
+  }, [sessions]);
+
+  // Count in-progress sessions per directory (unfiltered)
+  const inProgressByDir = useMemo(() => {
+    const counts = new Map();
+    sessions.forEach(s => {
+      if (s.stage === 'in_progress') {
+        const dirName = getDirectoryName(s.workingDir);
+        counts.set(dirName, (counts.get(dirName) || 0) + 1);
+      }
+    });
+    return counts;
+  }, [sessions]);
+
+  // Global stage counts across all sessions
+  const globalStageCounts = useMemo(() => {
+    let inProgress = 0, inReview = 0;
+    sessions.forEach(s => {
+      if (s.stage === 'in_progress') inProgress++;
+      else if (s.stage === 'in_review') inReview++;
+    });
+    return { inProgress, inReview };
   }, [sessions]);
 
   // Group sessions by their working directory with directory-based hint codes
@@ -440,6 +513,52 @@ function Dashboard({
           <button onClick={onClearKanbanProjectFilter} title="Clear project filter">&times;</button>
         </div>
       )}
+      <div className="sessions-filter-bar">
+        <select
+          className="filter-select filter-select-compact"
+          value={stageFilter}
+          onChange={(e) => setStageFilter(e.target.value)}
+        >
+          <option value="">All Stages</option>
+          {stages.map(s => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+        <div className="project-filter-dropdown" ref={projectDropdownRef}>
+          <button
+            type="button"
+            className="filter-select filter-select-compact project-filter-btn"
+            onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
+          >
+            {projectFilters.size === 0 ? 'All Projects' : `${projectFilters.size} project${projectFilters.size > 1 ? 's' : ''}`}
+            <span className="dropdown-caret">&#9662;</span>
+          </button>
+          {projectDropdownOpen && (
+            <div className="project-filter-menu">
+              <label className="project-filter-item" onClick={() => { setProjectFilters(new Set()); }}>
+                <input type="checkbox" checked={projectFilters.size === 0} readOnly />
+                All Projects
+              </label>
+              {uniqueProjects.map(([path, name]) => (
+                <label key={path} className="project-filter-item">
+                  <input
+                    type="checkbox"
+                    checked={projectFilters.has(path)}
+                    onChange={() => toggleProjectFilter(path)}
+                  />
+                  {name}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {(stageFilter || projectFilters.size > 0) && (
+        <div className="kanban-filter-chip">
+          <span>Filtered locally</span>
+          <button onClick={() => { setStageFilter(''); setProjectFilters(new Set()); }} title="Clear all local filters">&times;</button>
+        </div>
+      )}
       {selectedIds.length > 1 && (
         <div className="save-group-bar">
           {activeGroupId ? (
@@ -505,6 +624,16 @@ function Dashboard({
           )}
         </div>
       )}
+      {(globalStageCounts.inProgress > 0 || globalStageCounts.inReview > 0) && (
+        <div className="session-stage-summary">
+          <span className="stage-summary-item in-progress" title="In Progress">
+            <span className="stage-dot"></span> {globalStageCounts.inProgress}
+          </span>
+          <span className="stage-summary-item in-review" title="In Review">
+            <span className="stage-dot"></span> {globalStageCounts.inReview}
+          </span>
+        </div>
+      )}
       <div className="sessions-list">
         {filteredSessions.length === 0 ? (
           <div className="empty-state">
@@ -553,6 +682,12 @@ function Dashboard({
                     ? `${sessionsInGroup.length}/${totalsByDir.get(dirName) || 0}`
                     : sessionsInGroup.length}
                 </span>
+                {(inProgressByDir.get(dirName) || 0) > 0 && (
+                  <span className="session-group-stage-count in-progress" title="In Progress">
+                    <span className="stage-dot"></span>
+                    {inProgressByDir.get(dirName)}
+                  </span>
+                )}
                 {hintModeActive && (
                   <span className="session-group-hint">{hintLetter}</span>
                 )}
@@ -570,21 +705,38 @@ function Dashboard({
                   ⚙
                 </button>
                 {onResumeSession && sessionsInGroup.some(s => s.session.status === 'paused') && (
-                  <button
-                    className="group-resume-btn"
-                    title={`Resume all paused sessions in ${displayName}`}
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const pausedIds = sessionsInGroup
-                        .filter(s => s.session.status === 'paused')
-                        .map(s => s.session.id);
-                      for (const id of pausedIds) {
-                        await onResumeSession(id);
-                      }
-                    }}
-                  >
-                    ▶
-                  </button>
+                  <>
+                    <button
+                      className="group-resume-btn"
+                      title={`Resume all paused sessions in ${displayName}`}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const pausedIds = sessionsInGroup
+                          .filter(s => s.session.status === 'paused')
+                          .map(s => s.session.id);
+                        for (const id of pausedIds) {
+                          await onResumeSession(id);
+                        }
+                      }}
+                    >
+                      ▶
+                    </button>
+                    <button
+                      className="group-fresh-btn"
+                      title={`Start fresh for all paused sessions in ${displayName}`}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const pausedIds = sessionsInGroup
+                          .filter(s => s.session.status === 'paused')
+                          .map(s => s.session.id);
+                        for (const id of pausedIds) {
+                          await onResumeSession(id, { fresh: true });
+                        }
+                      }}
+                    >
+                      ⟳
+                    </button>
+                  </>
                 )}
                 {onKillSession && (
                   <button

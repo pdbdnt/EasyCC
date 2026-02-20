@@ -62,6 +62,7 @@ class DataStore {
           : session.lastActivity,
         status: session.status,
         claudeSessionId: session.claudeSessionId || null,
+        previousClaudeSessionIds: session.previousClaudeSessionIds || [],
         claudeSessionName: session.claudeSessionName || null,
         notes: session.notes || '',
         role: session.role || '',
@@ -129,7 +130,7 @@ class DataStore {
       }
 
       // Update allowed metadata fields
-      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'status', 'lastActivity',
+      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'status', 'lastActivity',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt',
         'rejectionHistory', 'completedAt', 'updatedAt', 'comments'];
 
