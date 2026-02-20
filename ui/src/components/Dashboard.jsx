@@ -77,7 +77,8 @@ function Dashboard({
   onKanbanRectsConsumed,
   sidebarCardRefsRef,
   kanbanProjectFilter = null,
-  onClearKanbanProjectFilter
+  onClearKanbanProjectFilter,
+  onCollapsedGroupsChange
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
@@ -348,6 +349,13 @@ function Dashboard({
       onGroupedSessionsChange(groupedSessions);
     }
   }, [groupedSessions, onGroupedSessionsChange]);
+
+  // Notify parent about collapsed groups for navigation
+  useEffect(() => {
+    if (onCollapsedGroupsChange) {
+      onCollapsedGroupsChange(collapsedGroups);
+    }
+  }, [collapsedGroups, onCollapsedGroupsChange]);
 
   // Keep collapse state in sync with active groups
   useEffect(() => {

@@ -4,6 +4,7 @@ const fastifyStatic = require('@fastify/static');
 const fastifyCors = require('@fastify/cors');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const SessionManager = require('./sessionManager');
 const PlanManager = require('./planManager');
 const SettingsManager = require('./settingsManager');

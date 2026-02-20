@@ -132,6 +132,7 @@ function App() {
   const [contextWidth, setContextWidth] = useState(320);
   const [focusedPanel, setFocusedPanel] = useState(null); // 'terminal' | 'context' | null
   const [groupedSessions, setGroupedSessions] = useState([]);
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [terminalPanes, setTerminalPanes] = useState([]);
   const [activePaneId, setActivePaneId] = useState(null);
   const [paneLayout, setPaneLayout] = useState('row'); // row: split right, column: split down
@@ -589,70 +590,36 @@ function App() {
   // Session navigation functions
   const navigateSession = useCallback((direction) => {
     if (!selectedId || groupedSessions.length === 0) return;
-    const hasScopedFilter = !!kanbanColumnFilter || !!(kanbanProjectFilter && kanbanProjectFilter.size > 0);
-    const preferredWorkingDir = selectedSession?.workingDir || null;
 
-    // Find current session's group
-    let currentGroupIndex = -1;
-    let currentIndexInGroup = -1;
-
-    for (let gi = 0; gi < groupedSessions.length; gi++) {
-      const [, sessionsInGroup] = groupedSessions[gi];
-      for (let si = 0; si < sessionsInGroup.length; si++) {
-        if (sessionsInGroup[si].session.id === selectedId) {
-          currentGroupIndex = gi;
-          currentIndexInGroup = si;
-          break;
-        }
+    // Flatten all visible sessions across groups, skipping collapsed groups
+    const visibleSessions = [];
+    for (const [dirName, sessionsInGroup] of groupedSessions) {
+      if (collapsedGroups.has(dirName)) continue;
+      for (const item of sessionsInGroup) {
+        visibleSessions.push(item);
       }
-      if (currentGroupIndex !== -1) break;
     }
 
-    if (currentGroupIndex === -1) {
-      // Selected session is no longer in the filtered list (e.g., moved to another kanban stage).
-      // Prefer another session in the same project when possible.
-      if (preferredWorkingDir) {
-        const sameProjectGroup = groupedSessions.find(([, sessionsInGroup]) =>
-          sessionsInGroup.some(item => item.session.workingDir === preferredWorkingDir)
-        );
-        if (sameProjectGroup) {
-          const [, projectSessions] = sameProjectGroup;
-          if (projectSessions.length > 0) {
-            const target = direction === 'prev'
-              ? projectSessions[projectSessions.length - 1]
-              : projectSessions[0];
-            selectSession(target.session.id);
-            return;
-          }
-        }
-      }
+    if (visibleSessions.length === 0) return;
 
-      // When scoped filtering is active, avoid jumping across projects.
-      if (hasScopedFilter) {
-        selectSession(null);
-        return;
-      }
+    // Find current session in the flat list
+    const currentIndex = visibleSessions.findIndex(item => item.session.id === selectedId);
 
-      // No scoped filter: retain legacy fallback to first visible group.
-      if (groupedSessions.length > 0) {
-        const [, firstGroup] = groupedSessions[0];
-        if (firstGroup.length > 0) {
-          selectSession(firstGroup[0].session.id);
-        }
-      }
+    if (currentIndex === -1) {
+      // Current session not in visible list (collapsed or filtered out) — pick first or last
+      const target = direction === 'next' ? visibleSessions[0] : visibleSessions[visibleSessions.length - 1];
+      selectSession(target.session.id);
       return;
     }
 
-    const [, sessionsInGroup] = groupedSessions[currentGroupIndex];
-
     if (direction === 'next') {
-      const nextIndex = (currentIndexInGroup + 1) % sessionsInGroup.length;
-      selectSession(sessionsInGroup[nextIndex].session.id);
+      const nextIndex = (currentIndex + 1) % visibleSessions.length;
+      selectSession(visibleSessions[nextIndex].session.id);
     } else {
-      const prevIndex = (currentIndexInGroup - 1 + sessionsInGroup.length) % sessionsInGroup.length;
-      selectSession(sessionsInGroup[prevIndex].session.id);
+      const prevIndex = (currentIndex - 1 + visibleSessions.length) % visibleSessions.length;
+      selectSession(visibleSessions[prevIndex].session.id);
     }
-  }, [selectedId, groupedSessions, selectSession, kanbanColumnFilter, kanbanProjectFilter, selectedSession]);
+  }, [selectedId, groupedSessions, collapsedGroups, selectSession]);
 
   const navigateGroup = useCallback((direction) => {
     if (groupedSessions.length === 0) return;
@@ -1233,6 +1200,7 @@ function App() {
             settings={settings}
             onUpdateSettings={updateSettings}
             onGroupedSessionsChange={setGroupedSessions}
+            onCollapsedGroupsChange={setCollapsedGroups}
             kanbanColumnFilter={kanbanColumnFilter}
             onClearKanbanFilter={handleClearKanbanFilter}
             kanbanProjectFilter={kanbanProjectFilter}

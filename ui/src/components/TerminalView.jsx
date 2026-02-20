@@ -2,22 +2,18 @@ import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHand
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { SearchAddon } from '@xterm/addon-search';
 import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
 import { getProjectDisplayName } from '../utils/projectUtils';
 import '@xterm/xterm/css/xterm.css';
 
-// Prompt patterns for buffer scanning (e.g., joining a running session)
-const PROMPT_PATTERNS = [
-  /^>\s*$/,                    // Claude Code's bare ">" prompt (waiting)
-  /^>\s+\S/,                  // Claude Code prompt with user input ("> some text")
-  /^❯\s*$/,                   // Alternative prompt character
-  /^\$\s*$/,                  // Shell prompt
-  /Would you like to proceed/i, // Multi-choice prompt header
-];
-
-function isPromptOutput(text) {
-  return PROMPT_PATTERNS.some(p => p.test(text));
+function sanitizeSearchTerm(text) {
+  return text
+    .replace(/\x1b\[[0-9;]*[A-Za-z~]/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .trim()
+    .substring(0, 60);
 }
 
 const TerminalView = forwardRef(function TerminalView({
@@ -49,8 +45,9 @@ const TerminalView = forwardRef(function TerminalView({
   const keyboardSettingsRef = useRef(null);
   const [overrideKeys, setOverrideKeys] = useState(false);
   const overrideKeysRef = useRef(false);
-  const promptLinesRef = useRef([]);          // Array of line numbers where Enter was pressed
-  const lastScrolledIndexRef = useRef(null);  // Index into promptLinesRef for stepping
+  const searchAddonRef = useRef(null);
+  const promptNavIndexRef = useRef(null);
+  const promptHistoryRef = useRef([]);
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -109,25 +106,6 @@ const TerminalView = forwardRef(function TerminalView({
       console.error('Terminal WebSocket error:', error);
     };
 
-    // Pre-populate promptLinesRef by scanning the buffer after initial replay
-    let initialScanDone = false;
-    const scanInitialPrompts = () => {
-      if (initialScanDone || !xtermRef.current) return;
-      initialScanDone = true;
-      const buf = xtermRef.current.buffer.active;
-      const totalLines = buf.baseY + buf.cursorY;
-      const userPromptPattern = /^>\s+\S/;
-      const multiChoicePattern = /Would you like to proceed/i;
-      for (let i = 0; i <= totalLines; i++) {
-        const line = buf.getLine(i);
-        if (!line) continue;
-        const text = line.translateToString(true).trim();
-        if (userPromptPattern.test(text) || multiChoicePattern.test(text)) {
-          promptLinesRef.current.push(i);
-        }
-      }
-    };
-    setTimeout(scanInitialPrompts, 500);
   }, []);
 
   // Get terminal settings with defaults
@@ -195,9 +173,12 @@ const TerminalView = forwardRef(function TerminalView({
 
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
+    const searchAddon = new SearchAddon();
 
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
 
     term.open(terminalRef.current);
     fitAddon.fit();
@@ -357,38 +338,9 @@ const TerminalView = forwardRef(function TerminalView({
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'input', data }));
       }
-      // Track prompt positions on Enter
+      // Reset prompt nav stepping when user sends input
       if (data.includes('\r') || data.includes('\n')) {
-        const buf = term.buffer.active;
-        const line = buf.baseY + buf.cursorY;
-        // Avoid duplicates for same line
-        const lastRecorded = promptLinesRef.current[promptLinesRef.current.length - 1];
-        if (lastRecorded !== line) {
-          promptLinesRef.current.push(line);
-        }
-        // Reset scroll stepping when new prompt is added
-        lastScrolledIndexRef.current = null;
-      }
-
-      // Track multi-choice selections (single digit without Enter)
-      if (/^\d$/.test(data)) {
-        const buf = term.buffer.active;
-        const curLine = buf.baseY + buf.cursorY;
-        for (let i = curLine; i >= Math.max(0, curLine - 15); i--) {
-          const bufLine = buf.getLine(i);
-          if (!bufLine) continue;
-          const text = bufLine.translateToString(true).trim();
-          if (/Would you like to proceed/i.test(text) ||
-              /^>\s*\d+\.\s/.test(text) ||
-              /Type .* to (change|tell)/i.test(text)) {
-            const lastRecorded = promptLinesRef.current[promptLinesRef.current.length - 1];
-            if (lastRecorded !== i) {
-              promptLinesRef.current.push(i);
-            }
-            lastScrolledIndexRef.current = null;
-            break;
-          }
-        }
+        promptNavIndexRef.current = null;
       }
     });
 
@@ -438,8 +390,8 @@ const TerminalView = forwardRef(function TerminalView({
       currentSessionId.current = session.id;
 
       // Clear terminal and prompt tracking for new session
-      promptLinesRef.current = [];
-      lastScrolledIndexRef.current = null;
+      promptNavIndexRef.current = null;
+      searchAddonRef.current?.clearDecorations();
       if (xtermRef.current) {
         xtermRef.current.clear();
       }
@@ -467,42 +419,45 @@ const TerminalView = forwardRef(function TerminalView({
     }
   }, [terminalSettings.fontSize, terminalSettings.fontFamily, terminalSettings.cursorStyle, terminalSettings.cursorBlink, terminalSettings.scrollback]);
 
-  const scrollToLastPrompt = useCallback(() => {
-    if (!xtermRef.current) return;
-    const prompts = promptLinesRef.current;
+  // Keep promptHistoryRef in sync (avoids re-registering keydown on every prompt)
+  useEffect(() => {
+    promptHistoryRef.current = session?.promptHistory || [];
+  }, [session?.promptHistory]);
 
-    if (prompts.length > 0) {
-      // Jump to the most recent prompt
-      const lastIdx = prompts.length - 1;
-      xtermRef.current.scrollToLine(prompts[lastIdx]);
-      lastScrolledIndexRef.current = lastIdx;
-    } else {
-      // Fallback: search buffer for prompt patterns (e.g., joined a running session)
-      const buf = xtermRef.current.buffer.active;
-      const totalLines = buf.baseY + buf.cursorY;
-      const userInputPattern = /^>\s+\S/;
-      // First pass: prefer user-input prompts (skip bare ">")
-      for (let i = totalLines; i >= 0; i--) {
-        const bufLine = buf.getLine(i);
-        if (!bufLine) continue;
-        const text = bufLine.translateToString(true).trim();
-        if (text.length > 0 && userInputPattern.test(text)) {
-          xtermRef.current.scrollToLine(i);
-          return;
-        }
-      }
-      // Second pass: any prompt pattern
-      for (let i = totalLines; i >= 0; i--) {
-        const bufLine = buf.getLine(i);
-        if (!bufLine) continue;
-        const text = bufLine.translateToString(true).trim();
-        if (text.length > 0 && isPromptOutput(text)) {
-          xtermRef.current.scrollToLine(i);
-          return;
-        }
-      }
+  const scrollToLastPrompt = useCallback(() => {
+    if (!xtermRef.current || !searchAddonRef.current) return;
+
+    const history = promptHistoryRef.current;
+    if (history.length === 0) {
       xtermRef.current.scrollToBottom();
+      return;
     }
+
+    const latestPrompt = history[history.length - 1].text;
+    const searchTerm = sanitizeSearchTerm(latestPrompt);
+    if (!searchTerm) {
+      xtermRef.current.scrollToBottom();
+      return;
+    }
+
+    searchAddonRef.current.clearDecorations();
+    xtermRef.current.scrollToBottom();
+
+    requestAnimationFrame(() => {
+      const found = searchAddonRef.current.findPrevious(searchTerm, {
+        regex: false,
+        caseSensitive: true,
+        decorations: {
+          matchBackground: '#44444400',
+          activeMatchBackground: '#665500',
+          activeMatchColorOverviewRuler: '#ffaa00'
+        }
+      });
+      if (!found) {
+        xtermRef.current.scrollToBottom();
+      }
+      promptNavIndexRef.current = history.length - 1;
+    });
   }, []);
 
   // Handle custom keyboard shortcuts
@@ -556,40 +511,69 @@ const TerminalView = forwardRef(function TerminalView({
       // Ctrl+Up: step backwards through prompt history
       if (event.ctrlKey && event.key === 'ArrowUp' && !event.altKey && !event.shiftKey) {
         event.preventDefault();
-        const prompts = promptLinesRef.current;
-        if (prompts.length === 0) {
-          scrollToLastPrompt(); // tries buffer-search fallback
-          return;
-        }
+        if (!searchAddonRef.current) return;
+        const history = promptHistoryRef.current;
+        if (history.length === 0) return;
 
         let idx;
-        if (lastScrolledIndexRef.current !== null && lastScrolledIndexRef.current > 0) {
-          idx = lastScrolledIndexRef.current - 1;
-        } else if (lastScrolledIndexRef.current === null) {
-          idx = prompts.length - 1;
+        if (promptNavIndexRef.current === null) {
+          idx = history.length - 1;
+        } else if (promptNavIndexRef.current > 0) {
+          idx = promptNavIndexRef.current - 1;
         } else {
-          return; // Already at the oldest prompt
+          return; // Already at oldest prompt
         }
 
-        xtermRef.current.scrollToLine(prompts[idx]);
-        lastScrolledIndexRef.current = idx;
+        const searchTerm = sanitizeSearchTerm(history[idx].text);
+        if (!searchTerm) return;
+
+        searchAddonRef.current.clearDecorations();
+        xtermRef.current.scrollToBottom();
+        requestAnimationFrame(() => {
+          searchAddonRef.current.findPrevious(searchTerm, {
+            regex: false,
+            caseSensitive: true,
+            decorations: {
+              matchBackground: '#44444400',
+              activeMatchBackground: '#665500',
+              activeMatchColorOverviewRuler: '#ffaa00'
+            }
+          });
+          promptNavIndexRef.current = idx;
+        });
         return;
       }
 
       // Ctrl+Down: step forwards through prompt history / scroll to bottom
       if (event.ctrlKey && event.key === 'ArrowDown' && !event.altKey && !event.shiftKey) {
         event.preventDefault();
-        const prompts = promptLinesRef.current;
+        if (!searchAddonRef.current) return;
+        const history = promptHistoryRef.current;
 
-        if (lastScrolledIndexRef.current !== null && lastScrolledIndexRef.current < prompts.length - 1) {
-          // Step to next prompt
-          const idx = lastScrolledIndexRef.current + 1;
-          xtermRef.current.scrollToLine(prompts[idx]);
-          lastScrolledIndexRef.current = idx;
+        if (promptNavIndexRef.current !== null && promptNavIndexRef.current < history.length - 1) {
+          const idx = promptNavIndexRef.current + 1;
+          const searchTerm = sanitizeSearchTerm(history[idx].text);
+          if (!searchTerm) return;
+
+          searchAddonRef.current.clearDecorations();
+          xtermRef.current.scrollToTop();
+          requestAnimationFrame(() => {
+            searchAddonRef.current.findNext(searchTerm, {
+              regex: false,
+              caseSensitive: true,
+              decorations: {
+                matchBackground: '#44444400',
+                activeMatchBackground: '#665500',
+                activeMatchColorOverviewRuler: '#ffaa00'
+              }
+            });
+            promptNavIndexRef.current = idx;
+          });
         } else {
-          // At most recent prompt or no history — scroll to bottom
+          // At most recent prompt or no nav state — scroll to bottom
+          searchAddonRef.current.clearDecorations();
           xtermRef.current?.scrollToBottom();
-          lastScrolledIndexRef.current = null;
+          promptNavIndexRef.current = null;
         }
         return;
       }
