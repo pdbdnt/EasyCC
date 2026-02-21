@@ -16,7 +16,7 @@ async function createTestSession(page, { name, workingDir, cliType } = {}) {
     method: 'POST',
     body: {
       name: name || `Test-${Date.now()}`,
-      workingDir: workingDir || 'C:\\Users\\denni\\apps\\CLIOverlord',
+      workingDir: workingDir || 'C:\\Users\\testuser\\apps\\CLIOverlord',
       cliType: cliType || 'claude'
     }
   });
@@ -43,7 +43,7 @@ async function createTask(page, { title, project, stage, description } = {}) {
     method: 'POST',
     body: {
       title: title || `Task-${Date.now()}`,
-      project: project || 'C:\\Users\\denni\\apps\\CLIOverlord',
+      project: project || 'C:\\Users\\testuser\\apps\\CLIOverlord',
       stage: stage || 'todo',
       description: description || ''
     }

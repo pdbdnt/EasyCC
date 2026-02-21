@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 
-export const BASE_DIR = 'C:\\Users\\denni\\apps';
+// Fetched from server at runtime via /api/folders defaultRoot
+export const BASE_DIR = null;
 
 export function normalizeWindowsPath(input) {
   if (!input || typeof input !== 'string') return '';
@@ -51,23 +52,22 @@ function getBreadcrumbSegments(path) {
 }
 
 function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = false }) {
-  const initialBase = defaultBase ? normalizeWindowsPath(defaultBase) : BASE_DIR;
+  const initialBase = defaultBase ? normalizeWindowsPath(defaultBase) : '';
 
   const [folders, setFolders] = useState([]);
   const [starredFolders, setStarredFolders] = useState(() => {
     try {
       const raw = JSON.parse(localStorage.getItem('starredFolders') || '[]');
-      return Array.isArray(raw)
-        ? raw.map(folder => (folder.includes('\\') ? folder : joinWindowsPath(BASE_DIR, folder)))
-        : [];
+      return Array.isArray(raw) ? raw.filter(f => typeof f === 'string') : [];
     } catch {
       return [];
     }
   });
+  const [filterText, setFilterText] = useState('');
   const [customPath, setCustomPath] = useState('');
   const [customPathConfirmed, setCustomPathConfirmed] = useState(false);
   const [currentBase, setCurrentBase] = useState(initialBase);
-  const [browseRoot, setBrowseRoot] = useState(BASE_DIR);
+  const [browseRoot, setBrowseRoot] = useState('');
   const [loadingFolders, setLoadingFolders] = useState(true);
   const [folderError, setFolderError] = useState('');
   const clickTimerRef = useRef(null);
@@ -78,7 +78,8 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
     setLoadingFolders(true);
     setFolderError('');
 
-    fetch(`/api/folders?base=${encodeURIComponent(currentBase)}`)
+    const query = currentBase ? `?base=${encodeURIComponent(currentBase)}` : '';
+    fetch(`/api/folders${query}`)
       .then(async (res) => {
         if (!res.ok) {
           const error = await res.json().catch(() => ({ error: 'Failed to load folders' }));
@@ -89,9 +90,12 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
       .then((data) => {
         if (cancelled) return;
         setFolders(data.folders || []);
-        setBrowseRoot(normalizeWindowsPath(data.root || BASE_DIR));
+        const serverRoot = normalizeWindowsPath(data.root || data.defaultRoot || '');
+        setBrowseRoot(serverRoot);
         if (data.base) {
           setCurrentBase(normalizeWindowsPath(data.base));
+        } else if (!currentBase && serverRoot) {
+          setCurrentBase(serverRoot);
         }
       })
       .catch((err) => {
@@ -143,12 +147,14 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
     setCurrentBase(normalized);
     onSelectPath?.('');
     setCustomPathConfirmed(true);
+    setFilterText('');
   };
 
   const handleGoUp = () => {
     const parent = getParentWindowsPath(currentBase);
     if (parent && normalizeWindowsPath(parent) !== normalizeWindowsPath(currentBase)) {
       setCurrentBase(parent);
+      setFilterText('');
     }
   };
 
@@ -172,6 +178,10 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
     return a.localeCompare(b);
   });
 
+  const filteredFolders = filterText
+    ? sortedFolders.filter(folder => folder.toLowerCase().includes(filterText.toLowerCase()))
+    : sortedFolders;
+
   return (
     <div className="folder-selector">
       <div className="folder-browser-toolbar">
@@ -190,7 +200,7 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
               key={segment.path}
               type="button"
               className="breadcrumb-btn"
-              onClick={() => setCurrentBase(segment.path)}
+              onClick={() => { setCurrentBase(segment.path); setFilterText(''); }}
               disabled={disabled || loadingFolders}
             >
               {segment.label}
@@ -214,10 +224,21 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
         <div className="folder-loading">{folderError}</div>
       ) : (
         <div className="folder-list">
-          {sortedFolders.length === 0 && (
-            <div className="folder-empty">No subfolders found</div>
+          {sortedFolders.length > 0 && (
+            <input
+              type="text"
+              className="folder-filter-input"
+              placeholder="Filter folders..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              disabled={disabled}
+              autoFocus
+            />
           )}
-          {sortedFolders.map(folder => {
+          {filteredFolders.length === 0 && (
+            <div className="folder-empty">{filterText ? 'No matching folders' : 'No subfolders found'}</div>
+          )}
+          {filteredFolders.map(folder => {
             const folderPath = joinWindowsPath(currentBase, folder);
             const isStarred = starredFolders.includes(folderPath);
             const isSelected = normalizeWindowsPath(selectedPath).toLowerCase() === normalizeWindowsPath(folderPath).toLowerCase();
@@ -239,6 +260,7 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
                   setCustomPath('');
                   onSelectPath?.('');
                   setCustomPathConfirmed(false);
+                  setFilterText('');
                 }}
                 title="Click to select, double-click to browse"
               >
@@ -257,6 +279,7 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
                       setCustomPath('');
                       onSelectPath?.('');
                       setCustomPathConfirmed(false);
+                      setFilterText('');
                     }}
                     title={`Browse into ${folder}`}
                   >

@@ -187,3 +187,7 @@ Single file: `ui/src/index.css`. Uses CSS variables:
 2. **Route variable naming** — server.js uses `app` (not `fastify`) for route registration. `fastify` is only used for WebSocket routes.
 3. **Session name editing** — Double-click to edit in both SessionCard and TerminalView header.
 4. **FLIP animations** — View transitions (Ctrl+O) capture card positions before/after switch and animate. Controlled by `flipTriggerNonce` and `viewTransition` state in App.jsx.
+
+## Security
+
+This is a **local development tool**. The server binds to `localhost` only and has no authentication by design. It should not be exposed to untrusted networks. Path-based operations (file open, plan save/delete) include validation to prevent traversal and injection, but the trust boundary is the local machine.

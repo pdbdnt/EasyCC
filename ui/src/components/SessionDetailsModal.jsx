@@ -139,6 +139,18 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
                     <span className="info-value">{session.claudeSessionName}</span>
                   </div>
                 )}
+                {session.previousClaudeSessionIds?.length > 0 && (
+                  <div className="info-row">
+                    <span className="info-label">Previous Sessions:</span>
+                    <div className="previous-sessions-list">
+                      {session.previousClaudeSessionIds.map((prevId) => (
+                        <span key={prevId} className="info-value mono previous-session-id">
+                          {prevId}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="form-group">

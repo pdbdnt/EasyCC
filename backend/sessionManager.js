@@ -128,6 +128,7 @@ class SessionManager extends EventEmitter {
           blocks: sessionData.blocks || [],
           manuallyPlaced: sessionData.manuallyPlaced || false,
           manualPlacedAt: sessionData.manualPlacedAt || null,
+          placementLocked: sessionData.placementLocked || false,
           rejectionHistory: sessionData.rejectionHistory || [],
           completedAt: sessionData.completedAt || null,
           updatedAt: sessionData.updatedAt || null,
@@ -167,7 +168,7 @@ class SessionManager extends EventEmitter {
    * @returns {string} Path to the Claude project directory
    */
   getClaudeProjectPath(workingDir) {
-    // Convert path to Claude's format: C:\Users\denni\apps\foo -> C--Users-denni-apps-foo
+    // Convert path to Claude's format: C:\Users\user\apps\foo -> C--Users-user-apps-foo
     // Colon and backslashes both become dashes (colon becomes a dash, not removed)
     const normalizedPath = workingDir.replace(/[\\:]/g, '-');
     return path.join(os.homedir(), '.claude', 'projects', normalizedPath);
@@ -430,7 +431,7 @@ class SessionManager extends EventEmitter {
   spawnCodexProcess(workingDir, { resume = false } = {}) {
     const isWindows = process.platform === 'win32';
     if (isWindows) {
-      const wslPath = this.convertToWslPath(workingDir).replace(/"/g, '\\"');
+      const wslPath = this.convertToWslPath(workingDir).replace(/'/g, "'\\''").replace(/"/g, '\\"');
       const codexCommand = resume
         ? `wsl bash -ic 'codex -C \"${wslPath}\" resume --last'`
         : `wsl bash -ic 'codex --dangerously-bypass-approvals-and-sandbox -C \"${wslPath}\"'`;
@@ -777,6 +778,7 @@ class SessionManager extends EventEmitter {
       blocks: stageOpts.blocks || [],
       manuallyPlaced: false,
       manualPlacedAt: null,
+      placementLocked: false,
       rejectionHistory: [],
       completedAt: null,
       updatedAt: now.toISOString(),
@@ -1256,6 +1258,17 @@ class SessionManager extends EventEmitter {
           const withoutCurrent = history.filter((value) => value !== oldClaudeSessionId);
           withoutCurrent.push(oldClaudeSessionId);
           session.previousClaudeSessionIds = withoutCurrent.slice(-20);
+
+          // Snapshot transcript-tracked plans so they survive the fresh start
+          const trackedPlanPaths = this.planManager.getPlansForClaudeSession(
+            oldClaudeSessionId,
+            session.workingDir
+          );
+          if (trackedPlanPaths.length > 0) {
+            const existingPlans = new Set(session.plans || []);
+            for (const p of trackedPlanPaths) existingPlans.add(p);
+            session.plans = [...existingPlans];
+          }
         }
 
         session.claudeSessionId = uuidv4();
@@ -1417,6 +1430,13 @@ class SessionManager extends EventEmitter {
 
     // Strip ANSI escape sequences for pattern matching
     const stripped = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').trim();
+
+    // Sticky waiting: don't let single-char spinner output override waiting status.
+    // Once a prompt like "Would you like to proceed?" is detected, only substantive
+    // output (>= 3 chars) can transition away from waiting.
+    if (currentStatus === 'waiting' && stripped.length < 3) {
+      return 'waiting';
+    }
 
     // Detect Claude Code thinking spinner before length guard.
     // Spinner chars (✻ ✢ ✽ *) arrive as single-char PTY chunks during animation.
@@ -1715,6 +1735,12 @@ class SessionManager extends EventEmitter {
       if (isSubmittedInput) {
         session.lastSubmittedInputAtMs = Date.now();
         session.isComposingPrompt = false;
+
+        // Resume auto-sync when user submits input (unless explicitly locked)
+        if (session.manuallyPlaced && !session.placementLocked) {
+          session.manuallyPlaced = false;
+          session.manualPlacedAt = null;
+        }
       }
 
       // Prompt detection - buffer until Enter.
@@ -1934,6 +1960,7 @@ class SessionManager extends EventEmitter {
       blocks: session.blocks || [],
       manuallyPlaced: session.manuallyPlaced || false,
       manualPlacedAt: session.manualPlacedAt || null,
+      placementLocked: session.placementLocked || false,
       rejectionHistory: session.rejectionHistory || [],
       completedAt: session.completedAt || null,
       updatedAt: session.updatedAt || null,
@@ -2306,6 +2333,7 @@ class SessionManager extends EventEmitter {
     if (!session) throw new Error(`Session not found: ${id}`);
 
     session.manuallyPlaced = true;
+    session.placementLocked = true;
     session.manualPlacedAt = new Date().toISOString();
     session.updatedAt = new Date().toISOString();
 
@@ -2322,6 +2350,7 @@ class SessionManager extends EventEmitter {
     if (!session) throw new Error(`Session not found: ${id}`);
 
     session.manuallyPlaced = false;
+    session.placementLocked = false;
     session.manualPlacedAt = null;
     session.updatedAt = new Date().toISOString();
 

@@ -238,6 +238,12 @@ export function useSessions() {
       });
 
       if (!response.ok) {
+        if (response.status === 404) {
+          // Session already gone from server — clean up local state
+          setSessions(prev => prev.filter(s => s.id !== id));
+          setSelectedIds(prev => prev.filter(sid => sid !== id));
+          return true;
+        }
         const error = await response.json();
         throw new Error(error.error || 'Failed to delete session');
       }

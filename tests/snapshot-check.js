@@ -20,7 +20,7 @@ const path = require('path');
     const r = await fetch('http://localhost:5010/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Snapshot-Test', workingDir: 'C:\\Users\\denni\\apps\\CLIOverlord', cliType: 'claude' })
+      body: JSON.stringify({ name: 'Snapshot-Test', workingDir: 'C:\\Users\\testuser\\apps\\CLIOverlord', cliType: 'claude' })
     });
     return r.json();
   });

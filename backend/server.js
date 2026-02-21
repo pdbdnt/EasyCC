@@ -25,7 +25,7 @@ const agentStore = new AgentStore();
 const taskStore = new TaskStore();
 const { sessionStatusToStage } = require('./stagesConfig');
 
-const DEFAULT_FOLDERS_ROOT = 'C:\\Users\\denni\\apps';
+const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || path.join(os.homedir(), 'apps');
 
 // Per-session debounce timers for kanban stage sync (3s stability)
 const kanbanSyncTimers = new Map();
@@ -413,7 +413,7 @@ async function start() {
         .filter(e => e.isDirectory())
         .map(e => e.name)
         .sort();
-      return { folders, base: requestedBase, root };
+      return { folders, base: requestedBase, root, defaultRoot: root };
     } catch (error) {
       return reply.status(500).send({ error: error.message });
     }
@@ -461,6 +461,12 @@ async function start() {
     const success = sessionManager.killSession(id);
 
     if (!success) {
+      // Session not in memory — try cleaning from dataStore (orphaned entry)
+      const cleaned = sessionManager.dataStore.deleteSession(id);
+      if (cleaned) {
+        sessionManager.emit('sessionKilled', { sessionId: id, session: { id } });
+        return { success: true };
+      }
       return reply.status(404).send({ error: 'Session not found' });
     }
 
@@ -755,6 +761,12 @@ async function start() {
   // Delete a version
   app.delete('/api/plans/:filename/versions/:versionFilename', async (request, reply) => {
     const { filename, versionFilename } = request.params;
+    // Sanitize to prevent path traversal (e.g. ../../etc/passwd)
+    const safeVersionFilename = path.basename(versionFilename);
+    if (!safeVersionFilename.endsWith('.md') && !safeVersionFilename.endsWith('.meta.json')) {
+      return reply.status(403).send({ error: 'Invalid version filename' });
+    }
+
     const planPath = planManager.getPlanPath(filename);
 
     if (!planPath) {
@@ -762,7 +774,7 @@ async function start() {
     }
 
     const planDir = planVersionStore.getPlanDir(planPath);
-    const versionPath = path.join(planDir, versionFilename);
+    const versionPath = path.join(planDir, safeVersionFilename);
     const metaPath = versionPath.replace('.md', '.meta.json');
 
     try {
@@ -815,6 +827,13 @@ async function start() {
       return reply.status(400).send({ error: 'workingDir is required' });
     }
 
+    // Validate workingDir exists and is a real directory
+    const resolvedDir = path.resolve(workingDir);
+    if (!fs.existsSync(resolvedDir) || !fs.statSync(resolvedDir).isDirectory()) {
+      return reply.status(400).send({ error: 'workingDir must be an existing directory' });
+    }
+    const realDir = fs.realpathSync(resolvedDir);
+
     const safeTitle = (title || 'plan').replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').slice(0, 60);
     const versionLabel = versionNumber ? `v${versionNumber}` : 'current';
     const dateStr = versionDate
@@ -822,7 +841,7 @@ async function start() {
       : new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
     const filename = `${safeTitle}_${versionLabel}_${dateStr}.md`;
 
-    const plansDir = path.join(workingDir, 'plans');
+    const plansDir = path.join(realDir, 'plans');
     if (!fs.existsSync(plansDir)) {
       fs.mkdirSync(plansDir, { recursive: true });
     }
@@ -872,20 +891,29 @@ async function start() {
 
   // Open a file or folder in the OS default application
   app.post('/api/open-path', async (request, reply) => {
-    const { exec } = require('child_process');
+    const { execFile } = require('child_process');
     const { filePath } = request.body || {};
     if (!filePath) return reply.status(400).send({ error: 'filePath is required' });
 
-    const command = process.platform === 'win32'
-      ? `start "" "${filePath}"`
-      : process.platform === 'darwin'
-        ? `open "${filePath}"`
-        : `xdg-open "${filePath}"`;
+    // Validate path exists before opening
+    const resolved = path.resolve(filePath);
+    if (!fs.existsSync(resolved)) {
+      return reply.status(404).send({ error: 'Path not found' });
+    }
 
-    exec(command, (err) => {
-      if (err) return reply.status(500).send({ error: err.message });
+    try {
+      if (process.platform === 'win32') {
+        // Use explorer.exe directly — no cmd.exe shell parsing
+        execFile('explorer.exe', [resolved]);
+      } else if (process.platform === 'darwin') {
+        execFile('open', [resolved]);
+      } else {
+        execFile('xdg-open', [resolved]);
+      }
       return reply.send({ success: true });
-    });
+    } catch (err) {
+      return reply.status(500).send({ error: err.message });
+    }
   });
 
   // Delete a saved plan
@@ -895,10 +923,21 @@ async function start() {
       return reply.status(400).send({ error: 'path query param is required' });
     }
 
+    // Security: resolve symlinks, only allow .md files inside plans/ directories
+    const normalized = path.resolve(filePath);
+    if (!normalized.endsWith('.md')) {
+      return reply.status(403).send({ error: 'Can only delete .md files' });
+    }
+
     try {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
+      if (!fs.existsSync(normalized)) return { success: true };
+      // Resolve symlinks to get real path before checking parent
+      const realPath = fs.realpathSync(normalized);
+      const parentDir = path.basename(path.dirname(realPath));
+      if (parentDir !== 'plans') {
+        return reply.status(403).send({ error: 'Can only delete files in plans/ directories' });
       }
+      fs.unlinkSync(realPath);
       return { success: true };
     } catch (error) {
       return reply.status(500).send({ error: `Failed to delete: ${error.message}` });
@@ -1825,6 +1864,14 @@ async function start() {
     // let it fire — don't restart the debounce window. This prevents
     // continuous streaming output from indefinitely resetting the timer.
     if (existing && existing.targetStage === targetStage) {
+      return;
+    }
+
+    // Don't let brief thinking flickers cancel a pending in_review timer.
+    // When a session is waiting for user input (plan approval), transient
+    // "thinking" status from cursor animation should not reset the move.
+    // Sustained real work will create a new in_progress timer after in_review fires.
+    if (existing && existing.targetStage === 'in_review' && targetStage === 'in_progress') {
       return;
     }
 

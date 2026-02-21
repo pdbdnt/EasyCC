@@ -17,7 +17,7 @@ test('getPlanContent reads plan by filename from manager plans directory', () =>
 
     const filename = 'sample-plan.md';
     const filePath = path.join(plansDir, filename);
-    const body = '# Sample Plan\n\nWorking Directory: C:\\Users\\denni\\apps\\demo\n';
+    const body = '# Sample Plan\n\nWorking Directory: C:\\Users\\testuser\\apps\\demo\n';
     fs.writeFileSync(filePath, body, 'utf8');
 
     const result = manager.getPlanContent(filename);
@@ -26,7 +26,7 @@ test('getPlanContent reads plan by filename from manager plans directory', () =>
     assert.equal(result.filename, filename);
     assert.equal(result.path, filePath);
     assert.equal(result.content, body);
-    assert.equal(result.workingDir, 'C:\\Users\\denni\\apps\\demo');
+    assert.equal(result.workingDir, 'C:\\Users\\testuser\\apps\\demo');
   } finally {
     fs.rmSync(plansDir, { recursive: true, force: true });
   }

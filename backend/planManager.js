@@ -313,7 +313,7 @@ class PlanManager extends EventEmitter {
   getPlansForClaudeSession(claudeSessionId, workingDir) {
     if (!claudeSessionId || !workingDir) return [];
 
-    // Convert working dir to Claude's project folder format (e.g., C:\Users\denni\apps\foo -> C--Users-denni-apps-foo)
+    // Convert working dir to Claude's project folder format (e.g., C:\Users\user\apps\foo -> C--Users-user-apps-foo)
     const projectId = workingDir.replace(/[:\\/]/g, '-').replace(/^-/, '');
     const projectDir = path.join(os.homedir(), '.claude', 'projects', projectId);
     const transcriptPath = path.join(projectDir, `${claudeSessionId}.jsonl`);

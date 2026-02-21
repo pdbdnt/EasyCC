@@ -2,6 +2,23 @@ import { useState, useEffect, useCallback } from 'react';
 
 const API_BASE = '';
 
+// Deep merge: defaults are filled in where saved settings are missing keys
+function deepMerge(defaults, saved) {
+  if (!saved) return defaults;
+  const result = { ...defaults };
+  for (const key of Object.keys(saved)) {
+    if (
+      saved[key] && typeof saved[key] === 'object' && !Array.isArray(saved[key]) &&
+      defaults[key] && typeof defaults[key] === 'object' && !Array.isArray(defaults[key])
+    ) {
+      result[key] = deepMerge(defaults[key], saved[key]);
+    } else {
+      result[key] = saved[key];
+    }
+  }
+  return result;
+}
+
 // Default settings (should match backend)
 const defaultSettings = {
   version: 1,
@@ -64,7 +81,7 @@ export function useSettings() {
         const response = await fetch(`${API_BASE}/api/settings`, { signal: controller.signal });
         if (response.ok) {
           const data = await response.json();
-          setSettings(data.settings);
+          setSettings(deepMerge(defaultSettings, data.settings));
         } else {
           console.error('Failed to load settings');
         }

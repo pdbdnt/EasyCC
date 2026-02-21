@@ -107,14 +107,7 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
     nextGroup: 'Next Group'
   };
 
-  const navigationSettings = localSettings.keyboard?.navigation || {
-    prevSession: 'Ctrl+E',
-    nextSession: 'Ctrl+R',
-    prevSessionGlobal: 'Ctrl+D',
-    nextSessionGlobal: 'Ctrl+F',
-    prevGroup: 'Ctrl+3',
-    nextGroup: 'Ctrl+4'
-  };
+  const navigationSettings = localSettings.keyboard?.navigation || {};
 
   const hintLabels = {
     newSession: 'New Session',

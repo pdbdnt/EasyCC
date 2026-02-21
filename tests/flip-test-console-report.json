@@ -1,0 +1,467 @@
+{
+  "allMessages": [
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:35.954Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:36.122Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:36.440Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:37.272Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] Ctrl+O captured rects: {kanbanCardRefsSize: 12, kanbanRectsSize: 12, sessionIds: Array(12)}",
+      "timestamp": "2026-02-16T05:14:40.365Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 0, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:40.369Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: true, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:40.370Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:40.373Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: true {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: true}",
+      "timestamp": "2026-02-16T05:14:40.376Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] prevRects: {kanbanRectsProvided: true, kanbanRectsSize: 12, kanbanRectsType: object, prevRectsSize: 12, isFromKanban: true}",
+      "timestamp": "2026-02-16T05:14:40.376Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:40.407Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:40.408Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:40.410Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:40.411Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:41.078Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:41.080Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:41.083Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:41.084Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: false, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:42.933Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: s2k}",
+      "timestamp": "2026-02-16T05:14:43.310Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: s2k, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:43.312Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 12, nextRectsKeys: Array(12), cardNodeRefsSize: 12}",
+      "timestamp": "2026-02-16T05:14:43.330Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: s2k, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:43.332Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: s2k}",
+      "timestamp": "2026-02-16T05:14:43.407Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: s2k, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:43.410Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 12, nextRectsKeys: Array(12), cardNodeRefsSize: 12}",
+      "timestamp": "2026-02-16T05:14:43.417Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: s2k, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:43.420Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: s2k}",
+      "timestamp": "2026-02-16T05:14:44.411Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: s2k, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:44.413Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 12, nextRectsKeys: Array(12), cardNodeRefsSize: 12}",
+      "timestamp": "2026-02-16T05:14:44.415Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: s2k, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:44.418Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] Ctrl+O captured rects: {kanbanCardRefsSize: 12, kanbanRectsSize: 12, sessionIds: Array(12)}",
+      "timestamp": "2026-02-16T05:14:45.175Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:45.182Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: true, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:45.183Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:45.187Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: true {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: true}",
+      "timestamp": "2026-02-16T05:14:45.189Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] prevRects: {kanbanRectsProvided: true, kanbanRectsSize: 12, kanbanRectsType: object, prevRectsSize: 12, isFromKanban: true}",
+      "timestamp": "2026-02-16T05:14:45.189Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:45.261Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:45.262Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:45.263Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:45.265Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:45.421Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:45.423Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:45.426Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:45.427Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:47.440Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:47.441Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:47.442Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:47.444Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: false, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:47.469Z"
+    },
+    {
+      "type": "log",
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: false, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:47.487Z"
+    }
+  ],
+  "flipMessages": [
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:35.956Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:36.122Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:36.440Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 0, lastAnimated: 0, vtActive: false, vtReason: other, vtDirection: null}",
+      "timestamp": "2026-02-16T05:14:37.272Z"
+    },
+    {
+      "text": "[FLIP DEBUG] Ctrl+O captured rects: {kanbanCardRefsSize: 12, kanbanRectsSize: 12, sessionIds: Array(12)}",
+      "timestamp": "2026-02-16T05:14:40.365Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 0, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:40.369Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: true, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:40.370Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:40.373Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: true {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: true}",
+      "timestamp": "2026-02-16T05:14:40.376Z"
+    },
+    {
+      "text": "[FLIP DEBUG] prevRects: {kanbanRectsProvided: true, kanbanRectsSize: 12, kanbanRectsType: object, prevRectsSize: 12, isFromKanban: true}",
+      "timestamp": "2026-02-16T05:14:40.376Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:40.407Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:40.408Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:40.410Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:40.411Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:41.078Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:41.080Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:41.083Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:41.084Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: false, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:42.933Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: s2k}",
+      "timestamp": "2026-02-16T05:14:43.310Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: s2k, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:43.312Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 12, nextRectsKeys: Array(12), cardNodeRefsSize: 12}",
+      "timestamp": "2026-02-16T05:14:43.330Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: s2k, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:43.332Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: s2k}",
+      "timestamp": "2026-02-16T05:14:43.407Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: s2k, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:43.410Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 12, nextRectsKeys: Array(12), cardNodeRefsSize: 12}",
+      "timestamp": "2026-02-16T05:14:43.417Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: s2k, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:43.420Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 1, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: s2k}",
+      "timestamp": "2026-02-16T05:14:44.411Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: s2k, viewTransitionReason: ctrl-o, flipTriggerNonce: 1}",
+      "timestamp": "2026-02-16T05:14:44.413Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 12, nextRectsKeys: Array(12), cardNodeRefsSize: 12}",
+      "timestamp": "2026-02-16T05:14:44.416Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: s2k, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:44.418Z"
+    },
+    {
+      "text": "[FLIP DEBUG] Ctrl+O captured rects: {kanbanCardRefsSize: 12, kanbanRectsSize: 12, sessionIds: Array(12)}",
+      "timestamp": "2026-02-16T05:14:45.175Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 1, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:45.182Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: true, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:45.183Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:45.187Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: true {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: true}",
+      "timestamp": "2026-02-16T05:14:45.189Z"
+    },
+    {
+      "text": "[FLIP DEBUG] prevRects: {kanbanRectsProvided: true, kanbanRectsSize: 12, kanbanRectsType: object, prevRectsSize: 12, isFromKanban: true}",
+      "timestamp": "2026-02-16T05:14:45.189Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:45.261Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:45.262Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:45.263Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:45.265Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:45.421Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:45.423Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:45.426Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:45.427Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: true, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:47.440Z"
+    },
+    {
+      "text": "[FLIP DEBUG] useLayoutEffect running: {flipRequested: false, viewTransitionActive: true, viewTransitionDirection: k2s, viewTransitionReason: ctrl-o, flipTriggerNonce: 2}",
+      "timestamp": "2026-02-16T05:14:47.441Z"
+    },
+    {
+      "text": "[FLIP DEBUG] nextRects: {nextRectsSize: 5, nextRectsKeys: Array(5), cardNodeRefsSize: 5}",
+      "timestamp": "2026-02-16T05:14:47.442Z"
+    },
+    {
+      "text": "[FLIP DEBUG] shouldAnimateFlip: false {prefersReducedMotion: false, active: true, reason: ctrl-o, direction: k2s, flipRequested: false}",
+      "timestamp": "2026-02-16T05:14:47.444Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: false, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:47.469Z"
+    },
+    {
+      "text": "[FLIP DEBUG] effect entered: {flipTriggerNonce: 2, lastAnimated: 2, vtActive: false, vtReason: ctrl-o, vtDirection: k2s}",
+      "timestamp": "2026-02-16T05:14:47.487Z"
+    }
+  ],
+  "totalMessages": 51,
+  "totalFlipMessages": 51
+}

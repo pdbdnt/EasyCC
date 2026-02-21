@@ -21,7 +21,7 @@ test.describe('Unlinked TaskCard', () => {
     // Create an unlinked task in the first real stage
     const res = await createTask(page, {
       title: 'Unlinked-Test-Task',
-      project: 'C:\\Users\\denni\\apps\\TestProject',
+      project: 'C:\\Users\\testuser\\apps\\TestProject',
       stage: firstStageId
     });
     testTaskId = res.task?.id;

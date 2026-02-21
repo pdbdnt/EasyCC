@@ -1035,6 +1035,17 @@ body {
   text-overflow: ellipsis;
 }
 
+.previous-sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.previous-sessions-list .previous-session-id {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* Tags in modal */
 .tags-container {
   display: flex;
@@ -5886,6 +5897,29 @@ textarea::placeholder {
 .folder-list {
   max-height: 200px;
   overflow-y: auto;
+}
+
+.folder-filter-input {
+  width: 100%;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-color);
+  font-size: 12px;
+  outline: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.folder-filter-input::placeholder {
+  color: var(--text-muted);
+}
+
+.folder-filter-input:focus {
+  background: #222;
+  border-bottom-color: var(--accent-color, #4a9eff);
 }
 
 .folder-browser-toolbar {

@@ -8,8 +8,8 @@ test.describe('Kanban Project Alias Display (Web)', () => {
   let originalAliases = {};
   let firstStageName = 'In Review';
 
-  const projectDirCm = 'C:\\Users\\denni\\apps\\CLIOverlord\\claude-manager';
-  const projectDirZw = 'C:\\Users\\denni\\apps\\zwoofi';
+  const projectDirCm = 'C:\\Users\\testuser\\apps\\CLIOverlord\\claude-manager';
+  const projectDirZw = 'C:\\Users\\testuser\\apps\\zwoofi';
   const aliasCm = 'cm-web';
   const aliasZw = 'zw-web';
 

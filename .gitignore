@@ -25,3 +25,18 @@ nul
 # IDE
 .vscode/
 .idea/
+
+# Debug/test screenshots
+*-screenshot*.png
+*-debug*.png
+flip-anim-*.png
+k2s-*.png
+s2k-*.png
+kanban-*.png
+after-*.png
+before-*.png
+prompt-*.png
+scrolled-*.png
+test-screenshots/
+flip-animation-screenshots/
+tests/flip-test-screenshots/

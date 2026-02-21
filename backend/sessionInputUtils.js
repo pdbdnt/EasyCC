@@ -49,6 +49,13 @@ function shouldCountOutputAsActivity({
   lastSubmittedInputAtMs = 0,
   nowMs = Date.now()
 }) {
+  // Don't count trivial output (spinner chars, cursor blinks) as activity.
+  // This allows the idle timer to fire when the terminal is just animating.
+  const stripped = stripAnsi(data).trim();
+  if (stripped.length < 3) {
+    return false;
+  }
+
   const echoLike = isLikelyLocalEchoOutput(data);
 
   // Suppress local echo when user is still drafting (no Enter submitted yet).
