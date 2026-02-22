@@ -889,6 +889,29 @@ async function start() {
     }
   });
 
+  // Receive Claude Code lifecycle hook events (Stop, UserPromptSubmit, PreToolUse)
+  // Hook script (backend/claude-hook.js) POSTs the JSON payload from stdin here.
+  app.post('/api/hook-event', async (request, reply) => {
+    const { hook_event_name, cwd, transcript_path } = request.body || {};
+    if (!hook_event_name || !cwd) return reply.send({ ok: false });
+
+    // Extract claudeSessionId from transcript filename: .../abc123.jsonl → abc123
+    const claudeSessionId = transcript_path
+      ? path.basename(transcript_path, '.jsonl')
+      : null;
+
+    const statusMap = {
+      Stop: 'idle',
+      UserPromptSubmit: 'active',
+      PreToolUse: 'editing',
+    };
+    const status = statusMap[hook_event_name];
+    if (!status) return reply.send({ ok: true });
+
+    sessionManager.applyHookStatus({ cwd, claudeSessionId, status, hookEvent: hook_event_name });
+    return reply.send({ ok: true });
+  });
+
   // Open a file or folder in the OS default application
   app.post('/api/open-path', async (request, reply) => {
     const { execFile } = require('child_process');
@@ -1024,6 +1047,77 @@ async function start() {
   app.post('/api/settings/reset', async () => {
     const settings = settingsManager.resetSettings();
     return { settings };
+  });
+
+  // Install Claude Code lifecycle hooks into ~/.claude/settings.json
+  // so that Stop/UserPromptSubmit/PreToolUse events are forwarded to CLIOverlord.
+  app.post('/api/settings/install-hooks', async (request, reply) => {
+    const scriptPath = path.resolve(__dirname, 'claude-hook.js');
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+
+    // Ensure ~/.claude/ exists
+    const claudeDir = path.join(os.homedir(), '.claude');
+    if (!fs.existsSync(claudeDir)) {
+      fs.mkdirSync(claudeDir, { recursive: true });
+    }
+
+    // Read existing settings non-destructively
+    let existing = {};
+    if (fs.existsSync(settingsPath)) {
+      try {
+        existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      } catch (e) {
+        return reply.status(500).send({ error: `Failed to parse existing settings: ${e.message}` });
+      }
+    }
+
+    // Build hook command using node with the absolute script path
+    const command = `node "${scriptPath}"`;
+    const makeEntry = () => [{
+      hooks: [{ type: 'command', command, timeout: 5 }]
+    }];
+
+    existing.hooks = existing.hooks || {};
+    existing.hooks.Stop = makeEntry();
+    existing.hooks.UserPromptSubmit = makeEntry();
+    existing.hooks.PreToolUse = makeEntry();
+
+    fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2), 'utf8');
+    return { ok: true, settingsPath, events: ['Stop', 'UserPromptSubmit', 'PreToolUse'] };
+  });
+
+  // Check if Claude Code hooks are currently installed
+  app.get('/api/settings/hooks-status', async () => {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    if (!fs.existsSync(settingsPath)) return { installed: false };
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      const hooks = settings.hooks || {};
+      const installed = !!(hooks.Stop && hooks.UserPromptSubmit && hooks.PreToolUse);
+      return { installed, hooks: Object.keys(hooks) };
+    } catch {
+      return { installed: false };
+    }
+  });
+
+  // Remove CLIOverlord hooks from ~/.claude/settings.json
+  app.post('/api/settings/uninstall-hooks', async (request, reply) => {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    if (!fs.existsSync(settingsPath)) return { ok: true };
+
+    try {
+      const existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      if (existing.hooks) {
+        delete existing.hooks.Stop;
+        delete existing.hooks.UserPromptSubmit;
+        delete existing.hooks.PreToolUse;
+        if (Object.keys(existing.hooks).length === 0) delete existing.hooks;
+      }
+      fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2), 'utf8');
+      return { ok: true };
+    } catch (e) {
+      return reply.status(500).send({ error: e.message });
+    }
   });
 
   // ============================================
@@ -1826,7 +1920,8 @@ async function start() {
   // Debounced auto-sync: session status → session's own stage (3s stability)
   // kanbanSyncTimers values: { timer, targetStage } — tracks pending target
   // so repeated events for the same target don't restart the debounce window.
-  sessionManager.on('statusChange', ({ sessionId, status }) => {
+  // Hook-sourced events use a shorter debounce since they're authoritative signals.
+  sessionManager.on('statusChange', ({ sessionId, status, source }) => {
     const existing = kanbanSyncTimers.get(sessionId);
 
     // Codex mid-work approvals: don't auto-move to in_review
@@ -1878,7 +1973,9 @@ async function start() {
     // Different target or no existing timer — (re)start debounce
     if (existing) clearTimeout(existing.timer);
 
-    // Set 3s debounce timer
+    // Hook-sourced events are authoritative — use short debounce (200ms).
+    // PTY regex-based events use 3s debounce for stability.
+    const delay = source === 'hook' ? 200 : 3000;
     const timer = setTimeout(() => {
       kanbanSyncTimers.delete(sessionId);
       try {
@@ -1886,7 +1983,7 @@ async function start() {
       } catch (err) {
         console.error(`Auto-sync stage failed for session ${sessionId}:`, err.message);
       }
-    }, 3000);
+    }, delay);
 
     kanbanSyncTimers.set(sessionId, { timer, targetStage });
   });

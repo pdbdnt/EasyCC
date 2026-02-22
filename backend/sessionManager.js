@@ -1711,6 +1711,53 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Apply a status change from a Claude Code lifecycle hook.
+   * Hook events provide authoritative signals (e.g. Stop = Claude finished)
+   * that bypass the noisy PTY regex detection.
+   */
+  applyHookStatus({ cwd, claudeSessionId, status, hookEvent }) {
+    // Find session: prefer exact claudeSessionId match, fall back to workingDir
+    let session = claudeSessionId
+      ? [...this.sessions.values()].find(s => s.claudeSessionId === claudeSessionId)
+      : null;
+    if (!session) {
+      session = [...this.sessions.values()].find(
+        s => s.workingDir === cwd && s.cliType === 'claude' && s.status !== 'paused'
+      );
+    }
+    if (!session) return;
+
+    const prev = session.status;
+
+    if (hookEvent === 'Stop') {
+      // Claude finished — force idle immediately
+      if (session.idleTimer) {
+        clearInterval(session.idleTimer);
+        session.idleTimer = null;
+      }
+      session.lastActivity = new Date(0);
+      session.status = 'idle';
+    } else if (hookEvent === 'UserPromptSubmit') {
+      session.status = 'active';
+      session.lastActivity = new Date();
+    } else if (hookEvent === 'PreToolUse' && session.status !== 'idle') {
+      session.status = 'editing';
+      session.lastActivity = new Date();
+    }
+
+    if (session.status !== prev) {
+      this.dataStore.saveSession(session);
+      this.emit('statusChange', {
+        sessionId: session.id,
+        status: session.status,
+        source: 'hook',
+      });
+      // Restart idle detection after non-Stop events
+      if (hookEvent !== 'Stop') this.startIdleDetection(session);
+    }
+  }
+
+  /**
    * Send input to a session
    * @param {string} id - Session ID
    * @param {string} text - Text to send

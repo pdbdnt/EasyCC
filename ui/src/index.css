@@ -3462,6 +3462,30 @@ textarea::placeholder {
   margin: 20px 0;
 }
 
+.hooks-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.hooks-status-badge {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.hooks-status-badge.installed {
+  background: rgba(46, 160, 67, 0.15);
+  color: #3fb950;
+}
+
+.hooks-status-badge.not-installed {
+  background: rgba(139, 148, 158, 0.15);
+  color: var(--text-muted);
+}
+
 .settings-subtitle {
   font-size: 15px;
   font-weight: 600;

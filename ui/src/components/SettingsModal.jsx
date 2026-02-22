@@ -6,12 +6,40 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
   const [localSettings, setLocalSettings] = useState(settings);
   const [recordingKey, setRecordingKey] = useState(null);
   const [hasChanges, setHasChanges] = useState(false);
+  const [hooksInstalled, setHooksInstalled] = useState(null);
+  const [hooksLoading, setHooksLoading] = useState(false);
 
   // Sync with external settings
   useEffect(() => {
     setLocalSettings(settings);
     setHasChanges(false);
   }, [settings]);
+
+  // Check hooks status on mount
+  useEffect(() => {
+    fetch('/api/settings/hooks-status')
+      .then(r => r.json())
+      .then(data => setHooksInstalled(data.installed))
+      .catch(() => setHooksInstalled(false));
+  }, []);
+
+  const handleInstallHooks = async () => {
+    setHooksLoading(true);
+    try {
+      const res = await fetch('/api/settings/install-hooks', { method: 'POST' });
+      if (res.ok) setHooksInstalled(true);
+    } catch { /* silent */ }
+    setHooksLoading(false);
+  };
+
+  const handleUninstallHooks = async () => {
+    setHooksLoading(true);
+    try {
+      const res = await fetch('/api/settings/uninstall-hooks', { method: 'POST' });
+      if (res.ok) setHooksInstalled(false);
+    } catch { /* silent */ }
+    setHooksLoading(false);
+  };
 
   const updateSetting = useCallback((category, key, value) => {
     setLocalSettings(prev => ({
@@ -457,6 +485,37 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                   <option value="dark">Dark</option>
                   <option value="light" disabled>Light (coming soon)</option>
                 </select>
+              </div>
+
+              <div className="settings-divider" />
+
+              <h4 className="settings-subtitle">Claude Code Integration</h4>
+              <p className="settings-description">
+                Install lifecycle hooks into Claude Code so kanban cards move instantly
+                when Claude finishes responding (Stop) or you submit a prompt (UserPromptSubmit).
+                Hooks are written to <code>~/.claude/settings.json</code> and run silently in the background.
+              </p>
+              <div className="hooks-status-row">
+                <span className={`hooks-status-badge ${hooksInstalled ? 'installed' : 'not-installed'}`}>
+                  {hooksInstalled === null ? 'Checking...' : hooksInstalled ? 'Hooks installed' : 'Not installed'}
+                </span>
+                {hooksInstalled ? (
+                  <button
+                    className="btn btn-small btn-secondary"
+                    onClick={handleUninstallHooks}
+                    disabled={hooksLoading}
+                  >
+                    {hooksLoading ? 'Removing...' : 'Uninstall Hooks'}
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-small btn-primary"
+                    onClick={handleInstallHooks}
+                    disabled={hooksLoading || hooksInstalled === null}
+                  >
+                    {hooksLoading ? 'Installing...' : 'Install Hooks'}
+                  </button>
+                )}
               </div>
             </div>
           )}
