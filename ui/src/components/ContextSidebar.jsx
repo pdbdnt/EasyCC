@@ -285,27 +285,28 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
 
   const plansKey = `${JSON.stringify(session?.plans || [])}-${session?.plansUpdatedAt || 0}`;
 
-  useEffect(() => {
+  const fetchPlans = useCallback(async () => {
     if (!session?.id) {
       setPlans([]);
       return;
     }
-    const fetchPlans = async () => {
-      setLoadingPlans(true);
-      try {
-        const response = await fetch(`/api/sessions/${session.id}/plans`);
-        if (response.ok) {
-          const { plans: planData } = await response.json();
-          setPlans(planData || []);
-        }
-      } catch (error) {
-        console.error('Error fetching plans:', error);
-      } finally {
-        setLoadingPlans(false);
+    setLoadingPlans(true);
+    try {
+      const response = await fetch(`/api/sessions/${session.id}/plans`);
+      if (response.ok) {
+        const { plans: planData } = await response.json();
+        setPlans(planData || []);
       }
-    };
+    } catch (error) {
+      console.error('Error fetching plans:', error);
+    } finally {
+      setLoadingPlans(false);
+    }
+  }, [session?.id]);
+
+  useEffect(() => {
     fetchPlans();
-  }, [session?.id, plansKey]);
+  }, [fetchPlans, plansKey]);
 
   useEffect(() => {
     setNotes(session?.notes || '');
@@ -795,6 +796,13 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
         <div className="widget-header-actions">
           {plans.length > 0 && <span className="section-count">{plans.length}</span>}
           <button
+            className="widget-header-action widget-refresh-btn"
+            onClick={fetchPlans}
+            title="Refresh plans"
+          >
+            &#x21bb;
+          </button>
+          <button
             className="widget-header-action"
             onClick={() => {
               setShowPastePlan(!showPastePlan);
@@ -827,7 +835,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
       );
     }
     return null;
-  }, [plans, showPastePlan, showPlanPicker, loadingAvailable, availablePlans, session?.promptHistory, handleOpenPlanPicker, handleAddPlan]);
+  }, [plans, showPastePlan, showPlanPicker, loadingAvailable, availablePlans, session?.promptHistory, handleOpenPlanPicker, handleAddPlan, fetchPlans]);
 
   // ─── Render Widget Content ──────────────────────────────────────
 

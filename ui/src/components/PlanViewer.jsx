@@ -11,6 +11,8 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
   const [saved, setSaved] = useState(false);
   const [savedContentSet, setSavedContentSet] = useState(new Set());
   const [allExpanded, setAllExpanded] = useState(null); // null=default, true=all open, false=all closed
+  const [currentIsSaved, setCurrentIsSaved] = useState(false);
+  const [showSavedVersions, setShowSavedVersions] = useState(false);
 
   if (!plan) return null;
 
@@ -18,10 +20,14 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
   useEffect(() => {
     const fetchVersions = async () => {
       try {
-        const response = await fetch(`/api/plans/${plan.filename}/versions`);
+        const url = workingDir
+          ? `/api/plans/${plan.filename}/versions?workingDir=${encodeURIComponent(workingDir)}`
+          : `/api/plans/${plan.filename}/versions`;
+        const response = await fetch(url);
         if (response.ok) {
           const data = await response.json();
           setVersions(data.versions || []);
+          setCurrentIsSaved(data.currentIsSaved || false);
           // Default to live/current view; users navigate to snapshots via Prev/Next
           setCurrentVersionIndex(null);
         }
@@ -31,7 +37,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
     };
 
     fetchVersions();
-  }, [plan.filename, plan.modifiedAt]);
+  }, [plan.filename, plan.modifiedAt, workingDir]);
 
   // Fetch version content when currentVersionIndex changes
   useEffect(() => {
@@ -168,6 +174,14 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
       if (response.ok) {
         setSaved(true);
         setSavedContentSet(prev => new Set(prev).add(content.trim()));
+        // Update dot strip: mark the current version/current as saved
+        if (currentVersionIndex !== null) {
+          setVersions(prev => prev.map((v, i) =>
+            i === currentVersionIndex ? { ...v, isSaved: true } : v
+          ));
+        } else {
+          setCurrentIsSaved(true);
+        }
         setTimeout(() => setSaved(false), 2000);
       }
     } catch (err) {
@@ -221,14 +235,23 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
               Current
             </button>
             {workingDir && (
-              <button
-                className={`btn-small ${(saved || alreadySaved) ? 'btn-saved' : ''}`}
-                onClick={handleSavePlan}
-                disabled={!displayContent || saved || alreadySaved}
-                title={alreadySaved ? 'This version is already saved' : 'Save this version to project plans'}
-              >
-                {(saved || alreadySaved) ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
-              </button>
+              <>
+                <button
+                  className={`btn-small ${(saved || alreadySaved) ? 'btn-saved' : ''}`}
+                  onClick={handleSavePlan}
+                  disabled={!displayContent || saved || alreadySaved}
+                  title={alreadySaved ? 'This version is already saved' : 'Save this version to project plans'}
+                >
+                  {(saved || alreadySaved) ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
+                </button>
+                <button
+                  className="btn-small"
+                  onClick={() => setShowSavedVersions(true)}
+                  title="View all saved versions of this plan"
+                >
+                  {'\uD83D\uDCCB'}
+                </button>
+              </>
             )}
           </div>
 
@@ -247,6 +270,27 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
               <span className="version-indicator">
                 Current • {versions.length} version{versions.length !== 1 ? 's' : ''}
               </span>
+            )}
+            {versions.length > 0 && (
+              <div className="version-dots">
+                {[...versions].reverse().map((v, reverseIdx) => {
+                  const vIdx = versions.length - 1 - reverseIdx;
+                  const isViewing = currentVersionIndex === vIdx;
+                  return (
+                    <span
+                      key={v.filename}
+                      className={`version-dot${v.isSaved ? ' saved' : ''}${isViewing ? ' viewing' : ''}`}
+                      onClick={() => setCurrentVersionIndex(vIdx)}
+                      title={`v${reverseIdx + 1}${v.isSaved ? ' (saved)' : ''} \u2014 ${formatDate(v.savedAt || v.timestamp)}`}
+                    />
+                  );
+                })}
+                <span
+                  className={`version-dot current-dot${currentIsSaved ? ' saved' : ''}${currentVersionIndex === null ? ' viewing' : ''}`}
+                  onClick={handleCurrentVersion}
+                  title={`Current${currentIsSaved ? ' (saved)' : ''}`}
+                />
+              </div>
             )}
           </div>
 
@@ -300,6 +344,123 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
             onSectionToggle={handleSectionToggle}
           />
         )}
+      </div>
+
+      {showSavedVersions && workingDir && (
+        <SavedVersionsModal
+          planFilename={plan.filename}
+          workingDir={workingDir}
+          onClose={() => setShowSavedVersions(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SavedVersionsModal({ planFilename, workingDir, onClose }) {
+  const [plans, setPlans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedPlan, setExpandedPlan] = useState(null);
+  const [copiedPath, setCopiedPath] = useState(null);
+
+  useEffect(() => {
+    fetch(`/api/saved-plans?workingDir=${encodeURIComponent(workingDir)}&planFile=${encodeURIComponent(planFilename)}`)
+      .then(r => r.json())
+      .then(data => { setPlans(data.plans || []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [workingDir, planFilename]);
+
+  const handleCopyPath = async (planPath, e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(planPath);
+      setCopiedPath(planPath);
+      setTimeout(() => setCopiedPath(null), 2000);
+    } catch { /* silent */ }
+  };
+
+  const handleOpenInEditor = async (planPath, e) => {
+    e.stopPropagation();
+    try {
+      await fetch('/api/open-path', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: planPath })
+      });
+    } catch { /* silent */ }
+  };
+
+  const handleDelete = async (plan) => {
+    if (!window.confirm(`Delete "${plan.filename}"?`)) return;
+    try {
+      const res = await fetch(`/api/saved-plans?path=${encodeURIComponent(plan.path)}`, { method: 'DELETE' });
+      if (res.ok) {
+        setPlans(prev => prev.filter(p => p.path !== plan.path));
+        if (expandedPlan === plan.path) setExpandedPlan(null);
+      }
+    } catch { /* silent */ }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal saved-versions-modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Saved Versions</h2>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="saved-plans-body">
+          {loading ? (
+            <div className="folder-loading">Loading...</div>
+          ) : plans.length === 0 ? (
+            <div className="folder-empty">No saved versions for this plan</div>
+          ) : (
+            <div className="saved-plans-list">
+              {plans.map(p => (
+                <div key={p.path} className={`saved-plan-item ${expandedPlan === p.path ? 'expanded' : ''}`}>
+                  <div
+                    className="saved-plan-header"
+                    onClick={() => setExpandedPlan(expandedPlan === p.path ? null : p.path)}
+                  >
+                    <span className="expand-icon">{expandedPlan === p.path ? '\u25BC' : '\u25B6'}</span>
+                    <div className="saved-plan-info">
+                      <span className="saved-plan-name">{p.name}</span>
+                      <span className="saved-plan-filename">{p.filename}</span>
+                    </div>
+                    <span className="saved-plan-date">{formatDate(p.modifiedAt)}</span>
+                    <div className="saved-plan-actions">
+                      <button
+                        className="btn-icon"
+                        onClick={(e) => handleCopyPath(p.path, e)}
+                        title="Copy file path"
+                      >
+                        {copiedPath === p.path ? '\u2713' : '\uD83D\uDCCB'}
+                      </button>
+                      <button
+                        className="btn-icon"
+                        onClick={(e) => handleOpenInEditor(p.path, e)}
+                        title="Open in editor"
+                      >
+                        {'\uD83D\uDCDD'}
+                      </button>
+                      <button
+                        className="btn-icon btn-icon-danger"
+                        onClick={(e) => { e.stopPropagation(); handleDelete(p); }}
+                        title="Delete"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  </div>
+                  {expandedPlan === p.path && (
+                    <div className="saved-plan-content">
+                      <PlanViewer plan={p} compact={true} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -942,7 +942,31 @@ class SessionManager extends EventEmitter {
 
     // Check if this is a new/different Claude session
     if (latestClaudeSession && latestClaudeSession.sessionId !== session.claudeSessionId) {
-      const oldId = session.claudeSessionId;
+      const oldClaudeSessionId = session.claudeSessionId;
+
+      // Before updating claudeSessionId, snapshot plans from the old transcript
+      // so they survive the ID switch (e.g. after /clear)
+      if (oldClaudeSessionId) {
+        // Save old ID to history
+        const history = Array.isArray(session.previousClaudeSessionIds)
+          ? session.previousClaudeSessionIds
+          : [];
+        const withoutCurrent = history.filter(v => v !== oldClaudeSessionId);
+        withoutCurrent.push(oldClaudeSessionId);
+        session.previousClaudeSessionIds = withoutCurrent.slice(-20);
+
+        // Snapshot transcript-tracked plans so they survive the ID switch
+        const trackedPlanPaths = this.planManager.getPlansForClaudeSession(
+          oldClaudeSessionId,
+          session.workingDir
+        );
+        if (trackedPlanPaths.length > 0) {
+          const existingPlans = new Set(session.plans || []);
+          for (const p of trackedPlanPaths) existingPlans.add(p);
+          session.plans = [...existingPlans];
+        }
+      }
+
       session.claudeSessionId = latestClaudeSession.sessionId;
 
       // Also update the session name from Claude's summary if set
@@ -1729,8 +1753,8 @@ class SessionManager extends EventEmitter {
 
     const prev = session.status;
 
-    if (hookEvent === 'Stop') {
-      // Claude finished — force idle immediately
+    if (hookEvent === 'Stop' || hookEvent === 'Notification') {
+      // Claude finished or waiting for user input (e.g. AskUserQuestion) — force idle
       if (session.idleTimer) {
         clearInterval(session.idleTimer);
         session.idleTimer = null;

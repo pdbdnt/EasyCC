@@ -5,6 +5,7 @@ const fastifyCors = require('@fastify/cors');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const SessionManager = require('./sessionManager');
 const PlanManager = require('./planManager');
 const SettingsManager = require('./settingsManager');
@@ -710,6 +711,7 @@ async function start() {
   // Get all versions for a plan
   app.get('/api/plans/:filename/versions', async (request, reply) => {
     const { filename } = request.params;
+    const { workingDir } = request.query || {};
     const planPath = planManager.getPlanPath(filename);
 
     if (!planPath || !fs.existsSync(planPath)) {
@@ -717,7 +719,35 @@ async function start() {
     }
 
     const versions = planVersionStore.getVersions(planPath);
-    return { versions, planPath };
+
+    // If workingDir provided, mark which versions have been saved to {workingDir}/plans/
+    let currentIsSaved = false;
+    if (workingDir) {
+      const savedHashes = new Set();
+      const plansDir = path.join(workingDir, 'plans');
+      if (fs.existsSync(plansDir)) {
+        for (const f of fs.readdirSync(plansDir).filter(f => f.endsWith('.md'))) {
+          try {
+            const c = fs.readFileSync(path.join(plansDir, f), 'utf8').trim();
+            savedHashes.add(crypto.createHash('md5').update(c).digest('hex'));
+          } catch { /* skip unreadable files */ }
+        }
+      }
+      versions.forEach(v => {
+        v.isSaved = v.contentHash ? savedHashes.has(v.contentHash) : false;
+      });
+      // Check if the live/current plan content is saved
+      if (savedHashes.size > 0) {
+        const planContent = planManager.getPlanContent(filename);
+        if (planContent?.content) {
+          currentIsSaved = savedHashes.has(
+            crypto.createHash('md5').update(planContent.content.trim()).digest('hex')
+          );
+        }
+      }
+    }
+
+    return { versions, planPath, currentIsSaved };
   });
 
   // Get a specific version's content
@@ -853,8 +883,9 @@ async function start() {
   });
 
   // List saved plans in a project's plans/ directory
+  // Optional ?planFile= filter: only return plans whose content matches a version of that plan
   app.get('/api/saved-plans', async (request, reply) => {
-    const { workingDir } = request.query;
+    const { workingDir, planFile } = request.query;
     if (!workingDir) {
       return reply.status(400).send({ error: 'workingDir query param is required' });
     }
@@ -866,7 +897,7 @@ async function start() {
 
     try {
       const files = fs.readdirSync(plansDir).filter(f => f.endsWith('.md'));
-      const plans = files.map(filename => {
+      let plans = files.map(filename => {
         const filePath = path.join(plansDir, filename);
         const stat = fs.statSync(filePath);
         const content = fs.readFileSync(filePath, 'utf8');
@@ -882,6 +913,26 @@ async function start() {
           size: stat.size
         };
       });
+
+      // Filter to only saved plans matching versions of a specific plan file
+      if (planFile) {
+        const planPath = planManager.getPlanPath(planFile);
+        if (planPath) {
+          const versionHashes = new Set();
+          const versions = planVersionStore.getVersions(planPath);
+          versions.forEach(v => { if (v.contentHash) versionHashes.add(v.contentHash); });
+          // Also include current/live content hash
+          const currentContent = planManager.getPlanContent(planFile);
+          if (currentContent?.content) {
+            versionHashes.add(crypto.createHash('md5').update(currentContent.content.trim()).digest('hex'));
+          }
+          plans = plans.filter(p => {
+            const hash = crypto.createHash('md5').update(p.content.trim()).digest('hex');
+            return versionHashes.has(hash);
+          });
+        }
+      }
+
       plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
       return { plans };
     } catch (error) {
@@ -904,6 +955,7 @@ async function start() {
       Stop: 'idle',
       UserPromptSubmit: 'active',
       PreToolUse: 'editing',
+      Notification: 'idle',
     };
     const status = statusMap[hook_event_name];
     if (!status) return reply.send({ ok: true });
@@ -1081,9 +1133,13 @@ async function start() {
     existing.hooks.Stop = makeEntry();
     existing.hooks.UserPromptSubmit = makeEntry();
     existing.hooks.PreToolUse = makeEntry();
+    existing.hooks.Notification = [{
+      matcher: 'idle_prompt',
+      hooks: [{ type: 'command', command, timeout: 5 }]
+    }];
 
     fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2), 'utf8');
-    return { ok: true, settingsPath, events: ['Stop', 'UserPromptSubmit', 'PreToolUse'] };
+    return { ok: true, settingsPath, events: ['Stop', 'UserPromptSubmit', 'PreToolUse', 'Notification'] };
   });
 
   // Check if Claude Code hooks are currently installed
@@ -1111,6 +1167,7 @@ async function start() {
         delete existing.hooks.Stop;
         delete existing.hooks.UserPromptSubmit;
         delete existing.hooks.PreToolUse;
+        delete existing.hooks.Notification;
         if (Object.keys(existing.hooks).length === 0) delete existing.hooks;
       }
       fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2), 'utf8');

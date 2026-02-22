@@ -1221,8 +1221,46 @@ textarea::placeholder {
 .version-nav-center {
   flex: 1;
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
+  gap: 3px;
+}
+
+.version-dots {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.version-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bg-active);
+  border: 1.5px solid var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.version-dot:hover {
+  transform: scale(1.4);
+  border-color: var(--text-color);
+}
+
+.version-dot.saved {
+  background: #3fb950;
+  border-color: #3fb950;
+}
+
+.version-dot.viewing {
+  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 3.5px var(--accent-color, #4a9eff);
+}
+
+.version-dot.current-dot {
+  border-style: dashed;
 }
 
 .version-indicator {
@@ -1812,6 +1850,11 @@ textarea::placeholder {
   color: var(--accent-blue);
 }
 
+.widget-refresh-btn {
+  font-size: 14px;
+  line-height: 1;
+}
+
 .widget-header-actions {
   display: flex;
   align-items: center;
@@ -2214,7 +2257,8 @@ textarea::placeholder {
 }
 
 /* Saved Plans Modal */
-.saved-plans-modal {
+.saved-plans-modal,
+.saved-versions-modal {
   width: 700px;
   max-width: 90vw;
   max-height: 80vh;
@@ -2222,7 +2266,8 @@ textarea::placeholder {
   flex-direction: column;
 }
 
-.saved-plans-modal .modal-header {
+.saved-plans-modal .modal-header,
+.saved-versions-modal .modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2391,6 +2436,30 @@ textarea::placeholder {
 .saved-plan-delete-btn:hover {
   opacity: 1 !important;
   color: var(--accent-red);
+}
+
+.saved-plan-actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.saved-plan-actions .btn-icon {
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.saved-plan-header:hover .saved-plan-actions .btn-icon {
+  opacity: 0.6;
+}
+
+.saved-plan-actions .btn-icon:hover {
+  opacity: 1 !important;
+}
+
+.saved-plan-actions .btn-icon-danger:hover {
+  color: var(--accent-red, #f85149);
 }
 
 .saved-plan-content {
