@@ -600,7 +600,21 @@ function App() {
         break;
       }
     }
-    if (!currentGroup) return;
+    if (!currentGroup) {
+      // Selected session filtered out — collect all visible non-paused sessions in sidebar order
+      const allVisible = [];
+      for (const [, sessionsInGroup] of groupedSessions) {
+        for (const item of sessionsInGroup) {
+          if (item.session.status !== 'paused') allVisible.push(item);
+        }
+      }
+      if (allVisible.length > 0) {
+        // "next" → first in sidebar order, "prev" → last in sidebar order
+        const target = direction === 'next' ? allVisible[0] : allVisible[allVisible.length - 1];
+        selectSession(target.session.id);
+      }
+      return;
+    }
 
     // Filter out paused sessions within this group
     const eligible = currentGroup.filter(item => item.session.status !== 'paused');

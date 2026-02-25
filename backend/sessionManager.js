@@ -1419,12 +1419,17 @@ class SessionManager extends EventEmitter {
       const canGoIdle = ['active', 'editing', 'waiting', 'thinking'].includes(session.status) &&
         this.canTransitionToIdle(session);
       if (idleTime > 5000 && canGoIdle) {
+        const oldStatus = session.status;
         session.status = 'idle';
         this.emit('statusChange', {
           sessionId: session.id,
           status: 'idle',
           currentTask: session.currentTask
         });
+        // Reconcile prompts from transcript when going idle
+        if (['active', 'thinking', 'editing'].includes(oldStatus)) {
+          this.reconcilePromptsFromTranscript(session);
+        }
       }
     }, 1000);
   }
@@ -1676,6 +1681,12 @@ class SessionManager extends EventEmitter {
           status: session.status,
           currentTask: session.currentTask
         });
+
+        // When transitioning to idle, reconcile prompts from JSONL transcript
+        // to catch any missed by keystroke-based detection (e.g. slash commands)
+        if (session.status === 'idle' && ['active', 'thinking', 'editing'].includes(oldStatus)) {
+          this.reconcilePromptsFromTranscript(session);
+        }
       }
       session.statusDebounceTimer = null;
     }, 500);
@@ -1922,6 +1933,76 @@ class SessionManager extends EventEmitter {
       prompt,
       promptHistory: session.promptHistory
     });
+  }
+
+  /**
+   * Reconcile promptHistory with the Claude session JSONL transcript.
+   * The transcript is the authoritative source — this catches prompts
+   * missed by keystroke-based detection (e.g. slash command autocomplete).
+   * @param {object} session - Session object
+   */
+  reconcilePromptsFromTranscript(session) {
+    if (!session.claudeSessionId || (session.cliType && session.cliType !== 'claude')) {
+      return;
+    }
+
+    try {
+      const transcript = this.getClaudeSessionTranscript(session.claudeSessionId, session.workingDir);
+      if (!transcript || !transcript.userPrompts || transcript.userPrompts.length === 0) {
+        return;
+      }
+
+      const existingTexts = new Set(
+        session.promptHistory.map(p => p.text.slice(0, 100))
+      );
+
+      let added = false;
+      for (const tp of transcript.userPrompts) {
+        // Check if this transcript prompt is already in our history
+        // Compare by prefix to handle truncation differences
+        const prefix = tp.text.slice(0, 100);
+        if (existingTexts.has(prefix)) {
+          continue;
+        }
+
+        // Also check if any existing prompt starts with the same text (fuzzy match)
+        let found = false;
+        for (const existing of session.promptHistory) {
+          if (existing.text.slice(0, 50) === tp.text.slice(0, 50)) {
+            found = true;
+            break;
+          }
+        }
+        if (found) continue;
+
+        const truncatedText = tp.text.length > MAX_PROMPT_HISTORY_CHARS
+          ? `${tp.text.slice(0, MAX_PROMPT_HISTORY_CHARS)}\n...[truncated]`
+          : tp.text;
+
+        session.promptHistory.push({
+          text: truncatedText,
+          timestamp: tp.timestamp || new Date().toISOString()
+        });
+        added = true;
+      }
+
+      if (added) {
+        // Sort by timestamp and trim to last 10
+        session.promptHistory.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        while (session.promptHistory.length > 10) {
+          session.promptHistory.shift();
+        }
+
+        this.dataStore.saveSession(session);
+        this.emit('promptAdded', {
+          sessionId: session.id,
+          prompt: session.promptHistory[session.promptHistory.length - 1],
+          promptHistory: session.promptHistory
+        });
+      }
+    } catch (error) {
+      debugLog(`Prompt reconciliation failed for session ${session.id}: ${error.message}`);
+    }
   }
 
   /**
