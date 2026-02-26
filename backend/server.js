@@ -56,6 +56,47 @@ function normalizePathKey(filePath) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+function isAllowedPlanFilePath(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const resolved = path.resolve(filePath);
+  if (!resolved.toLowerCase().endsWith('.md')) return false;
+  if (!path.isAbsolute(resolved)) return false;
+  if (!fs.existsSync(resolved)) return false;
+
+  const parentDir = path.basename(path.dirname(resolved)).toLowerCase();
+  if (parentDir !== 'plans') return false;
+
+  const claudePlansDir = path.resolve(path.join(os.homedir(), '.claude', 'plans'));
+  const normalizedFile = normalizePathKey(resolved);
+  const normalizedClaudePlansDir = normalizePathKey(claudePlansDir);
+
+  if (
+    normalizedFile === normalizedClaudePlansDir ||
+    normalizedFile.startsWith(`${normalizedClaudePlansDir}${path.sep}`)
+  ) {
+    return true;
+  }
+
+  // Also allow any "<workingDir>/plans/*.md" file.
+  return true;
+}
+
+function resolvePlanPathForApi({ filename, planPath }) {
+  if (planPath) {
+    const candidatePath = path.resolve(planPath);
+    if (!isAllowedPlanFilePath(candidatePath)) {
+      return { error: 'Invalid planPath' };
+    }
+    return { planPath: candidatePath };
+  }
+
+  const fallbackPath = planManager.getPlanPath(filename);
+  if (!fallbackPath || !fs.existsSync(fallbackPath)) {
+    return { error: 'Plan not found' };
+  }
+  return { planPath: fallbackPath };
+}
+
 function listProjectPlans(workingDir) {
   if (!workingDir || typeof workingDir !== 'string') {
     return [];
@@ -608,7 +649,13 @@ async function start() {
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const safeName = (name || 'pasted-plan').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 40);
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
+    const titleMatch = content.match(/^#\s+(.+)$/m);
+    const titleFromContent = titleMatch ? titleMatch[1].trim() : '';
+    const randomSuffix = crypto.randomBytes(2).toString('hex');
+    const generatedBaseName = `pasted-plan-${timestamp.slice(0, 16).replace(/-/g, '')}-${randomSuffix}`;
+    const baseName = trimmedName || titleFromContent || generatedBaseName;
+    const safeName = baseName.replace(/[^a-zA-Z0-9-_]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || generatedBaseName;
     const filename = `${safeName}-${timestamp}.md`;
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     const useProjectPlans = Boolean(
@@ -636,7 +683,7 @@ async function start() {
       sessionManager.addOrUpdatePlanInSession(sessionId, planPath);
     }
 
-    return { success: true, path: planPath, filename, scope };
+    return { success: true, path: planPath, filename, scope, name: safeName };
   });
 
   // List plans not yet associated with a session
@@ -711,12 +758,13 @@ async function start() {
   // Get all versions for a plan
   app.get('/api/plans/:filename/versions', async (request, reply) => {
     const { filename } = request.params;
-    const { workingDir } = request.query || {};
-    const planPath = planManager.getPlanPath(filename);
-
-    if (!planPath || !fs.existsSync(planPath)) {
-      return reply.status(404).send({ error: 'Plan not found' });
+    const { workingDir, planPath: planPathQuery } = request.query || {};
+    const resolved = resolvePlanPathForApi({ filename, planPath: planPathQuery });
+    if (resolved.error) {
+      const status = resolved.error === 'Invalid planPath' ? 400 : 404;
+      return reply.status(status).send({ error: resolved.error });
     }
+    const { planPath } = resolved;
 
     const versions = planVersionStore.getVersions(planPath);
 
@@ -734,11 +782,21 @@ async function start() {
         }
       }
       versions.forEach(v => {
-        v.isSaved = v.contentHash ? savedHashes.has(v.contentHash) : false;
+        if (v.contentHash && savedHashes.has(v.contentHash)) {
+          v.isSaved = true;
+        } else {
+          // Fallback: re-read version file, trim, hash, compare (handles old versions with untrimmed hash)
+          const vContent = planVersionStore.getVersionContent(planPath, v.filename);
+          if (vContent) {
+            v.isSaved = savedHashes.has(crypto.createHash('md5').update(vContent.trim()).digest('hex'));
+          } else {
+            v.isSaved = false;
+          }
+        }
       });
       // Check if the live/current plan content is saved
       if (savedHashes.size > 0) {
-        const planContent = planManager.getPlanContent(filename);
+        const planContent = planManager.getPlanContent(planPath);
         if (planContent?.content) {
           currentIsSaved = savedHashes.has(
             crypto.createHash('md5').update(planContent.content.trim()).digest('hex')
@@ -753,11 +811,13 @@ async function start() {
   // Get a specific version's content
   app.get('/api/plans/:filename/versions/:versionFilename', async (request, reply) => {
     const { filename, versionFilename } = request.params;
-    const planPath = planManager.getPlanPath(filename);
-
-    if (!planPath) {
-      return reply.status(404).send({ error: 'Plan not found' });
+    const { planPath: planPathQuery } = request.query || {};
+    const resolved = resolvePlanPathForApi({ filename, planPath: planPathQuery });
+    if (resolved.error) {
+      const status = resolved.error === 'Invalid planPath' ? 400 : 404;
+      return reply.status(status).send({ error: resolved.error });
     }
+    const { planPath } = resolved;
 
     const content = planVersionStore.getVersionContent(planPath, versionFilename);
 
@@ -771,11 +831,13 @@ async function start() {
   // Create a version snapshot manually
   app.post('/api/plans/:filename/versions', async (request, reply) => {
     const { filename } = request.params;
-    const planPath = planManager.getPlanPath(filename);
-
-    if (!planPath || !fs.existsSync(planPath)) {
-      return reply.status(404).send({ error: 'Plan not found' });
+    const { planPath: planPathQuery } = request.query || {};
+    const resolved = resolvePlanPathForApi({ filename, planPath: planPathQuery });
+    if (resolved.error) {
+      const status = resolved.error === 'Invalid planPath' ? 400 : 404;
+      return reply.status(status).send({ error: resolved.error });
     }
+    const { planPath } = resolved;
 
     const content = fs.readFileSync(planPath, 'utf8');
     planVersionStore.markDirty(planPath, content);
@@ -823,13 +885,13 @@ async function start() {
   // Get diff between two versions
   app.get('/api/plans/:filename/diff', async (request, reply) => {
     const { filename } = request.params;
-    const { from, to } = request.query;
-
-    const planPath = planManager.getPlanPath(filename);
-
-    if (!planPath) {
-      return reply.status(404).send({ error: 'Plan not found' });
+    const { from, to, planPath: planPathQuery } = request.query;
+    const resolved = resolvePlanPathForApi({ filename, planPath: planPathQuery });
+    if (resolved.error) {
+      const status = resolved.error === 'Invalid planPath' ? 400 : 404;
+      return reply.status(status).send({ error: resolved.error });
     }
+    const { planPath } = resolved;
 
     if (!from || !to) {
       return reply.status(400).send({ error: 'Both "from" and "to" version filenames are required' });
@@ -883,9 +945,9 @@ async function start() {
   });
 
   // List saved plans in a project's plans/ directory
-  // Optional ?planFile= filter: only return plans whose content matches a version of that plan
+  // Optional ?planFile= and/or ?planPath= filter: only return plans matching versions of that plan
   app.get('/api/saved-plans', async (request, reply) => {
-    const { workingDir, planFile } = request.query;
+    const { workingDir, planFile, planPath: planPathQuery } = request.query;
     if (!workingDir) {
       return reply.status(400).send({ error: 'workingDir query param is required' });
     }
@@ -915,14 +977,28 @@ async function start() {
       });
 
       // Filter to only saved plans matching versions of a specific plan file
-      if (planFile) {
-        const planPath = planManager.getPlanPath(planFile);
-        if (planPath) {
+      if (planPathQuery || planFile) {
+        let targetPlanPath = null;
+        if (planPathQuery) {
+          const resolved = resolvePlanPathForApi({ filename: planFile, planPath: planPathQuery });
+          if (resolved.error) {
+            const status = resolved.error === 'Invalid planPath' ? 400 : 404;
+            return reply.status(status).send({ error: resolved.error });
+          }
+          targetPlanPath = resolved.planPath;
+        } else if (planFile) {
+          const resolved = resolvePlanPathForApi({ filename: planFile });
+          if (!resolved.error) {
+            targetPlanPath = resolved.planPath;
+          }
+        }
+
+        if (targetPlanPath) {
           const versionHashes = new Set();
-          const versions = planVersionStore.getVersions(planPath);
+          const versions = planVersionStore.getVersions(targetPlanPath);
           versions.forEach(v => { if (v.contentHash) versionHashes.add(v.contentHash); });
           // Also include current/live content hash
-          const currentContent = planManager.getPlanContent(planFile);
+          const currentContent = planManager.getPlanContent(targetPlanPath);
           if (currentContent?.content) {
             versionHashes.add(crypto.createHash('md5').update(currentContent.content.trim()).digest('hex'));
           }

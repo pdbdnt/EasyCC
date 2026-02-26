@@ -467,6 +467,16 @@ class SessionManager extends EventEmitter {
       args.push('--append-system-prompt', sanitizedRole);
     }
 
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+      return pty.spawn('cmd.exe', ['/c', 'claude', ...args], {
+        name: 'xterm-color',
+        cols: 120,
+        rows: 30,
+        cwd: workingDir,
+        env: process.env
+      });
+    }
     return pty.spawn('claude', args, {
       name: 'xterm-color',
       cols: 120,

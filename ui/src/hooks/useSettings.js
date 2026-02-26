@@ -30,10 +30,10 @@ const defaultSettings = {
     navigation: {
       prevSession: 'Ctrl+E',
       nextSession: 'Ctrl+R',
-      prevSessionGlobal: 'Ctrl+D',
-      nextSessionGlobal: 'Ctrl+F',
-      prevGroup: 'Ctrl+3',
-      nextGroup: 'Ctrl+4'
+      prevSessionGlobal: 'Ctrl+3',
+      nextSessionGlobal: 'Ctrl+4',
+      prevGroup: 'Alt+3',
+      nextGroup: 'Alt+4'
     },
     hintMode: {
       enabled: true,

@@ -15,14 +15,15 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
   const [showSavedVersions, setShowSavedVersions] = useState(false);
 
   if (!plan) return null;
+  const planPathQuery = plan.path ? `&planPath=${encodeURIComponent(plan.path)}` : '';
 
   // Fetch versions when plan changes
   useEffect(() => {
     const fetchVersions = async () => {
       try {
         const url = workingDir
-          ? `/api/plans/${plan.filename}/versions?workingDir=${encodeURIComponent(workingDir)}`
-          : `/api/plans/${plan.filename}/versions`;
+          ? `/api/plans/${plan.filename}/versions?workingDir=${encodeURIComponent(workingDir)}${planPathQuery}`
+          : `/api/plans/${plan.filename}/versions?planPath=${encodeURIComponent(plan.path || '')}`;
         const response = await fetch(url);
         if (response.ok) {
           const data = await response.json();
@@ -37,7 +38,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
     };
 
     fetchVersions();
-  }, [plan.filename, plan.modifiedAt, workingDir]);
+  }, [plan.filename, plan.modifiedAt, plan.path, workingDir, planPathQuery]);
 
   // Fetch version content when currentVersionIndex changes
   useEffect(() => {
@@ -51,7 +52,9 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
       setLoading(true);
       try {
         const version = versions[currentVersionIndex];
-        const response = await fetch(`/api/plans/${plan.filename}/versions/${version.filename}`);
+        const response = await fetch(
+          `/api/plans/${plan.filename}/versions/${version.filename}?planPath=${encodeURIComponent(plan.path || '')}`
+        );
         if (response.ok) {
           const data = await response.json();
           setVersionContent(data.content);
@@ -60,7 +63,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
           if (showDiff && currentVersionIndex > 0) {
             const prevVersion = versions[currentVersionIndex - 1];
             const diffResponse = await fetch(
-              `/api/plans/${plan.filename}/diff?from=${version.filename}&to=${prevVersion.filename}`
+              `/api/plans/${plan.filename}/diff?from=${version.filename}&to=${prevVersion.filename}&planPath=${encodeURIComponent(plan.path || '')}`
             );
             if (diffResponse.ok) {
               const diffData = await diffResponse.json();
@@ -78,7 +81,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
     };
 
     fetchVersionContent();
-  }, [currentVersionIndex, versions, plan.filename, showDiff]);
+  }, [currentVersionIndex, versions, plan.filename, plan.path, showDiff]);
 
   // Fetch saved plans content to detect "already saved" versions
   useEffect(() => {
@@ -318,6 +321,25 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
       {/* Expand/Collapse when no version nav */}
       {versions.length === 0 && (
         <div className="plan-actions-bar">
+          {workingDir && (
+            <>
+              <button
+                className={`btn-small ${(saved || alreadySaved) ? 'btn-saved' : ''}`}
+                onClick={handleSavePlan}
+                disabled={!displayContent || saved || alreadySaved}
+                title={alreadySaved ? 'This version is already saved' : 'Save this version to project plans'}
+              >
+                {(saved || alreadySaved) ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
+              </button>
+              <button
+                className="btn-small"
+                onClick={() => setShowSavedVersions(true)}
+                title="View all saved versions of this plan"
+              >
+                {'\uD83D\uDCCB'}
+              </button>
+            </>
+          )}
           <button
             className="btn-small"
             onClick={handleToggleExpandAll}
@@ -349,6 +371,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
       {showSavedVersions && workingDir && (
         <SavedVersionsModal
           planFilename={plan.filename}
+          planPath={plan.path}
           workingDir={workingDir}
           onClose={() => setShowSavedVersions(false)}
         />
@@ -357,18 +380,19 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
   );
 }
 
-function SavedVersionsModal({ planFilename, workingDir, onClose }) {
+function SavedVersionsModal({ planFilename, planPath, workingDir, onClose }) {
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedPlan, setExpandedPlan] = useState(null);
   const [copiedPath, setCopiedPath] = useState(null);
 
   useEffect(() => {
-    fetch(`/api/saved-plans?workingDir=${encodeURIComponent(workingDir)}&planFile=${encodeURIComponent(planFilename)}`)
+    const planPathParam = planPath ? `&planPath=${encodeURIComponent(planPath)}` : '';
+    fetch(`/api/saved-plans?workingDir=${encodeURIComponent(workingDir)}&planFile=${encodeURIComponent(planFilename)}${planPathParam}`)
       .then(r => r.json())
       .then(data => { setPlans(data.plans || []); setLoading(false); })
       .catch(() => setLoading(false));
-  }, [workingDir, planFilename]);
+  }, [workingDir, planFilename, planPath]);
 
   const handleCopyPath = async (planPath, e) => {
     e.stopPropagation();

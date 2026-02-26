@@ -232,28 +232,28 @@ export function useSessions() {
       return false;
     }
 
+    const removeFromState = () => {
+      setSessions(prev => prev.filter(s => s.id !== id));
+      setSelectedIds(prev => prev.filter(sid => sid !== id));
+    };
+
     try {
       const response = await fetch(`/api/sessions/${id}`, {
         method: 'DELETE'
       });
 
-      if (!response.ok) {
-        if (response.status === 404) {
-          // Session already gone from server — clean up local state
-          setSessions(prev => prev.filter(s => s.id !== id));
-          setSelectedIds(prev => prev.filter(sid => sid !== id));
-          return true;
-        }
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to delete session');
+      if (!response.ok && response.status !== 404) {
+        console.warn(`Kill session ${id}: server returned ${response.status}, removing locally anyway`);
       }
-
-      // Session will be removed via WebSocket message
+      // Remove from state on any response (200, 404, or error) — user wants it gone
+      // WebSocket sessionKilled message is a harmless no-op backup (filter is idempotent)
+      removeFromState();
       return true;
     } catch (error) {
-      console.error('Error deleting session:', error);
-      alert(`Error: ${error.message}`);
-      return false;
+      console.error('Error deleting session (removing locally):', error);
+      // Network error — still remove from state, session is likely orphaned
+      removeFromState();
+      return true;
     }
   }, []);
 

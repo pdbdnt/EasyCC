@@ -30,8 +30,10 @@ class SettingsManager {
         navigation: {
           prevSession: 'Ctrl+E',
           nextSession: 'Ctrl+R',
-          prevGroup: 'Ctrl+3',
-          nextGroup: 'Ctrl+4'
+          prevSessionGlobal: 'Ctrl+3',
+          nextSessionGlobal: 'Ctrl+4',
+          prevGroup: 'Alt+3',
+          nextGroup: 'Alt+4'
         },
         hintMode: {
           enabled: true,

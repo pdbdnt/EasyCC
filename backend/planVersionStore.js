@@ -86,7 +86,7 @@ class PlanVersionStore {
       planPath,
       timestamp: dirty.lastModified,
       savedAt: new Date().toISOString(),
-      contentHash: crypto.createHash('md5').update(dirty.content).digest('hex')
+      contentHash: crypto.createHash('md5').update(dirty.content.trim()).digest('hex')
     }, null, 2), 'utf8');
 
     // Clear dirty flag

@@ -527,12 +527,10 @@ function App() {
 
   const handleConfirmCloseCurrentSession = useCallback(async () => {
     if (!pendingCloseSessionId) return;
-    const success = await killSession(pendingCloseSessionId, { skipConfirm: true });
+    await killSession(pendingCloseSessionId, { skipConfirm: true });
     closingSessionRef.current = false;
-    if (success) {
-      setShowCloseSessionModal(false);
-      setPendingCloseSessionId(null);
-    }
+    setShowCloseSessionModal(false);
+    setPendingCloseSessionId(null);
   }, [killSession, pendingCloseSessionId]);
 
   const handleCancelCloseCurrentSession = useCallback(() => {
@@ -635,7 +633,7 @@ function App() {
     }
   }, [selectedId, groupedSessions, selectSession]);
 
-  // Navigate across all projects (Ctrl+D/Ctrl+F) — skip paused + collapsed
+  // Navigate across all projects (configurable global shortcuts) — skip paused + collapsed
   const navigateSessionGlobal = useCallback((direction) => {
     if (!selectedId || groupedSessions.length === 0) return;
 
@@ -1160,11 +1158,8 @@ function App() {
   };
 
   const handleKillFromDetails = async (id) => {
-    const success = await killSession(id);
-    if (success) {
-      setDetailsSession(null);
-    }
-    return success;
+    await killSession(id);
+    setDetailsSession(null);
   };
 
   const handlePauseFromDetails = async (id) => {

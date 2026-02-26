@@ -278,6 +278,8 @@ const TerminalView = forwardRef(function TerminalView({
       if (navKeys) {
         if (matchKeyCombo(event, navKeys.nextSession) ||
             matchKeyCombo(event, navKeys.prevSession) ||
+            matchKeyCombo(event, navKeys.nextSessionGlobal) ||
+            matchKeyCombo(event, navKeys.prevSessionGlobal) ||
             matchKeyCombo(event, navKeys.nextGroup) ||
             matchKeyCombo(event, navKeys.prevGroup)) {
           return false;

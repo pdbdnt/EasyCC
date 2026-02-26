@@ -80,7 +80,14 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
 
       const combo = formatKeyCombo(event);
       if (combo) {
-        const navKeys = ['prevSession', 'nextSession', 'prevGroup', 'nextGroup'];
+        const navKeys = [
+          'prevSession',
+          'nextSession',
+          'prevSessionGlobal',
+          'nextSessionGlobal',
+          'prevGroup',
+          'nextGroup'
+        ];
         if (navKeys.includes(recordingKey)) {
           setLocalSettings(prev => ({
             ...prev,
