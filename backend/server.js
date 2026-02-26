@@ -97,6 +97,28 @@ function resolvePlanPathForApi({ filename, planPath }) {
   return { planPath: fallbackPath };
 }
 
+function getFirstNonEmptyLine(text) {
+  if (typeof text !== 'string') return '';
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+}
+
+function normalizePlanNameBase(input) {
+  if (!input || typeof input !== 'string') return '';
+  return input
+    .replace(/^\s{0,3}(#{1,6}\s*|[-*+]\s+|\d+\.\s+)/, '')
+    .replace(/[`*_~[\]()>]/g, '')
+    .replace(/[^a-zA-Z0-9-_ ]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60);
+}
+
 function listProjectPlans(workingDir) {
   if (!workingDir || typeof workingDir !== 'string') {
     return [];
@@ -649,20 +671,27 @@ async function start() {
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const trimmedName = typeof name === 'string' ? name.trim() : '';
-    const titleMatch = content.match(/^#\s+(.+)$/m);
-    const titleFromContent = titleMatch ? titleMatch[1].trim() : '';
-    const randomSuffix = crypto.randomBytes(2).toString('hex');
-    const generatedBaseName = `pasted-plan-${timestamp.slice(0, 16).replace(/-/g, '')}-${randomSuffix}`;
-    const baseName = trimmedName || titleFromContent || generatedBaseName;
-    const safeName = baseName.replace(/[^a-zA-Z0-9-_]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || generatedBaseName;
-    const filename = `${safeName}-${timestamp}.md`;
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     const useProjectPlans = Boolean(
       session &&
       (session.cliType === 'codex' || session.cliType === 'terminal') &&
       session.workingDir
     );
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
+    const titleMatch = content.match(/^#\s+(.+)$/m);
+    const titleFromContent = titleMatch ? titleMatch[1].trim() : '';
+    const firstNonEmptyLine = getFirstNonEmptyLine(content);
+    const randomSuffix = crypto.randomBytes(2).toString('hex');
+    const generatedBaseName = `pasted-plan-${timestamp.slice(0, 16).replace(/-/g, '')}-${randomSuffix}`;
+    const normalizedProvided = normalizePlanNameBase(trimmedName);
+    const normalizedTitle = normalizePlanNameBase(titleFromContent);
+    const normalizedFirstLine = normalizePlanNameBase(firstNonEmptyLine);
+    const baseName = normalizedProvided ||
+      (useProjectPlans ? normalizedFirstLine : normalizedTitle) ||
+      normalizedTitle ||
+      generatedBaseName;
+    const safeName = baseName || generatedBaseName;
+    const filename = `${safeName}-${timestamp}.md`;
     const plansDir = useProjectPlans
       ? path.join(session.workingDir, 'plans')
       : path.join(os.homedir(), '.claude', 'plans');
