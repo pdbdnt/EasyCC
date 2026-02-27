@@ -455,6 +455,9 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
       const plansRes = await fetch(`/api/sessions/${session.id}/plans`);
       if (plansRes.ok) {
         const { plans: planData } = await plansRes.json();
+        if (!planData || planData.length === 0) {
+          console.warn('[ContextSidebar] Plans fetch returned empty after saving plan for session', session.id);
+        }
         setPlans(planData || []);
       }
     } catch (error) {

@@ -113,8 +113,8 @@ function normalizePlanNameBase(input) {
     .replace(/^\s{0,3}(#{1,6}\s*|[-*+]\s+|\d+\.\s+)/, '')
     .replace(/[`*_~[\]()>]/g, '')
     .replace(/[^a-zA-Z0-9-_ ]/g, '-')
-    .replace(/-+/g, '-')
     .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 60);
 }
@@ -708,11 +708,12 @@ async function start() {
     planVersionStore.markDirty(planPath, content);
     planVersionStore.createVersion(planPath);
 
+    const normalizedPlanPath = path.resolve(planPath);
     if (sessionId) {
-      sessionManager.addOrUpdatePlanInSession(sessionId, planPath);
+      sessionManager.addOrUpdatePlanInSession(sessionId, normalizedPlanPath);
     }
 
-    return { success: true, path: planPath, filename, scope, name: safeName };
+    return { success: true, path: normalizedPlanPath, filename, scope, name: safeName };
   });
 
   // List plans not yet associated with a session

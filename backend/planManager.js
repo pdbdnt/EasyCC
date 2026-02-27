@@ -81,7 +81,7 @@ class PlanManager extends EventEmitter {
     const candidatePaths = [];
 
     if (path.isAbsolute(trimmedRef) || /[\\/]/.test(trimmedRef)) {
-      candidatePaths.push(trimmedRef);
+      candidatePaths.push(path.resolve(trimmedRef));
     }
 
     if (baseName) {
@@ -93,9 +93,12 @@ class PlanManager extends EventEmitter {
         continue;
       }
 
-      const resolvedPath = path.resolve(candidate);
-      if (fs.existsSync(resolvedPath)) {
-        return { filePath: resolvedPath, filename: path.basename(resolvedPath) };
+      try {
+        if (fs.existsSync(candidate)) {
+          return { filePath: candidate, filename: path.basename(candidate) };
+        }
+      } catch (error) {
+        console.warn(`resolvePlanReference: error checking ${candidate}:`, error.message);
       }
     }
 
@@ -122,13 +125,23 @@ class PlanManager extends EventEmitter {
       const workingDirMatch = content.match(/Working Directory[:\s]+([^\n]+)/i) ||
                               content.match(/Project[:\s]+([^\n]+)/i) ||
                               content.match(/Path[:\s]+([^\n]+)/i);
+      let derivedWorkingDir = workingDirMatch ? workingDirMatch[1].trim() : null;
+
+      // Fall back to deriving workingDir from "<workingDir>/plans/<plan>.md"
+      if (!derivedWorkingDir) {
+        const parentDir = path.dirname(filePath);
+        const parentName = path.basename(parentDir);
+        if (parentName === 'plans') {
+          derivedWorkingDir = path.dirname(parentDir);
+        }
+      }
 
       return {
         filename,
         name: filename.replace('.md', '').replace(/-/g, ' '),
         path: filePath,
         content: content,
-        workingDir: workingDirMatch ? workingDirMatch[1].trim() : null,
+        workingDir: derivedWorkingDir,
         createdAt: stats.birthtime.toISOString(),
         modifiedAt: stats.mtime.toISOString()
       };
