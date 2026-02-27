@@ -22,6 +22,10 @@ npm-debug.log*
 Thumbs.db
 nul
 
+# Claude Code local config
+.claude/
+.mcp.json
+
 # IDE
 .vscode/
 .idea/
