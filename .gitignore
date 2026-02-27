@@ -26,6 +26,10 @@ nul
 .claude/
 .mcp.json
 
+# Plans (local working docs, not source code)
+plans/
+backend/PLAN.md
+
 # IDE
 .vscode/
 .idea/
