@@ -20,7 +20,7 @@ Temporary workaround:
 - The app will run but won't have an icon in taskbar/tray
 
 Icon design suggestions:
-- Simple "CM" monogram (Claude Manager)
+- Simple "EC" monogram (EasyCC)
 - Terminal or command prompt symbol
 - Something related to CLI/developer tools
 - High contrast for visibility in system tray

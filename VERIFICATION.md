@@ -55,19 +55,19 @@ npm start
 - [ ] Window opens (no DevTools)
 - [ ] Loads from `localhost:5010` (check network tab)
 - [ ] UI appears correctly
-- [ ] Window title: "Claude Manager"
+- [ ] Window title: "EasyCC"
 - [ ] Taskbar shows app icon
 - [ ] Icon visible in taskbar (blue CM logo)
 
 ### 4. System Tray
 
 - [ ] Window has tray icon in system tray (bottom-right)
-- [ ] Hover shows tooltip: "Claude Manager"
+- [ ] Hover shows tooltip: "EasyCC"
 - [ ] Click X button on window → window hides (doesn't quit)
 - [ ] App still in system tray
 - [ ] Single-click tray icon → window restores
 - [ ] Right-click tray icon → shows menu
-- [ ] Menu has: "Show Claude Manager" and "Quit"
+- [ ] Menu has: "Show EasyCC" and "Quit"
 - [ ] Click "Quit" → app exits completely
 
 ### 5. Window Behavior
@@ -195,7 +195,7 @@ npm run package
 **Expected behavior:**
 - [ ] Build completes without errors
 - [ ] Output in `dist-electron/` folder
-- [ ] File exists: `Claude Manager Setup 1.0.0.exe`
+- [ ] File exists: `EasyCC Setup 1.0.0.exe`
 - [ ] File size: ~80-100 MB
 
 ### 15. Installer Testing
@@ -215,10 +215,10 @@ npm run package
 - [ ] Window appears with UI
 - [ ] Create test session → works
 - [ ] Close app
-- [ ] Data persists in `%APPDATA%\claude-manager\` or install dir
+- [ ] Data persists in `%APPDATA%\easycc\` or install dir
 
 **Uninstall:**
-- [ ] Settings → Apps → Claude Manager → Uninstall
+- [ ] Settings → Apps → EasyCC → Uninstall
 - [ ] Uninstaller runs
 - [ ] App removed from Programs list
 - [ ] Desktop shortcut removed
@@ -284,7 +284,7 @@ npm run dev
 ### 20. Resource Usage
 
 - [ ] Open Task Manager
-- [ ] Check "Claude Manager" process
+- [ ] Check "EasyCC" process
 - [ ] Memory usage: < 500 MB (idle)
 - [ ] CPU usage: < 5% (idle)
 - [ ] Create 5 sessions

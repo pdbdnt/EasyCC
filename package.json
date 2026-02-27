@@ -1,5 +1,5 @@
 {
-  "name": "claude-manager",
+  "name": "easycc",
   "version": "1.0.0",
   "description": "Cross-platform CLI session manager with web UI for managing multiple Claude Code CLI sessions",
   "main": "electron/main.js",
@@ -40,8 +40,8 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.clioverlord.claudemanager",
-    "productName": "Claude Manager",
+    "appId": "com.easycc.app",
+    "productName": "EasyCC",
     "directories": {
       "output": "dist-electron"
     },
@@ -70,7 +70,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Claude Manager"
+      "shortcutName": "EasyCC"
     }
   }
 }

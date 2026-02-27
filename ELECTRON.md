@@ -1,6 +1,6 @@
 # Electron Desktop App Guide
 
-CLIOverlord can now run as a standalone Windows desktop application with its own taskbar icon and system tray integration.
+EasyCC can run as a standalone Windows desktop application with its own taskbar icon and system tray integration.
 
 ## Quick Start
 
@@ -43,7 +43,7 @@ npm run package
 ```
 - Builds UI
 - Creates installer in `dist-electron/`
-- Output: `Claude Manager Setup 1.0.0.exe`
+- Output: `EasyCC Setup 1.0.0.exe`
 
 ## Features
 
@@ -56,7 +56,7 @@ npm run package
 ✅ **System Tray**
 - Minimize to tray (window hides instead of closing)
 - Right-click tray icon for menu:
-  - "Show Claude Manager" - Restore window
+  - "Show EasyCC" - Restore window
   - "Quit" - Exit application
 - Single click tray icon to restore window
 
@@ -125,7 +125,7 @@ All existing keyboard shortcuts work in Electron:
 ## File Structure
 
 ```
-claude-manager/
+easycc/
 ├── electron/
 │   ├── main.js              # Electron main process
 │   ├── preload.js           # IPC bridge (empty for now)
@@ -145,8 +145,8 @@ claude-manager/
 ```json
 {
   "build": {
-    "appId": "com.clioverlord.claudemanager",
-    "productName": "Claude Manager",
+    "appId": "com.easycc.app",
+    "productName": "EasyCC",
     "files": [
       "electron/**/*",
       "backend/**/*",
@@ -234,7 +234,7 @@ npm run package
 ```
 
 **Output:**
-- `dist-electron/Claude Manager Setup 1.0.0.exe` (~80-100MB)
+- `dist-electron/EasyCC Setup 1.0.0.exe` (~80-100MB)
 - NSIS installer with custom install directory option
 - Creates desktop + start menu shortcuts
 
@@ -244,15 +244,15 @@ npm run package
 2. Choose install location
 3. Select shortcuts to create
 4. Wait for installation
-5. Launch "Claude Manager" from desktop or start menu
+5. Launch "EasyCC" from desktop or start menu
 
 ### Uninstallation
 
 **Via Control Panel:**
-- Settings → Apps → Claude Manager → Uninstall
+- Settings → Apps → EasyCC → Uninstall
 
 **Via Start Menu:**
-- Claude Manager → Uninstall Claude Manager
+- EasyCC → Uninstall EasyCC
 
 ## Development Workflow
 
@@ -310,7 +310,7 @@ Potential features to add:
 - [ ] Window state persistence (position, size)
 - [ ] Native context menus (right-click terminal)
 - [ ] Update notifications
-- [ ] Custom protocol handler (`claudemanager://`)
+- [ ] Custom protocol handler (`easycc://`)
 
 ## Comparison: Web vs Desktop
 

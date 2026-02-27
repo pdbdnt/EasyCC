@@ -1,7 +1,7 @@
 {
-  "name": "claude-manager-backend",
+  "name": "easycc-backend",
   "version": "1.0.0",
-  "description": "Backend server for Claude Manager",
+  "description": "Backend server for EasyCC",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

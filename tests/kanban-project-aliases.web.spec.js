@@ -8,7 +8,7 @@ test.describe('Kanban Project Alias Display (Web)', () => {
   let originalAliases = {};
   let firstStageName = 'In Review';
 
-  const projectDirCm = 'C:\\Users\\testuser\\apps\\CLIOverlord\\claude-manager';
+  const projectDirCm = 'C:\\Users\\testuser\\apps\\EasyCC';
   const projectDirZw = 'C:\\Users\\testuser\\apps\\zwoofi';
   const aliasCm = 'cm-web';
   const aliasZw = 'zw-web';
@@ -99,7 +99,7 @@ test.describe('Kanban Project Alias Display (Web)', () => {
     await maybePause(page);
     await expect(subheaders.filter({ hasText: aliasZw })).toBeVisible();
     await maybePause(page);
-    await expect(subheaders.filter({ hasText: 'claude-manager' })).toHaveCount(0);
+    await expect(subheaders.filter({ hasText: 'easycc' })).toHaveCount(0);
     await expect(subheaders.filter({ hasText: 'zwoofi' })).toHaveCount(0);
     await maybePause(page);
   });

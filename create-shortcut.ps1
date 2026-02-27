@@ -1,6 +1,6 @@
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $desktopPath = [Environment]::GetFolderPath('Desktop')
-$shortcutPath = Join-Path $desktopPath "Claude Manager.lnk"
+$shortcutPath = Join-Path $desktopPath "EasyCC.lnk"
 
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut($shortcutPath)
@@ -8,7 +8,7 @@ $sc.TargetPath = "wscript.exe"
 $sc.Arguments = "`"$projectDir\launch-silent.vbs`""
 $sc.WorkingDirectory = $projectDir
 $sc.IconLocation = "$projectDir\electron\icon.ico,0"
-$sc.Description = "Claude Manager - Build and Launch"
+$sc.Description = "EasyCC - Build and Launch"
 $sc.Save()
 
 Write-Host "Desktop shortcut created: $shortcutPath"

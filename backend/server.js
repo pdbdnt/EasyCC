@@ -1208,7 +1208,7 @@ async function start() {
   });
 
   // Install Claude Code lifecycle hooks into ~/.claude/settings.json
-  // so that Stop/UserPromptSubmit/PreToolUse events are forwarded to CLIOverlord.
+  // so that Stop/UserPromptSubmit/PreToolUse events are forwarded to EasyCC.
   app.post('/api/settings/install-hooks', async (request, reply) => {
     const scriptPath = path.resolve(__dirname, 'claude-hook.js');
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
@@ -1262,7 +1262,7 @@ async function start() {
     }
   });
 
-  // Remove CLIOverlord hooks from ~/.claude/settings.json
+  // Remove EasyCC hooks from ~/.claude/settings.json
   app.post('/api/settings/uninstall-hooks', async (request, reply) => {
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     if (!fs.existsSync(settingsPath)) return { ok: true };
@@ -2240,7 +2240,7 @@ async function start() {
 
   try {
     await app.listen({ port, host });
-    console.log(`\nClaude Manager running at:`);
+    console.log(`\nEasyCC running at:`);
     console.log(`  Local:   http://localhost:${port}`);
     console.log(`  Network: http://${getLocalIP()}:${port}\n`);
   } catch (error) {

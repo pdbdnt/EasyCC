@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple script to create a basic icon for Claude Manager.
+Simple script to create a basic icon for EasyCC.
 Requires Pillow: pip install Pillow
 """
 

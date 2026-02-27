@@ -27,7 +27,7 @@ if (!fs.existsSync(uiDistPath)) {
 }
 
 // Start the backend server
-console.log('Starting Claude Manager server...');
+console.log('Starting EasyCC server...');
 const server = spawn('node', ['server.js'], {
   cwd: backendPath,
   stdio: 'inherit',

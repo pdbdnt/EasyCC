@@ -53,7 +53,7 @@ function createWindow() {
     height: 900,
     minWidth: 1000,
     minHeight: 600,
-    title: 'Claude Manager',
+    title: 'EasyCC',
     icon: path.join(__dirname, 'icon.ico'),
     webPreferences: {
       nodeIntegration: false,
@@ -126,11 +126,11 @@ function createTray() {
   const iconPath = path.join(__dirname, 'icon.ico');
 
   tray = new Tray(iconPath);
-  tray.setToolTip('Claude Manager');
+  tray.setToolTip('EasyCC');
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Show Claude Manager',
+      label: 'Show EasyCC',
       click: () => {
         if (mainWindow) {
           mainWindow.show();
@@ -155,8 +155,8 @@ function createTray() {
           buttons: ['Yes', 'No'],
           defaultId: 1,
           cancelId: 1,
-          title: 'Quit Claude Manager',
-          message: 'Are you sure you want to quit Claude Manager?',
+          title: 'Quit EasyCC',
+          message: 'Are you sure you want to quit EasyCC?',
           detail: 'All active sessions will continue running in their terminals.'
         });
         if (response === 0) {
@@ -206,8 +206,8 @@ app.whenReady().then(async () => {
               buttons: ['Yes', 'No'],
               defaultId: 1,
               cancelId: 1,
-              title: 'Quit Claude Manager',
-              message: 'Are you sure you want to quit Claude Manager?',
+              title: 'Quit EasyCC',
+              message: 'Are you sure you want to quit EasyCC?',
               detail: 'All active sessions will continue running in their terminals.'
             });
             if (response === 0) {

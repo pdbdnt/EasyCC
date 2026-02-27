@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// CLIOverlord Claude Code hook script
-// Receives hook JSON on stdin, forwards to CLIOverlord backend.
+// EasyCC Claude Code hook script
+// Receives hook JSON on stdin, forwards to EasyCC backend.
 // Designed to run async — exits silently on any error.
 
 const http = require('http');

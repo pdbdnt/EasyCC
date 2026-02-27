@@ -29,7 +29,7 @@ function getGridLayout(count) {
   return { cols: 4, rows: Math.ceil(count / 4) };
 }
 
-const PANE_LAYOUT_KEY = 'claude-manager-pane-layout';
+const PANE_LAYOUT_KEY = 'easycc-pane-layout';
 
 function loadPaneLayout() {
   try {
@@ -1193,7 +1193,7 @@ function App() {
     <div className={`app-container ${hintModeActive ? 'hint-mode-active' : ''}`}>
       <aside className="sidebar sessions-sidebar" style={{ width: sessionsWidth, minWidth: sessionsWidth }}>
         <div className="sidebar-header">
-          <h1>CliMan</h1>
+          <h1>EasyCC</h1>
           <div className="view-toggle">
             <button
               className={`view-toggle-btn ${currentView === 'sessions' ? 'active' : ''}`}

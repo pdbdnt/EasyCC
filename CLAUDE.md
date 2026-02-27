@@ -4,12 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-CLIOverlord is a cross-platform web UI (+ Electron desktop app) for managing multiple Claude Code CLI sessions. It combines terminal multiplexing, a Kanban workflow board, an agent/task system, and plan versioning into a single interface.
+EasyCC (Easy CLI Context) is a cross-platform web UI (+ Electron desktop app) for managing multiple CLI sessions (Claude Code, Codex, and any other CLI tool). It combines terminal multiplexing, a Kanban workflow board, an agent/task system, and plan versioning into a single interface.
 
 ## Development Commands
 
 ```bash
-cd claude-manager
 
 # Development (hot reload) - backend :5010, UI :5011
 npm run dev
@@ -38,7 +37,7 @@ No automated tests or linting configured. Manual testing only.
 ## Project Structure
 
 ```
-claude-manager/
+easycc/
 ├── backend/                    # Fastify + node-pty server
 │   ├── server.js               # REST API + WebSocket (app.get/post/etc)
 │   ├── sessionManager.js       # PTY lifecycle, status detection, ring buffer

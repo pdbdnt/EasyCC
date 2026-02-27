@@ -475,7 +475,7 @@ function Dashboard({
   return (
     <>
       <div className="sidebar-header">
-        <h1>CliMan</h1>
+        <h1>EasyCC</h1>
         <div className="sidebar-header-actions">
           <button className="settings-btn" onClick={onOpenSettings} title="Settings">
             <HintBadge

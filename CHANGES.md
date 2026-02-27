@@ -2,7 +2,7 @@
 
 ## Overview
 
-CLIOverlord has been successfully converted to run as a Windows desktop application while preserving the original web-based functionality.
+EasyCC has been successfully converted to run as a Windows desktop application while preserving the original web-based functionality.
 
 ## New Files Created
 
@@ -131,7 +131,7 @@ CLIOverlord has been successfully converted to run as a Windows desktop applicat
 ✅ **Taskbar Icon**
 - Native Windows application appearance
 - Shows in taskbar when running
-- Uses custom blue "CM" icon
+- Uses custom blue "EC" icon
 
 ✅ **System Tray**
 - Minimize to tray (window hides on close)

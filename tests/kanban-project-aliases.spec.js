@@ -18,7 +18,7 @@ test.describe('Kanban Project Alias Display', () => {
   let firstStageName;
   let originalAliases = {};
 
-  const projectDirCm = 'C:\\Users\\testuser\\apps\\CLIOverlord\\claude-manager';
+  const projectDirCm = 'C:\\Users\\testuser\\apps\\EasyCC';
   const projectDirZw = 'C:\\Users\\testuser\\apps\\zwoofi';
   const aliasCm = 'cm-spec';
   const aliasZw = 'zw-spec';
@@ -91,7 +91,7 @@ test.describe('Kanban Project Alias Display', () => {
     await expect(subheaders.filter({ hasText: aliasCm })).toBeVisible();
     await expect(subheaders.filter({ hasText: aliasZw })).toBeVisible();
 
-    await expect(subheaders.filter({ hasText: 'claude-manager' })).toHaveCount(0);
+    await expect(subheaders.filter({ hasText: 'easycc' })).toHaveCount(0);
     await expect(subheaders.filter({ hasText: 'zwoofi' })).toHaveCount(0);
   });
 });

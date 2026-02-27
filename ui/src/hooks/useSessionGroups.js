@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 
-const STORAGE_KEY = 'claude-manager-session-groups';
+const STORAGE_KEY = 'easycc-session-groups';
 
 function loadGroups() {
   try {
