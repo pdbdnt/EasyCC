@@ -81,7 +81,7 @@ class SessionManager extends EventEmitter {
 
     for (const [id, sessionData] of Object.entries(persistedSessions)) {
       // Clean up completed sessions
-      if (sessionData.status === 'completed') {
+      if (sessionData.status === 'completed' || sessionData.status === 'killed') {
         this.dataStore.deleteSession(id);
         console.log(`Cleaned up completed session: ${sessionData.name} (${id})`);
         continue;
@@ -1625,7 +1625,12 @@ class SessionManager extends EventEmitter {
       /Created.*plan/i,
       /Entered plan mode/i,
       /Exited plan mode/i,
-      /wrote.*plan.*\.md/i
+      /wrote.*plan.*\.md/i,
+      /Saved.*plan/i,
+      /plan.*saved/i,
+      /\.claude[/\\]plans[/\\].*\.md/i,
+      /written up a plan/i,
+      /ready to execute/i
     ];
 
     for (const pattern of planPatterns) {
@@ -2605,6 +2610,9 @@ class SessionManager extends EventEmitter {
     this.planManager.stopWatching();
 
     for (const [id, session] of this.sessions) {
+      if (session.status === 'killed') {
+        continue;
+      }
       this.clearRoleInjectionWorkflow(session);
       session.startupSequence = null;
       if (session.pty) {

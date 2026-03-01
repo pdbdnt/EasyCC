@@ -12,6 +12,7 @@ class PlanManager extends EventEmitter {
     this.plansDir = plansDir || path.join(os.homedir(), '.claude', 'plans');
     this.watcher = null;
     this.planCache = new Map();
+    this.watchCallbacks = [];
   }
 
   /**
@@ -219,8 +220,14 @@ class PlanManager extends EventEmitter {
    * @param {function} callback - Called when a new plan is detected
    */
   watchPlans(callback) {
+    // Accumulate callbacks — multiple consumers can register without replacing the watcher
+    if (callback) {
+      this.watchCallbacks.push(callback);
+    }
+
+    // If watcher is already running, just register the callback — don't restart
     if (this.watcher) {
-      this.watcher.close();
+      return;
     }
 
     if (!this.plansDirectoryExists()) {
@@ -228,11 +235,18 @@ class PlanManager extends EventEmitter {
       // Try to watch parent directory for creation
       const parentDir = path.dirname(this.plansDir);
       if (fs.existsSync(parentDir)) {
-        this.watchParentForPlansDir(callback);
+        this.watchParentForPlansDir();
       }
       return;
     }
 
+    this._startWatcher();
+  }
+
+  /**
+   * Internal: start the fs.watch on the plans directory
+   */
+  _startWatcher() {
     try {
       // Cache existing files
       const existingPlans = this.listPlans();
@@ -258,8 +272,13 @@ class PlanManager extends EventEmitter {
               if (plan) {
                 const isNew = !cachedTime;
                 this.emit(isNew ? 'newPlan' : 'planUpdated', plan);
-                if (callback) {
-                  callback(plan);
+                // Notify all registered callbacks
+                for (const cb of this.watchCallbacks) {
+                  try {
+                    cb(plan);
+                  } catch (err) {
+                    console.error('Plan watch callback error:', err.message);
+                  }
                 }
               }
             }
@@ -281,16 +300,15 @@ class PlanManager extends EventEmitter {
 
   /**
    * Watch parent directory for plans dir creation
-   * @param {function} callback - Called when plans dir is created
    */
-  watchParentForPlansDir(callback) {
+  watchParentForPlansDir() {
     const parentDir = path.dirname(this.plansDir);
 
     try {
       const parentWatcher = fs.watch(parentDir, { persistent: false }, (eventType, filename) => {
         if (filename === 'plans' && fs.existsSync(this.plansDir)) {
           parentWatcher.close();
-          this.watchPlans(callback);
+          this._startWatcher();
         }
       });
     } catch (error) {
