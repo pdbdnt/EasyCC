@@ -8,6 +8,60 @@ import HintBadge from './HintBadge';
 import { getProjectDisplayName } from '../utils/projectUtils';
 import '@xterm/xterm/css/xterm.css';
 
+const TERMINAL_THEMES = {
+  midnight: {
+    background: '#0d0d0d',
+    foreground: '#e4e4e4',
+    cursor: '#00ff00',
+    cursorAccent: '#0d0d0d',
+    selectionBackground: 'rgba(255, 255, 255, 0.3)',
+    black: '#000000',
+    red: '#ff5555',
+    green: '#50fa7b',
+    yellow: '#f1fa8c',
+    blue: '#6272a4',
+    magenta: '#ff79c6',
+    cyan: '#8be9fd',
+    white: '#f8f8f2',
+    brightBlack: '#6272a4',
+    brightRed: '#ff6e6e',
+    brightGreen: '#69ff94',
+    brightYellow: '#ffffa5',
+    brightBlue: '#d6acff',
+    brightMagenta: '#ff92df',
+    brightCyan: '#a4ffff',
+    brightWhite: '#ffffff'
+  },
+  parchment: {
+    background: '#1C1714',
+    foreground: '#e8ddd0',
+    cursor: '#C15F3C',
+    cursorAccent: '#1C1714',
+    selectionBackground: 'rgba(193, 95, 60, 0.35)',
+    black: '#1C1714',
+    red: '#ff6b6b',
+    green: '#7ec99b',
+    yellow: '#f0c070',
+    blue: '#7ab0d4',
+    magenta: '#d4a0c0',
+    cyan: '#7dcfb6',
+    white: '#c8bfb0',
+    brightBlack: '#6b5e52',
+    brightRed: '#ff8c8c',
+    brightGreen: '#95e0b5',
+    brightYellow: '#f5d090',
+    brightBlue: '#90c4e0',
+    brightMagenta: '#e0b8d0',
+    brightCyan: '#95dfd0',
+    brightWhite: '#f2ebe0'
+  }
+};
+
+function getEffectiveTheme(theme) {
+  if (!theme || theme === 'dark' || theme === 'midnight') return 'midnight';
+  return theme;
+}
+
 function sanitizeSearchTerm(text) {
   return text
     .replace(/\x1b\[[0-9;]*[A-Za-z~]/g, '')
@@ -139,6 +193,7 @@ const TerminalView = forwardRef(function TerminalView({
   useEffect(() => {
     if (!terminalRef.current) return;
 
+    const effectiveTheme = getEffectiveTheme(settings?.ui?.theme);
     const term = new Terminal({
       cursorBlink: terminalSettings.cursorBlink,
       cursorStyle: terminalSettings.cursorStyle,
@@ -146,29 +201,7 @@ const TerminalView = forwardRef(function TerminalView({
       fontSize: terminalSettings.fontSize,
       scrollback: terminalSettings.scrollback,
       lineHeight: 1.2,
-      theme: {
-        background: '#0d0d0d',
-        foreground: '#e4e4e4',
-        cursor: '#00ff00',
-        cursorAccent: '#0d0d0d',
-        selectionBackground: 'rgba(255, 255, 255, 0.3)',
-        black: '#000000',
-        red: '#ff5555',
-        green: '#50fa7b',
-        yellow: '#f1fa8c',
-        blue: '#6272a4',
-        magenta: '#ff79c6',
-        cyan: '#8be9fd',
-        white: '#f8f8f2',
-        brightBlack: '#6272a4',
-        brightRed: '#ff6e6e',
-        brightGreen: '#69ff94',
-        brightYellow: '#ffffa5',
-        brightBlue: '#d6acff',
-        brightMagenta: '#ff92df',
-        brightCyan: '#a4ffff',
-        brightWhite: '#ffffff'
-      }
+      theme: TERMINAL_THEMES[effectiveTheme] || TERMINAL_THEMES.midnight
     });
 
     const fitAddon = new FitAddon();
@@ -420,6 +453,13 @@ const TerminalView = forwardRef(function TerminalView({
       fitAddonRef.current.fit();
     }
   }, [terminalSettings.fontSize, terminalSettings.fontFamily, terminalSettings.cursorStyle, terminalSettings.cursorBlink, terminalSettings.scrollback]);
+
+  // Update terminal theme when app theme changes
+  useEffect(() => {
+    if (!xtermRef.current) return;
+    const effectiveTheme = getEffectiveTheme(settings?.ui?.theme);
+    xtermRef.current.options.theme = TERMINAL_THEMES[effectiveTheme] || TERMINAL_THEMES.midnight;
+  }, [settings?.ui?.theme]);
 
   // Keep promptHistoryRef in sync (avoids re-registering keydown on every prompt)
   useEffect(() => {

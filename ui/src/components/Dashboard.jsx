@@ -79,7 +79,9 @@ function Dashboard({
   kanbanProjectFilter = null,
   onClearKanbanProjectFilter,
   onCollapsedGroupsChange,
-  initialCollapsedGroups
+  initialCollapsedGroups,
+  onThemeToggle,
+  currentTheme
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups || new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
@@ -477,6 +479,15 @@ function Dashboard({
       <div className="sidebar-header">
         <h1>EasyCC</h1>
         <div className="sidebar-header-actions">
+          {onThemeToggle && (
+            <button
+              className="theme-toggle-btn"
+              onClick={onThemeToggle}
+              title={`Switch to ${currentTheme === 'parchment' ? 'Midnight' : 'Parchment'} theme`}
+            >
+              {currentTheme === 'parchment' ? '\u263E' : '\u2600'}
+            </button>
+          )}
           <button className="settings-btn" onClick={onOpenSettings} title="Settings">
             <HintBadge
               code={settingsHint}

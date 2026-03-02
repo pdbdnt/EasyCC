@@ -55,7 +55,7 @@ const defaultSettings = {
   },
   ui: {
     defaultView: 'list',
-    theme: 'dark',
+    theme: 'midnight',
     confirmBeforeLeave: true,
     showFlipAnimation: true,
     flipAnimationSpeed: 1,

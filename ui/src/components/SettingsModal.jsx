@@ -489,8 +489,8 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                   value={localSettings.ui.theme}
                   onChange={e => updateSetting('ui', 'theme', e.target.value)}
                 >
-                  <option value="dark">Dark</option>
-                  <option value="light" disabled>Light (coming soon)</option>
+                  <option value="midnight">Midnight</option>
+                  <option value="parchment">Parchment</option>
                 </select>
               </div>
 

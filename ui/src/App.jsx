@@ -173,6 +173,24 @@ function App() {
   });
   const confirmBeforeLeave = settings?.ui?.confirmBeforeLeave ?? true;
 
+  // Apply theme to document root
+  useEffect(() => {
+    const theme = settings?.ui?.theme || 'midnight';
+    const effectiveTheme = theme === 'dark' ? 'midnight' : theme;
+    if (effectiveTheme === 'midnight') {
+      document.documentElement.removeAttribute('data-theme');
+    } else {
+      document.documentElement.setAttribute('data-theme', effectiveTheme);
+    }
+  }, [settings?.ui?.theme]);
+
+  const handleThemeToggle = useCallback(() => {
+    const current = settings?.ui?.theme || 'midnight';
+    const effectiveCurrent = current === 'dark' ? 'midnight' : current;
+    const next = effectiveCurrent === 'midnight' ? 'parchment' : 'midnight';
+    updateSettings({ ui: { theme: next } });
+  }, [settings?.ui?.theme, updateSettings]);
+
   const selectedSession = sessions.find(s => s.id === selectedId);
   const selectedAgent = selectedSession?.agentId ? agents.find(a => a.id === selectedSession.agentId) : null;
   const pendingCloseSession = sessions.find(s => s.id === pendingCloseSessionId);
@@ -1244,6 +1262,8 @@ function App() {
             onNewSession={() => setShowNewSessionModal(true)}
             onShowDetails={handleShowDetails}
             onOpenSettings={() => setShowSettingsModal(true)}
+            onThemeToggle={handleThemeToggle}
+            currentTheme={settings?.ui?.theme}
             onUpdateSession={updateSession}
             onMoveSession={moveSession}
             onResetPlacement={resetPlacement}
