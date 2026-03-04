@@ -141,6 +141,7 @@ function App() {
   const [paneSizes, setPaneSizes] = useState([]); // flex ratios for each pane
   const [kanbanColumnFilter, setKanbanColumnFilter] = useState(null); // stage ID filter from kanban
   const [kanbanProjectFilter, setKanbanProjectFilter] = useState(null); // Set of workingDirs from kanban project chips
+  const [initialKanbanProjects, setInitialKanbanProjects] = useState(null); // Set of workingDirs to seed KanbanBoard on view switch
   const [focusedColumnId, setFocusedColumnId] = useState(null); // stage ID when empty kanban column focused
   const [multiPaneLayout, setMultiPaneLayout] = useState('auto'); // 'auto' | 'row' | 'column'
   const [multiPaneSizes, setMultiPaneSizes] = useState(null); // null=equal, Array for row/col, {cols:[]} for grid
@@ -163,6 +164,7 @@ function App() {
   const kanbanRectsRef = useRef(null);
   const sidebarCardRefsRef = useRef(new Map());
   const kanbanProjectFilterRef = useRef(null);
+  const dashboardProjectFilterRef = useRef(null);
   const sidebarRectsRef = useRef(null);
 
   // Hint mode configuration from settings
@@ -956,6 +958,7 @@ function App() {
             }
           }
           setKanbanColumnFilter(null);
+          setInitialKanbanProjects(dashboardProjectFilterRef.current);
           switchViewRef.current('kanban', { reason: 'ctrl-o', fromView: currentView });
         }
         return;
@@ -1143,6 +1146,10 @@ function App() {
     kanbanProjectFilterRef.current = snapshot;
   }, []);
 
+  const handleDashboardProjectFilterChange = useCallback((projects) => {
+    dashboardProjectFilterRef.current = projects && projects.size > 0 ? new Set(projects) : null;
+  }, []);
+
   const handleClearKanbanProjectFilter = useCallback(() => {
     setKanbanProjectFilter(null);
   }, []);
@@ -1282,6 +1289,7 @@ function App() {
             onClearKanbanFilter={handleClearKanbanFilter}
             kanbanProjectFilter={kanbanProjectFilter}
             onClearKanbanProjectFilter={handleClearKanbanProjectFilter}
+            onProjectFilterChange={handleDashboardProjectFilterChange}
             stages={stages}
             viewTransition={viewTransition}
             flipTriggerNonce={flipTriggerNonce}
@@ -1330,6 +1338,7 @@ function App() {
             onSidebarRectsConsumed={handleSidebarRectsConsumed}
             viewTransition={viewTransition}
             onProjectFilterChange={handleKanbanProjectFilterChange}
+            initialSelectedProjects={initialKanbanProjects}
           />
         </main>
       ) : currentView === 'agents' ? (

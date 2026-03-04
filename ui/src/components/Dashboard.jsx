@@ -78,6 +78,7 @@ function Dashboard({
   sidebarCardRefsRef,
   kanbanProjectFilter = null,
   onClearKanbanProjectFilter,
+  onProjectFilterChange,
   onCollapsedGroupsChange,
   initialCollapsedGroups,
   onThemeToggle,
@@ -98,6 +99,13 @@ function Dashboard({
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [hidePaused, setHidePaused] = useState(false);
   const projectDropdownRef = useRef(null);
+
+  // Sync project filter from Kanban view when switching back via Ctrl+O
+  useEffect(() => {
+    if (kanbanProjectFilter && kanbanProjectFilter.size > 0) {
+      setProjectFilters(new Set(kanbanProjectFilter));
+    }
+  }, [kanbanProjectFilter]);
 
   const projectAliases = settings?.projectAliases || {};
 
@@ -143,9 +151,10 @@ function Dashboard({
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
+      onProjectFilterChange?.(next);
       return next;
     });
-  }, []);
+  }, [onProjectFilterChange]);
 
   // Derive unique projects from all sessions for filter dropdown
   const uniqueProjects = useMemo(() => {
@@ -548,7 +557,7 @@ function Dashboard({
           </button>
           {projectDropdownOpen && (
             <div className="project-filter-menu">
-              <label className="project-filter-item" onClick={() => { setProjectFilters(new Set()); }}>
+              <label className="project-filter-item" onClick={() => { setProjectFilters(new Set()); onProjectFilterChange?.(new Set()); }}>
                 <input type="checkbox" checked={projectFilters.size === 0} readOnly />
                 All Projects
               </label>
@@ -579,7 +588,7 @@ function Dashboard({
       {(stageFilter || projectFilters.size > 0) && (
         <div className="kanban-filter-chip">
           <span>Filtered locally</span>
-          <button onClick={() => { setStageFilter(''); setProjectFilters(new Set()); }} title="Clear all local filters">&times;</button>
+          <button onClick={() => { setStageFilter(''); setProjectFilters(new Set()); onProjectFilterChange?.(new Set()); }} title="Clear all local filters">&times;</button>
         </div>
       )}
       {selectedIds.length > 1 && (

@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useLayoutEffect, useRef } from 'react';
+import { useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import KanbanColumn from './KanbanColumn';
 import KanbanSessionColumn from './KanbanSessionColumn';
 import TaskModal from './TaskModal';
@@ -38,7 +38,8 @@ function KanbanBoard({
   s2kFlipTriggerNonce = 0,
   onSidebarRectsConsumed,
   viewTransition,
-  onProjectFilterChange
+  onProjectFilterChange,
+  initialSelectedProjects
 }) {
   const [draggingTaskId, setDraggingTaskId] = useState(null);
   const [draggingSessionId, setDraggingSessionId] = useState(null);
@@ -51,6 +52,17 @@ function KanbanBoard({
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [selectedProjects, setSelectedProjects] = useState(new Set());
   const lastS2kNonceRef = useRef(0);
+
+  // Sync project filter from Sessions view on Ctrl+O switch
+  useEffect(() => {
+    if (initialSelectedProjects) {
+      setSelectedProjects(new Set(initialSelectedProjects));
+      onProjectFilterChange?.(new Set(initialSelectedProjects));
+    } else {
+      setSelectedProjects(new Set());
+      onProjectFilterChange?.(new Set());
+    }
+  }, [initialSelectedProjects]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // s2k FLIP animation: animate cards from sidebar positions to kanban positions
   useLayoutEffect(() => {
