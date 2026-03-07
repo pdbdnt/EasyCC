@@ -2184,8 +2184,9 @@ class SessionManager extends EventEmitter {
       return plans;
     }
 
-    // Fallback for non-Claude sessions: use stored plans but filter by exact directory match
-    const normalizedSessionDir = session.workingDir?.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '') || '';
+    // Fallback for non-Claude sessions: return plans explicitly associated with this session.
+    // These come from direct user actions such as pasting or manually attaching a plan,
+    // so they must remain visible even when the plan body references a different path format.
     const plans = [];
 
     for (const planPath of (session.plans || [])) {
@@ -2193,15 +2194,6 @@ class SessionManager extends EventEmitter {
       if (!plan) {
         console.warn(`getSessionPlans: getPlanContent returned null for path="${planPath}" session=${id} cliType=${session.cliType}`);
         continue;
-      }
-
-      // Plans explicitly associated with this session are always included.
-      // Only filter out plans whose workingDir explicitly mismatches.
-      if (plan.workingDir) {
-        const normalizedPlanDir = plan.workingDir.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
-        if (normalizedPlanDir !== normalizedSessionDir) {
-          continue;
-        }
       }
       plans.push(plan);
     }
