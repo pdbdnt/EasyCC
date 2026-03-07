@@ -200,7 +200,7 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
               key={segment.path}
               type="button"
               className="breadcrumb-btn"
-              onClick={() => { setCurrentBase(segment.path); setFilterText(''); }}
+              onClick={() => { setCurrentBase(segment.path); onSelectPath?.(segment.path); setFilterText(''); }}
               disabled={disabled || loadingFolders}
             >
               {segment.label}
@@ -258,7 +258,7 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
                   if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
                   setCurrentBase(folderPath);
                   setCustomPath('');
-                  onSelectPath?.('');
+                  onSelectPath?.(folderPath);
                   setCustomPathConfirmed(false);
                   setFilterText('');
                 }}
@@ -277,7 +277,7 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
                       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
                       setCurrentBase(folderPath);
                       setCustomPath('');
-                      onSelectPath?.('');
+                      onSelectPath?.(folderPath);
                       setCustomPathConfirmed(false);
                       setFilterText('');
                     }}
