@@ -9,6 +9,7 @@ const PlanManager = require('./planManager');
 const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStatusToStage } = require('./stagesConfig');
 const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInputUtils');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
+const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
 const MEDIUM_OUTPUT_BUFFER_CHUNKS = 3000;
 
@@ -119,6 +120,7 @@ class SessionManager extends EventEmitter {
           plans: sessionData.plans || [],
           promptBuffer: '',
           promptHistory: sessionData.promptHistory || [],
+          promptFlushTimer: null,
           inEscapeSeq: false,
           // Kanban stage fields
           stage: sessionData.stage || 'todo',
@@ -771,7 +773,8 @@ class SessionManager extends EventEmitter {
       tags: [],
       plans: [],
       promptBuffer: '',      // Characters accumulated until Enter
-      promptHistory: [],     // Last 10 prompts [{text, timestamp}]
+      promptHistory: [],     // Recent prompts [{text, timestamp}]
+      promptFlushTimer: null,
       inEscapeSeq: false,    // Track if we're inside an escape sequence
       isComposingPrompt: false, // True while user types draft text without Enter
       lastSubmittedInputAtMs: 0, // Timestamp of last submitted input (Enter/newline)
@@ -1048,6 +1051,10 @@ class SessionManager extends EventEmitter {
     if (session.statusDebounceTimer) {
       clearTimeout(session.statusDebounceTimer);
       session.statusDebounceTimer = null;
+    }
+    if (session.promptFlushTimer) {
+      clearTimeout(session.promptFlushTimer);
+      session.promptFlushTimer = null;
     }
     this.clearRoleInjectionWorkflow(session);
 
@@ -1697,14 +1704,36 @@ class SessionManager extends EventEmitter {
           currentTask: session.currentTask
         });
 
-        // When transitioning to idle, reconcile prompts from JSONL transcript
+        // When transitioning to idle or waiting, reconcile prompts from JSONL transcript
         // to catch any missed by keystroke-based detection (e.g. slash commands)
-        if (session.status === 'idle' && ['active', 'thinking', 'editing'].includes(oldStatus)) {
+        if (['idle', 'waiting'].includes(session.status) && ['active', 'thinking', 'editing'].includes(oldStatus)) {
           this.reconcilePromptsFromTranscript(session);
         }
       }
       session.statusDebounceTimer = null;
     }, 500);
+  }
+
+  clearPromptFlushTimer(session) {
+    if (!session?.promptFlushTimer) {
+      return;
+    }
+    clearTimeout(session.promptFlushTimer);
+    session.promptFlushTimer = null;
+  }
+
+  flushPromptBuffer(session) {
+    if (!session) {
+      return;
+    }
+
+    this.clearPromptFlushTimer(session);
+    const promptText = session.promptBuffer.trim();
+    if (promptText.length > 3) {
+      this.addPromptToHistory(session, promptText);
+    }
+    session.promptBuffer = '';
+    session.isComposingPrompt = false;
   }
 
   /**
@@ -1727,6 +1756,7 @@ class SessionManager extends EventEmitter {
     if (session.statusDebounceTimer) {
       clearTimeout(session.statusDebounceTimer);
     }
+    this.clearPromptFlushTimer(session);
     this.clearRoleInjectionWorkflow(session);
 
     // Close Claude sessions watcher
@@ -1854,47 +1884,52 @@ class SessionManager extends EventEmitter {
           this.addPromptToHistory(session, combined);
         }
         session.promptBuffer = '';
+        this.clearPromptFlushTimer(session);
         session.lastActivity = new Date();
         session.isComposingPrompt = false;
       } else {
-        for (const char of text) {
-        const code = char.charCodeAt(0);
+        for (const char of filteredText) {
+          const code = char.charCodeAt(0);
 
-        // Detect start of escape sequence (ESC = 0x1b)
-        if (code === 0x1b) {
-          session.inEscapeSeq = true;
-          continue;
-        }
+          // Detect start of escape sequence (ESC = 0x1b)
+          if (code === 0x1b) {
+            session.inEscapeSeq = true;
+            continue;
+          }
 
-        // If in escape sequence, wait for terminating character
-        if (session.inEscapeSeq) {
-          // Escape sequences end with a letter (A-Z, a-z) or ~
-          if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 126) {
-            session.inEscapeSeq = false;
+          // If in escape sequence, wait for terminating character
+          if (session.inEscapeSeq) {
+            // Escape sequences end with a letter (A-Z, a-z) or ~
+            if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 126) {
+              session.inEscapeSeq = false;
+            }
+            continue;
           }
-          continue;
-        }
 
-        if (char === '\r' || char === '\n') {
-          const promptText = session.promptBuffer.trim();
-          if (promptText.length > 3) {  // Skip short confirmations like "y"
-            this.addPromptToHistory(session, promptText);
+          if (char === '\r' || char === '\n') {
+            this.clearPromptFlushTimer(session);
+            session.promptBuffer += '\n';
+            session.promptFlushTimer = setTimeout(() => {
+              this.flushPromptBuffer(session);
+            }, 250);
+            session.lastActivity = new Date();
+            session.isComposingPrompt = session.promptBuffer.trim().length > 0;
+          } else if (char === '\x7f' || char === '\b') {
+            // Handle backspace
+            session.promptBuffer = session.promptBuffer.slice(0, -1);
+            if (session.promptBuffer.length === 0) {
+              session.isComposingPrompt = false;
+            }
+          } else if (code >= 32 && code < 127) {
+            // Only add printable ASCII characters
+            session.promptBuffer += char;
+            session.isComposingPrompt = true;
           }
-          session.promptBuffer = '';
-          session.lastActivity = new Date();
-          session.isComposingPrompt = false;
-        } else if (char === '\x7f' || char === '\b') {
-          // Handle backspace
-          session.promptBuffer = session.promptBuffer.slice(0, -1);
-          if (session.promptBuffer.length === 0) {
-            session.isComposingPrompt = false;
-          }
-        } else if (code >= 32 && code < 127) {
-          // Only add printable ASCII characters
-          session.promptBuffer += char;
-          session.isComposingPrompt = true;
         }
       }
+
+      if (isSubmittedInput) {
+        this.flushPromptBuffer(session);
       }
 
       // Only submitted input (Enter/newline) flips state back to active.
@@ -1933,13 +1968,29 @@ class SessionManager extends EventEmitter {
 
     if (cleanText.length <= 3) return;  // Skip if too short after cleanup
 
+    const trimmedForCheck = cleanText.trimStart();
+    if (
+      trimmedForCheck.startsWith('<task-notification') ||
+      trimmedForCheck.startsWith('<tool-use-') ||
+      trimmedForCheck.startsWith('<system-') ||
+      trimmedForCheck.startsWith('<command-') ||
+      trimmedForCheck.startsWith('<environment-')
+    ) {
+      return;
+    }
+
+    const last = session.promptHistory[session.promptHistory.length - 1];
+    if (last && last.text.slice(0, 50) === cleanText.slice(0, 50)) {
+      return;
+    }
+
     const truncatedText = cleanText.length > MAX_PROMPT_HISTORY_CHARS
       ? `${cleanText.slice(0, MAX_PROMPT_HISTORY_CHARS)}\n...[truncated]`
       : cleanText;
 
     const prompt = { text: truncatedText, timestamp: new Date().toISOString() };
     session.promptHistory.push(prompt);
-    if (session.promptHistory.length > 10) {
+    if (session.promptHistory.length > MAX_PROMPT_HISTORY_COUNT) {
       session.promptHistory.shift();
     }
     this.dataStore.saveSession(session);
@@ -1994,17 +2045,41 @@ class SessionManager extends EventEmitter {
           ? `${tp.text.slice(0, MAX_PROMPT_HISTORY_CHARS)}\n...[truncated]`
           : tp.text;
 
-        session.promptHistory.push({
-          text: truncatedText,
-          timestamp: tp.timestamp || new Date().toISOString()
-        });
-        added = true;
+        let replaced = false;
+        if (tp.timestamp) {
+          const tpTime = new Date(tp.timestamp).getTime();
+          for (const existing of session.promptHistory) {
+            const existingTime = new Date(existing.timestamp).getTime();
+            if (Number.isNaN(tpTime) || Number.isNaN(existingTime)) {
+              continue;
+            }
+            if (Math.abs(tpTime - existingTime) < 5000) {
+              if (existing.text.slice(0, 50) !== truncatedText.slice(0, 50)) {
+                existing.text = truncatedText;
+                existing.timestamp = tp.timestamp;
+                existingTexts.add(truncatedText.slice(0, 100));
+                replaced = true;
+                added = true;
+              }
+              break;
+            }
+          }
+        }
+
+        if (!replaced) {
+          session.promptHistory.push({
+            text: truncatedText,
+            timestamp: tp.timestamp || new Date().toISOString()
+          });
+          existingTexts.add(truncatedText.slice(0, 100));
+          added = true;
+        }
       }
 
       if (added) {
-        // Sort by timestamp and trim to last 10
+        // Sort by timestamp and trim to the configured history window.
         session.promptHistory.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-        while (session.promptHistory.length > 10) {
+        while (session.promptHistory.length > MAX_PROMPT_HISTORY_COUNT) {
           session.promptHistory.shift();
         }
 
@@ -2232,8 +2307,16 @@ class SessionManager extends EventEmitter {
             const text = typeof content === 'string' ? content :
               Array.isArray(content) ? content.filter(c => c.type === 'text').map(c => c.text).join('\n') :
               '';
+            const trimmedText = text.trimStart();
 
-            if (text) {
+            if (
+              text &&
+              !trimmedText.startsWith('<task-notification') &&
+              !trimmedText.startsWith('<tool-use-') &&
+              !trimmedText.startsWith('<system-') &&
+              !trimmedText.startsWith('<command-') &&
+              !trimmedText.startsWith('<environment-')
+            ) {
               userPrompts.push({
                 text: text.length > 500 ? text.slice(0, 500) + '...' : text,
                 timestamp: entry.timestamp,

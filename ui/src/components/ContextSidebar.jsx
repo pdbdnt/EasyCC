@@ -98,7 +98,7 @@ function PromptsWidget({ recentPrompts, onShowModal }) {
     <div className="prompts-mini-list">
       {recentPrompts.slice(0, 5).map((prompt, index) => (
         <div key={index} className="prompt-mini-item" title={prompt.text}>
-          {prompt.text.length > 50 ? prompt.text.substring(0, 50) + '...' : prompt.text}
+          {prompt.text}
         </div>
       ))}
       {recentPrompts.length > 5 && (

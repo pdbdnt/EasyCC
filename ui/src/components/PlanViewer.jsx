@@ -271,7 +271,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
               </span>
             ) : (
               <span className="version-indicator">
-                Current • {versions.length} version{versions.length !== 1 ? 's' : ''}
+                Current • {versions.length + 1} version{versions.length !== 0 ? 's' : ''}
               </span>
             )}
             {versions.length > 0 && (
