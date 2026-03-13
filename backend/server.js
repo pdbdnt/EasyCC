@@ -26,7 +26,7 @@ const agentStore = new AgentStore();
 const taskStore = new TaskStore();
 const { sessionStatusToStage } = require('./stagesConfig');
 
-const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || path.join(os.homedir(), 'apps');
+const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || path.parse(os.homedir()).root;
 
 // Per-session debounce timers for kanban stage sync (3s stability)
 const kanbanSyncTimers = new Map();
@@ -464,10 +464,6 @@ async function start() {
     const requestedBase = normalizeWindowsPath(request.query.base || root) || root;
 
     try {
-      if (!isPathWithinRoot(requestedBase, root)) {
-        return reply.status(403).send({ error: `Path must be within ${root}` });
-      }
-
       if (!fs.existsSync(requestedBase) || !fs.statSync(requestedBase).isDirectory()) {
         return reply.status(400).send({ error: 'Requested path is not a directory' });
       }
@@ -1179,6 +1175,21 @@ async function start() {
 
   // Settings API
 
+  // Export projectAliases to ~/.claude/project-aliases.json for statusline integration
+  function exportProjectAliases(aliases) {
+    try {
+      const claudeDir = path.join(os.homedir(), '.claude');
+      if (!fs.existsSync(claudeDir)) {
+        fs.mkdirSync(claudeDir, { recursive: true });
+      }
+      const aliasPath = path.join(claudeDir, 'project-aliases.json');
+      fs.writeFileSync(aliasPath, JSON.stringify(aliases || {}, null, 2), 'utf8');
+    } catch (e) { /* non-critical */ }
+  }
+
+  // Export aliases on startup
+  exportProjectAliases(settingsManager.loadSettings().projectAliases);
+
   // Get current settings
   app.get('/api/settings', async () => {
     return { settings: settingsManager.loadSettings() };
@@ -1198,6 +1209,7 @@ async function start() {
     }
 
     const settings = settingsManager.updateSettings(updates);
+    exportProjectAliases(settings.projectAliases);
     return { settings };
   });
 

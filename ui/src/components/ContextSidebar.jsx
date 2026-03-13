@@ -899,6 +899,73 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
     <div className="context-sidebar" onClick={onFocus}>
       <div className="context-sidebar-header" style={{ position: 'relative' }}>
         <h3>Context</h3>
+        <div className="context-header-meta">
+          <span
+            className="context-meta-role"
+            title={session.role || 'No role — click to edit'}
+            onClick={() => setIsEditingRole(true)}
+          >
+            {session.role ? (session.role.length > 20 ? session.role.slice(0, 20) + '…' : session.role) : 'No role'}
+          </span>
+          <div className="cli-type-selector">
+            {[
+              { value: 'claude', label: 'CC' },
+              { value: 'codex', label: 'CDX' },
+              { value: 'terminal', label: 'TRM' },
+            ].map(({ value, label }) => (
+              <button
+                key={value}
+                className={`cli-type-btn ${value}${session.cliType === value ? ' active' : ''}`}
+                onClick={() => {
+                  if (session.cliType !== value) onUpdateSession(session.id, { cliType: value });
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="context-meta-claude-wrap" ref={sessionPickerRef}>
+            <span
+              className="context-meta-claude"
+              title={session.claudeSessionId || 'Not linked — click to link'}
+              onClick={session.cliType === 'terminal' && !session.claudeSessionId ? handleGenerateClaudeSession : handleOpenSessionPicker}
+            >
+              {session.claudeSessionId ? session.claudeSessionId.slice(0, 8) + '..' : '—'}
+            </span>
+            {showSessionPicker && (
+              <div className="claude-session-picker">
+                {loadingClaudeSessions ? (
+                  <div className="claude-session-picker-empty">Loading...</div>
+                ) : availableClaudeSessions.length > 0 ? (
+                  availableClaudeSessions.map((cs) => (
+                    <div
+                      key={cs.sessionId}
+                      className={`claude-session-picker-item ${cs.sessionId === session.claudeSessionId ? 'current' : ''}`}
+                      onClick={() => handleLinkClaudeSession(cs.sessionId)}
+                    >
+                      <div className="claude-session-picker-header">
+                        <span className="claude-session-picker-id">
+                          {cs.sessionId.slice(0, 8)}..
+                          {cs.sessionId === session.claudeSessionId && ' \u2713'}
+                        </span>
+                        <span className="claude-session-picker-meta">
+                          {cs.promptCount} prompt{cs.promptCount !== 1 ? 's' : ''} · {formatRelativeTime(cs.modified)}
+                        </span>
+                      </div>
+                      {cs.firstPrompt && (
+                        <div className="claude-session-picker-prompt">
+                          {cs.firstPrompt.length > 60 ? cs.firstPrompt.slice(0, 60) + '...' : cs.firstPrompt}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div className="claude-session-picker-empty">No Claude sessions found for this directory</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
         <div className="context-sidebar-header-actions">
           <div ref={widgetPickerRef} style={{ position: 'relative' }}>
             <button
@@ -933,58 +1000,23 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
         </div>
       </div>
 
-      <div className="claude-session-row role-row">
-        <span className="claude-session-label">Role:</span>
-        {isEditingRole ? (
-          <div className="role-edit-container">
-            <textarea
-              className="context-notes"
-              value={roleDraft}
-              onChange={(e) => setRoleDraft(e.target.value)}
-              rows={4}
-              placeholder="Optional role/system prompt"
-            />
-            <div className="role-edit-actions">
-              <button
-                className="claude-session-link-btn"
-                onClick={handleSaveRole}
-              >
-                Save
-              </button>
-              <button
-                className="claude-session-link-btn"
-                onClick={() => {
-                  setRoleDraft(session?.role || '');
-                  setIsEditingRole(false);
-                }}
-              >
-                Cancel
-              </button>
-            </div>
+      {/* Role editing (expandable below header) */}
+      {isEditingRole && (
+        <div className="context-role-edit-row">
+          <textarea
+            className="context-notes"
+            value={roleDraft}
+            onChange={(e) => setRoleDraft(e.target.value)}
+            rows={3}
+            placeholder="Optional role/system prompt"
+            autoFocus
+          />
+          <div className="role-edit-actions">
+            <button className="claude-session-link-btn" onClick={handleSaveRole}>Save</button>
+            <button className="claude-session-link-btn" onClick={() => { setRoleDraft(session?.role || ''); setIsEditingRole(false); }}>Cancel</button>
           </div>
-        ) : (
-          <>
-            <span
-              className="claude-session-id"
-              title={session.role || 'No role configured'}
-              onClick={() => setIsRoleExpanded(!isRoleExpanded)}
-            >
-              {!session.role
-                ? 'None'
-                : isRoleExpanded
-                  ? session.role
-                  : `${session.role.slice(0, 64)}${session.role.length > 64 ? '...' : ''}`}
-            </span>
-            <button
-              className="claude-session-link-btn"
-              onClick={() => setIsEditingRole(true)}
-              title="Edit role (applies on next resume/restart)"
-            >
-              Edit
-            </button>
-          </>
-        )}
-      </div>
+        </div>
+      )}
 
       {agent && (
         <div className="claude-session-row role-row">
@@ -1000,76 +1032,6 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
           </span>
         </div>
       )}
-
-      {/* Fixed rows: CLI Type + Claude Session */}
-      <div className="cli-type-selector-row">
-        <span className="cli-type-selector-label">Type:</span>
-        <div className="cli-type-selector">
-          {[
-            { value: 'claude', label: 'CC' },
-            { value: 'codex', label: 'CDX' },
-            { value: 'terminal', label: 'TRM' },
-          ].map(({ value, label }) => (
-            <button
-              key={value}
-              className={`cli-type-btn ${value}${session.cliType === value ? ' active' : ''}`}
-              onClick={() => {
-                if (session.cliType !== value) onUpdateSession(session.id, { cliType: value });
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="claude-session-row" ref={sessionPickerRef}>
-        <span className="claude-session-label">Claude:</span>
-        <span className="claude-session-id" title={session.claudeSessionId || 'Not linked'}>
-          {session.claudeSessionId ? session.claudeSessionId.slice(0, 8) + '..' : 'Not linked'}
-        </span>
-        {session.cliType === 'terminal' && !session.claudeSessionId ? (
-          <button className="claude-session-link-btn" onClick={handleGenerateClaudeSession} title="Generate session ID and inject cc command into terminal">
-            Generate
-          </button>
-        ) : (
-          <button className="claude-session-link-btn" onClick={handleOpenSessionPicker} title="Link to a Claude session">
-            {session.claudeSessionId ? 'Change' : 'Link'}
-          </button>
-        )}
-        {showSessionPicker && (
-          <div className="claude-session-picker">
-            {loadingClaudeSessions ? (
-              <div className="claude-session-picker-empty">Loading...</div>
-            ) : availableClaudeSessions.length > 0 ? (
-              availableClaudeSessions.map((cs) => (
-                <div
-                  key={cs.sessionId}
-                  className={`claude-session-picker-item ${cs.sessionId === session.claudeSessionId ? 'current' : ''}`}
-                  onClick={() => handleLinkClaudeSession(cs.sessionId)}
-                >
-                  <div className="claude-session-picker-header">
-                    <span className="claude-session-picker-id">
-                      {cs.sessionId.slice(0, 8)}..
-                      {cs.sessionId === session.claudeSessionId && ' \u2713'}
-                    </span>
-                    <span className="claude-session-picker-meta">
-                      {cs.promptCount} prompt{cs.promptCount !== 1 ? 's' : ''} · {formatRelativeTime(cs.modified)}
-                    </span>
-                  </div>
-                  {cs.firstPrompt && (
-                    <div className="claude-session-picker-prompt">
-                      {cs.firstPrompt.length > 60 ? cs.firstPrompt.slice(0, 60) + '...' : cs.firstPrompt}
-                    </div>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="claude-session-picker-empty">No Claude sessions found for this directory</div>
-            )}
-          </div>
-        )}
-      </div>
 
       {/* Widget Container */}
       <div className="widget-container" ref={widgetContainerRef}>

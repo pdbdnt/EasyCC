@@ -111,6 +111,16 @@ function NewSessionModal({ onClose, onCreate, defaultWorkingDir = '' }) {
                   <option value="terminal">Terminal (PowerShell)</option>
                 </select>
               </div>
+
+              <div className="form-group">
+                <label>Working Directory</label>
+                <DirectoryBrowser
+                  selectedPath={selectedPath}
+                  onSelectPath={setSelectedPath}
+                  defaultBase={normalizedDefaultWorkingDir || undefined}
+                  disabled={loading}
+                />
+              </div>
             </div>
 
             <div className="form-group-right">
@@ -127,16 +137,6 @@ function NewSessionModal({ onClose, onCreate, defaultWorkingDir = '' }) {
                   placeholder="Optional. Define the role or system prompt for this session."
                   disabled={loading}
                   className="custom-path-input role-input"
-                />
-              </div>
-
-              <div className="form-group">
-                <label>Working Directory</label>
-                <DirectoryBrowser
-                  selectedPath={selectedPath}
-                  onSelectPath={setSelectedPath}
-                  defaultBase={normalizedDefaultWorkingDir || undefined}
-                  disabled={loading}
                 />
               </div>
             </div>

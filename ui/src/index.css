@@ -1596,19 +1596,79 @@ textarea::placeholder {
 
 .context-sidebar-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 16px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
+  gap: 6px;
 }
 
 .context-sidebar-header h3 {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
+  flex-shrink: 0;
 }
+
+.context-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.context-meta-role {
+  font-size: 10px;
+  color: var(--text-muted);
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border-color);
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.context-meta-role:hover {
+  border-color: var(--accent-color);
+  color: var(--text-secondary);
+}
+
+.context-meta-claude {
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--text-muted);
+  opacity: 0.7;
+  cursor: pointer;
+  padding: 1px 4px;
+  flex-shrink: 0;
+}
+
+.context-meta-claude:hover {
+  opacity: 1;
+  color: var(--accent-color);
+}
+
+.context-meta-claude-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.context-role-edit-row {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.context-role-edit-row .context-notes {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
 
 .sidebar-close-btn {
   background: none;
@@ -6061,13 +6121,13 @@ textarea::placeholder {
 /* ========== Directory Browser Component ========== */
 
 .modal-wide {
-  max-width: 700px;
+  max-width: 920px;
   width: 90%;
 }
 
 .modal-form-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.2fr 1fr;
   gap: 0 20px;
 }
 
@@ -6124,7 +6184,7 @@ textarea::placeholder {
 }
 
 .folder-list {
-  max-height: 200px;
+  max-height: 340px;
   overflow-y: auto;
 }
 

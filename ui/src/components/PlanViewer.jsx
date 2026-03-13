@@ -261,7 +261,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
           <div className="version-nav-center">
             {isViewingVersion ? (
               <span className="version-indicator">
-                Version {versions.length - currentVersionIndex} of {versions.length}
+                Version {versions.length - currentVersionIndex} of {versions.length + 1}
                 {versions[currentVersionIndex] && (
                   <span className="version-date">
                     {' • '}

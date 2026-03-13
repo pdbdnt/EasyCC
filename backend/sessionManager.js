@@ -1443,10 +1443,6 @@ class SessionManager extends EventEmitter {
           status: 'idle',
           currentTask: session.currentTask
         });
-        // Reconcile prompts from transcript when going idle
-        if (['active', 'thinking', 'editing'].includes(oldStatus)) {
-          this.reconcilePromptsFromTranscript(session);
-        }
       }
     }, 1000);
   }
@@ -1704,11 +1700,6 @@ class SessionManager extends EventEmitter {
           currentTask: session.currentTask
         });
 
-        // When transitioning to idle or waiting, reconcile prompts from JSONL transcript
-        // to catch any missed by keystroke-based detection (e.g. slash commands)
-        if (['idle', 'waiting'].includes(session.status) && ['active', 'thinking', 'editing'].includes(oldStatus)) {
-          this.reconcilePromptsFromTranscript(session);
-        }
       }
       session.statusDebounceTimer = null;
     }, 500);
