@@ -861,6 +861,7 @@ class SessionManager extends EventEmitter {
       if (sessionAge < 10000 && exitCode !== 0) {
         debugLog(`Session ${id} PAUSED due to early exit (age=${sessionAge}ms, exitCode=${exitCode})`);
         session.status = 'paused';
+        this._clearWriteQueue(session);
         session.pty = null;
         this.dataStore.saveSession(session);
         this.emit('statusChange', {
@@ -1061,6 +1062,7 @@ class SessionManager extends EventEmitter {
     // Kill the PTY process
     try {
       if (session.pty) {
+        this._clearWriteQueue(session);
         session.pty.kill();
         session.pty = null;
       }
@@ -1261,6 +1263,7 @@ class SessionManager extends EventEmitter {
         if (sessionAge < 10000 && exitCode !== 0) {
           debugLog(`Session ${id} PAUSED due to early exit after resume (age=${sessionAge}ms, exitCode=${exitCode})`);
           session.status = 'paused';
+          this._clearWriteQueue(session);
           session.pty = null;
           this.dataStore.saveSession(session);
           this.emit('statusChange', {
@@ -1829,6 +1832,75 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Write text to PTY in chunks to avoid OS input buffer overflow.
+   * Uses a per-session queue to prevent interleaving from concurrent sendInput() calls.
+   */
+  _writeToPty(session, text) {
+    const CHUNK_BYTE_LIMIT = 1024;
+
+    if (session._writeDraining) {
+      if (!session._writeQueue) session._writeQueue = [];
+      this._splitAndEnqueue(session, text, CHUNK_BYTE_LIMIT);
+      return;
+    }
+
+    if (Buffer.byteLength(text, 'utf8') <= CHUNK_BYTE_LIMIT) {
+      if (session.pty) session.pty.write(text);
+      return;
+    }
+
+    if (!session._writeQueue) session._writeQueue = [];
+    this._splitAndEnqueue(session, text, CHUNK_BYTE_LIMIT);
+    this._drainWriteQueue(session);
+  }
+
+  _splitAndEnqueue(session, text, byteCap) {
+    let pos = 0;
+    while (pos < text.length) {
+      let end = pos;
+      let bytes = 0;
+      while (end < text.length) {
+        const cp = text.codePointAt(end);
+        const charLen = cp > 0xFFFF ? 2 : 1;
+        const charBytes = cp <= 0x7F ? 1 : cp <= 0x7FF ? 2 : cp <= 0xFFFF ? 3 : 4;
+        if (bytes + charBytes > byteCap && end > pos) break;
+        bytes += charBytes;
+        end += charLen;
+      }
+      session._writeQueue.push(text.slice(pos, end));
+      pos = end;
+    }
+  }
+
+  _drainWriteQueue(session) {
+    if (!session._writeQueue?.length) {
+      session._writeDraining = false;
+      return;
+    }
+    session._writeDraining = true;
+    const chunk = session._writeQueue.shift();
+    if (session.pty) {
+      session.pty.write(chunk);
+    } else {
+      session._writeQueue = [];
+      session._writeDraining = false;
+      return;
+    }
+    session._drainTimer = setTimeout(() => {
+      this._drainWriteQueue(session);
+    }, 5);
+  }
+
+  _clearWriteQueue(session) {
+    if (session._drainTimer) {
+      clearTimeout(session._drainTimer);
+      session._drainTimer = null;
+    }
+    session._writeQueue = [];
+    session._writeDraining = false;
+  }
+
+  /**
    * Send input to a session
    * @param {string} id - Session ID
    * @param {string} text - Text to send
@@ -1848,7 +1920,7 @@ class SessionManager extends EventEmitter {
         return true; // Nothing left to send after filtering
       }
 
-      session.pty.write(filteredText);
+      this._writeToPty(session, filteredText);
       const isSubmittedInput = hasSubmittedInput(filteredText);
       if (isSubmittedInput) {
         session.lastSubmittedInputAtMs = Date.now();
@@ -2682,7 +2754,8 @@ class SessionManager extends EventEmitter {
       this.clearRoleInjectionWorkflow(session);
       session.startupSequence = null;
       if (session.pty) {
-        session.pty.kill();  // Kill PTY process only
+        this._clearWriteQueue(session);
+        session.pty.kill();
       }
       session.status = 'paused';
       session.pty = null;

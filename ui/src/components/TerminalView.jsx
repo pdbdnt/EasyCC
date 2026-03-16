@@ -216,23 +216,6 @@ const TerminalView = forwardRef(function TerminalView({
     term.open(terminalRef.current);
     fitAddon.fit();
 
-    // Single source of truth for all paste operations (Ctrl+V, context-menu, etc.)
-    const xtermTextarea = terminalRef.current.querySelector('textarea');
-    const handlePaste = (e) => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      const text = e.clipboardData?.getData('text/plain');
-      if (text && wsRef.current?.readyState === WebSocket.OPEN) {
-        const pastedText = text.replace(/(\r\n|\r|\n)+$/, '');
-        if (pastedText) {
-          wsRef.current.send(JSON.stringify({ type: 'input', data: pastedText }));
-        }
-      }
-    };
-    if (xtermTextarea) {
-      xtermTextarea.addEventListener('paste', handlePaste, { capture: true });
-    }
-
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') {
         return true;
@@ -289,7 +272,8 @@ const TerminalView = forwardRef(function TerminalView({
         return false;
       }
 
-      // Block xterm from processing paste key; browser paste event still fires → handlePaste catches it
+      // Let browser handle paste (Ctrl+V) so xterm.js picks up the paste event
+      // natively — it wraps pasted text with bracket paste sequences when the CLI enables them.
       const pasteKey = keyboardSettingsRef.current?.pasteKey || 'Ctrl+V';
       if (matchKeyCombo(event, pasteKey)) {
         return false;
@@ -398,9 +382,6 @@ const TerminalView = forwardRef(function TerminalView({
     term.focus();
 
     return () => {
-      if (xtermTextarea) {
-        xtermTextarea.removeEventListener('paste', handlePaste, { capture: true });
-      }
       if (ctrlCTimerRef.current) {
         clearTimeout(ctrlCTimerRef.current);
         ctrlCTimerRef.current = null;
