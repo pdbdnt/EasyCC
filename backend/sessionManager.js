@@ -1727,6 +1727,7 @@ class SessionManager extends EventEmitter {
       this.addPromptToHistory(session, promptText);
     }
     session.promptBuffer = '';
+    session.inEscapeSeq = false;
     session.isComposingPrompt = false;
   }
 
@@ -1951,6 +1952,11 @@ class SessionManager extends EventEmitter {
         session.lastActivity = new Date();
         session.isComposingPrompt = false;
       } else {
+        // Reset escape sequence state at the start of each new input event.
+        // xterm.js sends complete sequences in a single onData call, so a stale
+        // inEscapeSeq=true from a previous call means that call had a bare \x1b
+        // (e.g. Escape key press) that should not bleed into this call.
+        session.inEscapeSeq = false;
         for (const char of filteredText) {
           const code = char.charCodeAt(0);
 
@@ -1960,10 +1966,10 @@ class SessionManager extends EventEmitter {
             continue;
           }
 
-          // If in escape sequence, wait for terminating character
+          // If in escape sequence, wait for terminating character.
+          // Full VT100 CSI final-byte range is 0x40-0x7E (@-~).
           if (session.inEscapeSeq) {
-            // Escape sequences end with a letter (A-Z, a-z) or ~
-            if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 126) {
+            if (code >= 0x40 && code <= 0x7E) {
               session.inEscapeSeq = false;
             }
             continue;
