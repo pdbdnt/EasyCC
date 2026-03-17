@@ -82,7 +82,8 @@ function Dashboard({
   onCollapsedGroupsChange,
   initialCollapsedGroups,
   onThemeToggle,
-  currentTheme
+  currentTheme,
+  onViewOrchestratorGroup
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups || new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
@@ -160,8 +161,11 @@ function Dashboard({
   const uniqueProjects = useMemo(() => {
     const map = new Map();
     sessions.forEach(s => {
-      if (s.workingDir && !map.has(s.workingDir)) {
-        map.set(s.workingDir, getProjectDisplayName(s.workingDir, settings?.projectAliases));
+      if (!s.workingDir) return;
+      // Normalize path separators to avoid duplicates (C:\ vs C:/)
+      const normalized = s.workingDir.replace(/\//g, '\\');
+      if (!map.has(normalized)) {
+        map.set(normalized, getProjectDisplayName(normalized, settings?.projectAliases));
       }
     });
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
@@ -220,14 +224,31 @@ function Dashboard({
     // External kanban filters (from kanban view navigation)
     if (kanbanColumnFilter) result = result.filter(s => s.stage === kanbanColumnFilter);
     if (kanbanProjectFilter && kanbanProjectFilter.size > 0) {
-      result = result.filter(s => kanbanProjectFilter.has(s.workingDir));
+      result = result.filter(s => kanbanProjectFilter.has(s.workingDir?.replace(/\//g, '\\')));
     }
     // Local sidebar filters
     if (stageFilter) result = result.filter(s => s.stage === stageFilter);
-    if (projectFilters.size > 0) result = result.filter(s => projectFilters.has(s.workingDir));
+    if (projectFilters.size > 0) result = result.filter(s => projectFilters.has(s.workingDir?.replace(/\//g, '\\')));
     if (hidePaused) result = result.filter(s => s.status !== 'paused');
     return result;
   }, [sessions, kanbanColumnFilter, kanbanProjectFilter, stageFilter, projectFilters, hidePaused]);
+
+  // Build child sessions map: parentSessionId -> [child sessions]
+  const childSessionsMap = useMemo(() => {
+    const map = new Map();
+    filteredSessions.forEach(s => {
+      if (s.parentSessionId) {
+        if (!map.has(s.parentSessionId)) map.set(s.parentSessionId, []);
+        map.get(s.parentSessionId).push(s);
+      }
+    });
+    return map;
+  }, [filteredSessions]);
+
+  // Top-level sessions (not children) for grouping
+  const topLevelSessions = useMemo(() => {
+    return filteredSessions.filter(s => !s.parentSessionId);
+  }, [filteredSessions]);
 
   // Total sessions per directory (unfiltered) for showing "filtered/total" counts
   const totalsByDir = useMemo(() => {
@@ -265,12 +286,19 @@ function Dashboard({
   const groupedSessions = useMemo(() => {
     const groups = new Map();
 
-    filteredSessions.forEach((session, index) => {
+    topLevelSessions.forEach((session, index) => {
       const dirName = getDirectoryName(session.workingDir);
       if (!groups.has(dirName)) {
         groups.set(dirName, []);
       }
       groups.get(dirName).push({ session, globalIndex: index });
+      // Include child sessions immediately after their parent for keyboard nav
+      const children = childSessionsMap.get(session.id);
+      if (children) {
+        children.forEach((child) => {
+          groups.get(dirName).push({ session: child, globalIndex: index + 0.5 });
+        });
+      }
     });
 
     // Within each group, sort sessions.
@@ -310,7 +338,7 @@ function Dashboard({
     });
 
     return groupsWithHints;
-  }, [filteredSessions, kanbanColumnFilter, projectAliases]);
+  }, [filteredSessions, childSessionsMap, kanbanColumnFilter, projectAliases]);
 
   useLayoutEffect(() => {
     const flipRequested = flipTriggerNonce > 0 && flipTriggerNonce !== lastAnimatedNonceRef.current;
@@ -786,35 +814,72 @@ function Dashboard({
                   </button>
                 )}
               </button>
-              {!collapsedGroups.has(dirName) && sessionsInGroup.map(({ session, globalIndex, hintCode }) => {
+              {!collapsedGroups.has(dirName) && sessionsInGroup.filter(({ session }) => !session.parentSessionId).map(({ session, globalIndex, hintCode }) => {
                 const recentlyEntered = kanbanColumnFilter && session.stageEnteredAt &&
                   (Date.now() - new Date(session.stageEnteredAt).getTime()) < 10 * 60 * 1000;
+                const children = childSessionsMap.get(session.id) || [];
                 return (
-                  <div
-                    key={session.id}
-                    className="session-card-flip-item"
-                    data-session-id={session.id}
-                    ref={getCardNodeRef(session.id)}
-                  >
-                    <SessionCard
-                      session={session}
-                      index={globalIndex}
-                      isSelected={session.id === selectedId}
-                      isMultiSelected={selectedIds.includes(session.id) && selectedIds.length > 1}
-                      onSelect={(event) => onSelectSession(session.id, event)}
-                      onToggleSelect={onToggleSelectSession}
-                      onShowDetails={onShowDetails}
-                      onUpdate={onUpdateSession}
-                      onMoveSession={onMoveSession}
-                      onResetPlacement={onResetPlacement}
-                      hintModeActive={hintModeActive}
-                      typedChars={typedChars}
-                      hintCode={hintCode}
-                      isRecentlyEntered={!!recentlyEntered}
-                      stages={stages}
-                      groupInfo={sessionIdToGroup?.get(session.id) || null}
-                      isGroupFocused={activeGroupId && selectedIds.includes(session.id) && session.id === selectedId}
-                    />
+                  <div key={session.id}>
+                    <div
+                      className={`session-card-flip-item${session.isOrchestrator ? ' session-card-flip-item--orchestrator' : ''}`}
+                      data-session-id={session.id}
+                      ref={getCardNodeRef(session.id)}
+                    >
+                      <SessionCard
+                        session={session}
+                        index={globalIndex}
+                        isSelected={session.id === selectedId}
+                        isMultiSelected={selectedIds.includes(session.id) && selectedIds.length > 1}
+                        onSelect={(event) => onSelectSession(session.id, event)}
+                        onToggleSelect={onToggleSelectSession}
+                        onShowDetails={onShowDetails}
+                        onUpdate={onUpdateSession}
+                        onMoveSession={onMoveSession}
+                        onResetPlacement={onResetPlacement}
+                        hintModeActive={hintModeActive}
+                        typedChars={typedChars}
+                        hintCode={hintCode}
+                        isRecentlyEntered={!!recentlyEntered}
+                        stages={stages}
+                        groupInfo={sessionIdToGroup?.get(session.id) || null}
+                        isGroupFocused={activeGroupId && selectedIds.includes(session.id) && session.id === selectedId}
+                        childCount={children.length}
+                        onViewOrchestratorGroup={onViewOrchestratorGroup}
+                      />
+                    </div>
+                    {children.length > 0 && (
+                      <div className="session-children">
+                        {children.map((child, childIdx) => (
+                          <div
+                            key={child.id}
+                            className={`session-card-flip-item session-card-flip-item--child${childIdx === children.length - 1 ? ' session-card-flip-item--child-last' : ''}`}
+                            data-session-id={child.id}
+                            ref={getCardNodeRef(child.id)}
+                          >
+                            <SessionCard
+                              session={child}
+                              index={globalIndex + childIdx + 1}
+                              isSelected={child.id === selectedId}
+                              isMultiSelected={selectedIds.includes(child.id) && selectedIds.length > 1}
+                              onSelect={(event) => onSelectSession(child.id, event)}
+                              onToggleSelect={onToggleSelectSession}
+                              onShowDetails={onShowDetails}
+                              onUpdate={onUpdateSession}
+                              onMoveSession={onMoveSession}
+                              onResetPlacement={onResetPlacement}
+                              hintModeActive={hintModeActive}
+                              typedChars={typedChars}
+                              hintCode={null}
+                              isRecentlyEntered={false}
+                              stages={stages}
+                              groupInfo={null}
+                              isGroupFocused={false}
+                              isChildSession={true}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}

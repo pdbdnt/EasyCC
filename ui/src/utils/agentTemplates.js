@@ -48,6 +48,13 @@ export const AGENT_TEMPLATES = [
     role: 'Docker, CI/CD, deployment, environment config, infrastructure.'
   },
   {
+    id: 'orchestrator',
+    name: 'Orchestrator',
+    cliType: 'claude',
+    role: 'Coordinate multiple agents. Spawn sub-agents for subtasks, monitor progress, and collect results. Do not write code directly — delegate to specialized agents.',
+    isOrchestrator: true
+  },
+  {
     id: 'codex-agent',
     name: 'Codex Agent',
     cliType: 'codex',

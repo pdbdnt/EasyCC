@@ -72,6 +72,7 @@ function sanitizeSearchTerm(text) {
 
 const TerminalView = forwardRef(function TerminalView({
   session,
+  sessions,
   onKillSession,
   onPauseSession,
   onResumeSession,
@@ -100,6 +101,14 @@ const TerminalView = forwardRef(function TerminalView({
   const [overrideKeys, setOverrideKeys] = useState(false);
   const overrideKeysRef = useRef(false);
   const searchAddonRef = useRef(null);
+  const ecInputBufferRef = useRef('');
+  const [ecResult, setEcResult] = useState(null);
+  const [atPicker, setAtPicker] = useState(null); // null | { query: string, selectedIndex: number }
+  const atPickerRef = useRef(null); // mirrors atPicker for use inside xterm closure
+  const atPickerSelectRef = useRef(null); // ref to current selection handler
+  const ecDismissTimerRef = useRef(null);
+  const [easyccNotification, setEasyccNotification] = useState(null);
+  const easyccNotificationTimerRef = useRef(null);
   const promptNavIndexRef = useRef(null);
   const promptHistoryRef = useRef([]);
 
@@ -138,6 +147,18 @@ const TerminalView = forwardRef(function TerminalView({
           xtermRef.current.write(data.data);
         } else if (data.type === 'status') {
           setSessionStatus(data.status);
+        } else if (data.type === 'easycc-notification') {
+          if (easyccNotificationTimerRef.current) {
+            clearTimeout(easyccNotificationTimerRef.current);
+          }
+          setEasyccNotification({
+            command: 'EasyCC',
+            message: data.message,
+            timestamp: Date.now()
+          });
+          easyccNotificationTimerRef.current = setTimeout(() => {
+            setEasyccNotification(null);
+          }, 10000);
         } else if (data.type === 'sessionEnded') {
           xtermRef.current?.write('\r\n\x1b[33m--- Session ended ---\x1b[0m\r\n');
           setSessionStatus('completed');
@@ -189,6 +210,110 @@ const TerminalView = forwardRef(function TerminalView({
     window.__terminalOverrideKeys = overrideKeys;
   }, [overrideKeys]);
 
+  // Handle /ec- orchestrator commands
+  const handleEcCommand = useCallback(async (cmd) => {
+    // Dismiss any previous result
+    if (ecDismissTimerRef.current) clearTimeout(ecDismissTimerRef.current);
+
+    const parts = cmd.split(/\s+/);
+    const command = parts[0].toLowerCase();
+    const baseUrl = `${window.location.protocol}//${window.location.hostname}:${window.location.port || '5010'}`;
+
+    try {
+      if (command === '/ec-list' || command === '/ec-status') {
+        const res = await fetch(`${baseUrl}/api/orchestrator/sessions`);
+        const data = await res.json();
+        setEcResult({ type: 'list', command, data: data.sessions, timestamp: Date.now() });
+
+      } else if (command === '/ec-read') {
+        const target = parts[1];
+        if (!target) { setEcResult({ type: 'error', command, message: 'Usage: /ec-read <name-or-id>', timestamp: Date.now() }); return; }
+        // Find session by name or ID
+        const listRes = await fetch(`${baseUrl}/api/orchestrator/sessions`);
+        const listData = await listRes.json();
+        const match = listData.sessions.find(s => s.id === target || s.id.startsWith(target) || s.name.toLowerCase().includes(target.toLowerCase()));
+        if (!match) { setEcResult({ type: 'error', command, message: `No session found matching "${target}"`, timestamp: Date.now() }); return; }
+        const screenRes = await fetch(`${baseUrl}/api/orchestrator/sessions/${match.id}/screen?lines=30`);
+        const screenData = await screenRes.json();
+        setEcResult({ type: 'read', command, sessionName: match.name, data: screenData.screen, timestamp: Date.now() });
+
+      } else if (command === '/ec-send') {
+        const target = parts[1];
+        const message = parts.slice(2).join(' ');
+        if (!target || !message) { setEcResult({ type: 'error', command, message: 'Usage: /ec-send <name-or-id> <message>', timestamp: Date.now() }); return; }
+        const listRes = await fetch(`${baseUrl}/api/orchestrator/sessions`);
+        const listData = await listRes.json();
+        const match = listData.sessions.find(s => s.id === target || s.id.startsWith(target) || s.name.toLowerCase().includes(target.toLowerCase()));
+        if (!match) { setEcResult({ type: 'error', command, message: `No session found matching "${target}"`, timestamp: Date.now() }); return; }
+        const sendRes = await fetch(`${baseUrl}/api/orchestrator/sessions/${match.id}/input`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: message, submit: true, fromSessionId: session?.id })
+        });
+        const sendData = await sendRes.json();
+        if (sendData.ok) {
+          setEcResult({ type: 'confirm', command, message: `Sent to "${match.name}"`, timestamp: Date.now() });
+        } else {
+          setEcResult({ type: 'error', command, message: sendData.error || 'Failed to send', timestamp: Date.now() });
+        }
+
+      } else if (command === '/ec-spawn') {
+        const description = parts.slice(1).join(' ');
+        // For AI sessions, send the description as a prompt to the AI
+        if (session && (session.cliType === 'claude' || session.cliType === 'codex') && description) {
+          const spawnPrompt = `Prepare to spawn a child agent session. The user wants: "${description}". Gather relevant context from the codebase, prepare a detailed role/prompt, then call the spawn API using curl with parentSessionId="${session.id}".`;
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'input', data: spawnPrompt + '\r' }));
+          }
+          setEcResult({ type: 'confirm', command, message: 'Spawn request sent to AI orchestrator', timestamp: Date.now() });
+        } else {
+          // For terminal sessions or no description, just show instructions
+          setEcResult({ type: 'info', command, message: 'Use the New Session dialog to spawn a child session, or provide a description for AI sessions.', timestamp: Date.now() });
+        }
+
+      } else {
+        setEcResult({ type: 'error', command, message: `Unknown command: ${command}. Available: /ec-list, /ec-status, /ec-read, /ec-send, /ec-spawn`, timestamp: Date.now() });
+      }
+    } catch (err) {
+      setEcResult({ type: 'error', command, message: `Error: ${err.message}`, timestamp: Date.now() });
+    }
+
+    // Auto-dismiss after 10 seconds
+    ecDismissTimerRef.current = setTimeout(() => setEcResult(null), 10000);
+  }, [session]);
+
+  const handleAtPickerSelect = useCallback((sessionName) => {
+    if (!sessionName) return;
+    // Send name + trailing space so user can continue typing the message
+    const text = sessionName + ' ';
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data: text }));
+    }
+    ecInputBufferRef.current += text;
+    atPickerRef.current = null; // sync immediately
+    setAtPicker(null);
+  }, []);
+
+  // Keep atPickerRef in sync so the xterm closure can read current state
+  useEffect(() => {
+    atPickerRef.current = atPicker;
+  }, [atPicker]);
+
+  // Dismiss /ec- overlay on keystroke
+  useEffect(() => {
+    if (!ecResult) return;
+    const dismiss = () => {
+      setEcResult(null);
+      if (ecDismissTimerRef.current) clearTimeout(ecDismissTimerRef.current);
+    };
+    const handleKey = (e) => {
+      if (e.key !== 'Escape' && e.key.length > 1) return; // only dismiss on printable keys or Escape
+      dismiss();
+    };
+    window.addEventListener('keydown', handleKey, { once: true });
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [ecResult]);
+
   // Initialize terminal
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -219,6 +344,75 @@ const TerminalView = forwardRef(function TerminalView({
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') {
         return true;
+      }
+
+      // @ picker keyboard handling (highest priority when picker is open)
+      // Note: atPicker state is read via ref set below
+      if (atPickerRef.current) {
+        if (event.key === 'Escape') {
+          atPickerRef.current = null;
+          setAtPicker(null);
+          return false;
+        }
+        if (event.key === 'ArrowDown') {
+          setAtPicker(p => p ? { ...p, selectedIndex: p.selectedIndex + 1 } : null);
+          return false;
+        }
+        if (event.key === 'ArrowUp') {
+          setAtPicker(p => p ? { ...p, selectedIndex: Math.max(0, p.selectedIndex - 1) } : null);
+          return false;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          atPickerSelectRef.current?.();
+          return false;
+        }
+        if (event.key === 'Backspace') {
+          if (atPickerRef.current.query === '') {
+            atPickerRef.current = null;
+            setAtPicker(null);
+          } else {
+            setAtPicker(p => p ? { ...p, query: p.query.slice(0, -1), selectedIndex: 0 } : null);
+          }
+          return false;
+        }
+        // Printable chars: add to query filter
+        if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+          setAtPicker(p => p ? { ...p, query: p.query + event.key, selectedIndex: 0 } : null);
+          return false;
+        }
+        // All other keys suppressed from PTY
+        return false;
+      }
+
+      // @ trigger: open session picker when typing /ec-send @
+      if (event.key === '@' && !atPickerRef.current) {
+        // Method 1: check tracked input buffer (populated by onData when user types)
+        let hasEcSend = ecInputBufferRef.current.trimStart().startsWith('/ec-send');
+        // Method 2 fallback: scan ALL visible rows of xterm buffer for /ec-send
+        // This catches cases where Claude Code autocompleted the command (PTY-inserted text)
+        if (!hasEcSend) {
+          try {
+            const buf = term.buffer.active;
+            // Scan entire viewport bottom-up, stop at first match
+            for (let r = buf.baseY + term.rows - 1; r >= buf.baseY; r--) {
+              const line = buf.getLine(r);
+              const text = line ? line.translateToString(true) : '';
+              if (text.includes('/ec-send')) {
+                hasEcSend = true;
+                break;
+              }
+            }
+          } catch (e) { /* ignore */ }
+        }
+        if (hasEcSend) {
+          event.preventDefault();
+          const state = { query: '', selectedIndex: 0 };
+          atPickerRef.current = state; // sync ref immediately so onData sees it
+          setAtPicker(state);
+          return false; // suppress @ from reaching PTY
+        }
       }
 
       // Ctrl+Enter sends newline directly to the session.
@@ -335,7 +529,7 @@ const TerminalView = forwardRef(function TerminalView({
 
       // Ctrl+Shift+W: close focused pane (handled at app level)
       if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey &&
-          event.key.toLowerCase() === 'w') {
+          (event.key.toLowerCase() === 'w' || event.key.toLowerCase() === 'g')) {
         return false;
       }
 
@@ -352,14 +546,29 @@ const TerminalView = forwardRef(function TerminalView({
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Handle user input
+    // Handle user input — track buffer for @ picker context, pass everything to PTY
     term.onData((data) => {
+      // When picker is open, all input is handled by attachCustomKeyEventHandler
+      // This is a safety net — suppress everything from PTY while picker is open
+      if (atPickerRef.current !== null) return;
+
+      // Track buffer so @ picker knows the current line context
+      if (data === '\x7f' || data === '\b') {
+        ecInputBufferRef.current = ecInputBufferRef.current.slice(0, -1);
+      } else if (data.includes('\r') || data.includes('\n')) {
+        ecInputBufferRef.current = '';
+        promptNavIndexRef.current = null;
+      } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
+        ecInputBufferRef.current += data;
+      } else if (data.length === 1 && data.charCodeAt(0) < 32) {
+        // Single control char (Ctrl+C, Ctrl+D, etc.) — clear buffer
+        ecInputBufferRef.current = '';
+      }
+      // Multi-byte sequences (arrow keys \x1b[A, etc.) are ignored — don't clear buffer
+
+      // Pass everything through to PTY
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'input', data }));
-      }
-      // Reset prompt nav stepping when user sends input
-      if (data.includes('\r') || data.includes('\n')) {
-        promptNavIndexRef.current = null;
       }
     });
 
@@ -392,6 +601,10 @@ const TerminalView = forwardRef(function TerminalView({
       term.dispose();
       if (wsRef.current) {
         wsRef.current.close();
+      }
+      if (easyccNotificationTimerRef.current) {
+        clearTimeout(easyccNotificationTimerRef.current);
+        easyccNotificationTimerRef.current = null;
       }
     };
   }, []);
@@ -656,6 +869,19 @@ const TerminalView = forwardRef(function TerminalView({
   const isPaused = sessionStatus === 'paused';
   const isCompleted = sessionStatus === 'completed';
 
+  // Compute filtered session list for @ picker
+  const pickerSessions = atPicker !== null
+    ? (sessions || [])
+        .filter(s => s.id !== session?.id && s.status !== 'completed')
+        .filter(s => !atPicker.query || s.name?.toLowerCase().includes(atPicker.query.toLowerCase()))
+        .slice(0, 8)
+    : [];
+  const clampedPickerIndex = Math.min(atPicker?.selectedIndex ?? 0, Math.max(0, pickerSessions.length - 1));
+  // Update select ref so the xterm Enter handler can trigger selection
+  atPickerSelectRef.current = pickerSessions.length > 0
+    ? () => handleAtPickerSelect(pickerSessions[clampedPickerIndex]?.name)
+    : null;
+
   // Get context toggle hint code from settings or use default
   const contextToggleHint = hintCodes.contextToggle || 'ct';
 
@@ -750,6 +976,75 @@ const TerminalView = forwardRef(function TerminalView({
                 </button>
               </div>
             </div>
+          </div>
+        )}
+        {ecResult && (
+          <div className="ec-result-overlay" onClick={() => setEcResult(null)}>
+            <div className="ec-result-overlay__header">
+              <span>{ecResult.command}</span>
+              <button className="ec-result-overlay__close" onClick={() => setEcResult(null)}>close</button>
+            </div>
+            <div className="ec-result-overlay__body">
+              {ecResult.type === 'list' && ecResult.data.map(s => (
+                <div key={s.id} className="ec-result-overlay__row">
+                  <span className="ec-result-overlay__id">{s.id.substring(0, 6)}</span>
+                  <span className="ec-result-overlay__name">
+                    {s.isOrchestrator ? '\u2733 ' : ''}{s.name}
+                  </span>
+                  <span className={`ec-result-overlay__status status-${s.status}`}>{s.status}</span>
+                </div>
+              ))}
+              {ecResult.type === 'read' && (
+                <div>
+                  <div style={{ color: 'rgba(100,160,255,0.9)', marginBottom: 4 }}>{ecResult.sessionName}</div>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 11 }}>{ecResult.data}</pre>
+                </div>
+              )}
+              {ecResult.type === 'confirm' && (
+                <div className="ec-result-overlay__confirm">{ecResult.message}</div>
+              )}
+              {ecResult.type === 'error' && (
+                <div style={{ color: '#ff5555' }}>{ecResult.message}</div>
+              )}
+              {ecResult.type === 'info' && (
+                <div>{ecResult.message}</div>
+              )}
+            </div>
+          </div>
+        )}
+        {easyccNotification && (
+          <div
+            className="ec-result-overlay"
+            style={ecResult ? { bottom: 120 } : undefined}
+            onClick={() => setEasyccNotification(null)}
+          >
+            <div className="ec-result-overlay__header">
+              <span>{easyccNotification.command}</span>
+              <button className="ec-result-overlay__close" onClick={() => setEasyccNotification(null)}>close</button>
+            </div>
+            <div className="ec-result-overlay__body">
+              <div>{easyccNotification.message}</div>
+            </div>
+          </div>
+        )}
+        {atPicker !== null && (
+          <div className="at-picker">
+            <div className="at-picker__header">
+              @{atPicker.query || <span className="at-picker__hint"> type to filter</span>}
+            </div>
+            {pickerSessions.length === 0 ? (
+              <div className="at-picker__empty">No sessions</div>
+            ) : pickerSessions.map((s, i) => (
+              <div
+                key={s.id}
+                className={`at-picker__item${i === clampedPickerIndex ? ' at-picker__item--active' : ''}`}
+                onClick={() => handleAtPickerSelect(s.name)}
+              >
+                <span className={`status-indicator ${s.status}`} />
+                <span className="at-picker__name">{s.name}</span>
+                <span className="at-picker__type">{s.cliType}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -85,7 +85,11 @@ class DataStore {
         completedAt: session.completedAt || null,
         stageEnteredAt: session.stageEnteredAt || null,
         updatedAt: session.updatedAt || null,
-        comments: session.comments || []
+        comments: session.comments || [],
+        // Orchestrator fields
+        isOrchestrator: session.isOrchestrator || false,
+        parentSessionId: session.parentSessionId || null,
+        teamInstanceId: session.teamInstanceId || null
       };
 
       this.writeSessionsFile(sessions);
@@ -133,7 +137,8 @@ class DataStore {
       // Update allowed metadata fields
       const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'status', 'lastActivity',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt', 'placementLocked',
-        'rejectionHistory', 'completedAt', 'updatedAt', 'comments'];
+        'rejectionHistory', 'completedAt', 'updatedAt', 'comments',
+        'isOrchestrator', 'parentSessionId', 'teamInstanceId'];
 
       for (const field of allowedFields) {
         if (meta[field] !== undefined) {

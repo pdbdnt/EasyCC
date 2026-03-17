@@ -24,7 +24,8 @@ function KanbanSessionColumn({
   const groups = useMemo(() => {
     const map = new Map();
     for (const session of sessions) {
-      const project = session.workingDir || 'Unassigned';
+      // Normalize path separators to avoid duplicates (C:\ vs C:/)
+      const project = (session.workingDir || 'Unassigned').replace(/\//g, '\\');
       if (!map.has(project)) map.set(project, []);
       map.get(project).push(session);
     }

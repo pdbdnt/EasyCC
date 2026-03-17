@@ -119,6 +119,7 @@ const TaskCard = forwardRef(function TaskCard({
     >
       <div className="task-card-header">
         <span className={`status-indicator ${session.status}`} />
+        {session.isOrchestrator && <span className="orchestrator-icon" title="Orchestrator">&#9733;</span>}
         <span className="task-title">{session.name}</span>
         {(!session.cliType || session.cliType === 'claude' || session.cliType === 'claude-code') && (
           <span className="cli-type-badge claude-code">CC</span>

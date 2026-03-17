@@ -134,7 +134,11 @@ class SessionManager extends EventEmitter {
           rejectionHistory: sessionData.rejectionHistory || [],
           completedAt: sessionData.completedAt || null,
           updatedAt: sessionData.updatedAt || null,
-          comments: sessionData.comments || []
+          comments: sessionData.comments || [],
+          // Orchestrator fields
+          isOrchestrator: sessionData.isOrchestrator || false,
+          parentSessionId: sessionData.parentSessionId || null,
+          teamInstanceId: sessionData.teamInstanceId || null
         };
 
         this.sessions.set(id, session);
@@ -408,7 +412,16 @@ class SessionManager extends EventEmitter {
     return normalized.slice(0, 4096);
   }
 
-  spawnTerminalProcess(workingDir) {
+  getEasyccEnv(easyccSessionId = '') {
+    return {
+      ...process.env,
+      EASYCC_PORT: String(this.port || 5010),
+      EASYCC_SESSION_ID: easyccSessionId || ''
+    };
+  }
+
+  spawnTerminalProcess(workingDir, { easyccSessionId = '' } = {}) {
+    const env = this.getEasyccEnv(easyccSessionId);
     const isWindows = process.platform === 'win32';
     if (isWindows) {
       return pty.spawn('powershell.exe', ['-NoLogo'], {
@@ -416,7 +429,7 @@ class SessionManager extends EventEmitter {
         cols: 120,
         rows: 30,
         cwd: workingDir,
-        env: process.env
+        env
       });
     }
 
@@ -426,11 +439,12 @@ class SessionManager extends EventEmitter {
       cols: 120,
       rows: 30,
       cwd: workingDir,
-      env: process.env
+      env
     });
   }
 
-  spawnCodexProcess(workingDir, { resume = false } = {}) {
+  spawnCodexProcess(workingDir, { resume = false, easyccSessionId = '' } = {}) {
+    const env = this.getEasyccEnv(easyccSessionId);
     const isWindows = process.platform === 'win32';
     if (isWindows) {
       const wslPath = this.convertToWslPath(workingDir).replace(/'/g, "'\\''").replace(/"/g, '\\"');
@@ -441,7 +455,7 @@ class SessionManager extends EventEmitter {
         name: 'xterm-color',
         cols: 120,
         rows: 30,
-        env: process.env
+        env
       });
     }
 
@@ -453,11 +467,12 @@ class SessionManager extends EventEmitter {
       cols: 120,
       rows: 30,
       cwd: workingDir,
-      env: process.env
+      env
     });
   }
 
-  spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '' } = {}) {
+  spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '', easyccSessionId = '' } = {}) {
+    const env = this.getEasyccEnv(easyccSessionId);
     const args = ['--dangerously-skip-permissions'];
     if (resumeId) {
       args.push('--resume', resumeId);
@@ -476,7 +491,7 @@ class SessionManager extends EventEmitter {
         cols: 120,
         rows: 30,
         cwd: workingDir,
-        env: process.env
+        env
       });
     }
     return pty.spawn('claude', args, {
@@ -484,7 +499,7 @@ class SessionManager extends EventEmitter {
       cols: 120,
       rows: 30,
       cwd: workingDir,
-      env: process.env
+      env
     });
   }
 
@@ -742,11 +757,11 @@ class SessionManager extends EventEmitter {
 
     try {
       if (cliType === 'terminal') {
-        ptyProcess = this.spawnTerminalProcess(workingDir);
+        ptyProcess = this.spawnTerminalProcess(workingDir, { easyccSessionId: id });
       } else if (cliType === 'codex') {
-        ptyProcess = this.spawnCodexProcess(workingDir, { resume: false });
+        ptyProcess = this.spawnCodexProcess(workingDir, { resume: false, easyccSessionId: id });
       } else {
-        ptyProcess = this.spawnClaudeProcess(workingDir, { sessionId: claudeSessionId, role: sanitizedRole });
+        ptyProcess = this.spawnClaudeProcess(workingDir, { sessionId: claudeSessionId, role: sanitizedRole, easyccSessionId: id });
       }
     } catch (error) {
       const cliName = cliType === 'codex' ? 'Codex' : cliType === 'terminal' ? 'Terminal' : 'Claude';
@@ -770,6 +785,9 @@ class SessionManager extends EventEmitter {
       role: sanitizedRole,
       agentId: sessionMeta.agentId || null,
       taskId: sessionMeta.taskId || null,
+      isOrchestrator: sessionMeta.isOrchestrator || false,
+      parentSessionId: sessionMeta.parentSessionId || null,
+      teamInstanceId: sessionMeta.teamInstanceId || null,
       tags: [],
       plans: [],
       promptBuffer: '',      // Characters accumulated until Enter
@@ -835,6 +853,18 @@ class SessionManager extends EventEmitter {
         });
       }
 
+      // Detect Claude Code /rename command output (strip ANSI sequences first)
+      const cleanData = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+      const renameMatch = cleanData.match(/Session renamed to "([^"]+)"/);
+      if (renameMatch && renameMatch[1]) {
+        const newName = renameMatch[1].trim();
+        if (newName && newName !== session.name) {
+          session.name = newName;
+          this.dataStore.saveSession(session);
+          this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        }
+      }
+
       // Detect plan updates from terminal output
       this.detectPlanActivity(data, session);
 
@@ -898,7 +928,9 @@ class SessionManager extends EventEmitter {
     // Scan for existing plans that match this session
     this.scanExistingPlansForSession(id);
 
-    return this.getSessionSnapshot(session);
+    const snapshot = this.getSessionSnapshot(session);
+    this.emit('sessionCreated', { id, session: snapshot });
+    return snapshot;
   }
 
   /**
@@ -1114,12 +1146,13 @@ class SessionManager extends EventEmitter {
     const createFreshClaudeProcess = ({ sessionId = null } = {}) => {
       return this.spawnClaudeProcess(session.workingDir, {
         sessionId,
-        role: this.sanitizeRole(session.role || '')
+        role: this.sanitizeRole(session.role || ''),
+        easyccSessionId: session.id
       });
     };
 
     const createFreshCodexProcess = () => {
-      return this.spawnCodexProcess(session.workingDir, { resume: false });
+      return this.spawnCodexProcess(session.workingDir, { resume: false, easyccSessionId: session.id });
     };
 
     const handleClaudeResumeFallback = () => {
@@ -1323,10 +1356,10 @@ class SessionManager extends EventEmitter {
 
     try {
       if (cliType === 'terminal') {
-        ptyProcess = this.spawnTerminalProcess(session.workingDir);
+        ptyProcess = this.spawnTerminalProcess(session.workingDir, { easyccSessionId: session.id });
       } else if (cliType === 'codex') {
         // Resume Codex in the same working directory to avoid cross-project jumps.
-        ptyProcess = this.spawnCodexProcess(session.workingDir, { resume: !fresh });
+        ptyProcess = this.spawnCodexProcess(session.workingDir, { resume: !fresh, easyccSessionId: session.id });
       } else {
         if (fresh) {
           ptyProcess = createFreshClaudeProcess({ sessionId: session.claudeSessionId });
@@ -1334,7 +1367,8 @@ class SessionManager extends EventEmitter {
           // Claude: resume existing session when possible, and append role for consistency.
           ptyProcess = this.spawnClaudeProcess(session.workingDir, {
             resumeId: session.claudeSessionId || null,
-            role: this.sanitizeRole(session.role || '')
+            role: this.sanitizeRole(session.role || ''),
+            easyccSessionId: session.id
           });
         }
       }
@@ -1406,6 +1440,9 @@ class SessionManager extends EventEmitter {
     }
     if (meta.priority !== undefined) session.priority = meta.priority;
     if (meta.description !== undefined) session.description = meta.description;
+    if (meta.isOrchestrator !== undefined) session.isOrchestrator = !!meta.isOrchestrator;
+    if (meta.parentSessionId !== undefined) session.parentSessionId = meta.parentSessionId || null;
+    if (meta.teamInstanceId !== undefined) session.teamInstanceId = meta.teamInstanceId || null;
 
     session.lastActivity = new Date();
 
@@ -2275,8 +2312,11 @@ class SessionManager extends EventEmitter {
       rejectionHistory: session.rejectionHistory || [],
       completedAt: session.completedAt || null,
       updatedAt: session.updatedAt || null,
-      comments: session.comments || []
-      ,
+      comments: session.comments || [],
+      // Orchestrator fields
+      isOrchestrator: session.isOrchestrator || false,
+      parentSessionId: session.parentSessionId || null,
+      teamInstanceId: session.teamInstanceId || null,
       startupSequence: session.startupSequence
         ? {
             active: !!session.startupSequence.active,

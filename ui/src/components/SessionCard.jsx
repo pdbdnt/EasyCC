@@ -32,7 +32,10 @@ function SessionCard({
   isRecentlyEntered = false,
   stages = [],
   groupInfo = null,
-  isGroupFocused = false
+  isGroupFocused = false,
+  childCount = 0,
+  isChildSession = false,
+  onViewOrchestratorGroup
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(session.name);
@@ -105,6 +108,7 @@ function SessionCard({
 
   const isPaused = session.status === 'paused';
   const currentStage = stages.find(s => s.id === session.stage);
+  const canViewGroup = session.isOrchestrator && childCount > 0 && typeof onViewOrchestratorGroup === 'function';
 
   const handleClick = (e) => {
     // Pass event to onSelect so parent can detect Ctrl/Cmd for group logic
@@ -113,7 +117,7 @@ function SessionCard({
 
   return (
     <div
-      className={`session-card ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''} ${isGroupFocused ? 'group-focused' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}`}
+      className={`session-card ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''} ${isGroupFocused ? 'group-focused' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}${session.isOrchestrator ? ' session-card--orchestrator' : ''}${isChildSession ? ' session-card--child' : ''}`}
       onClick={handleClick}
     >
       {hintCode && (
@@ -141,7 +145,9 @@ function SessionCard({
             />
           ) : (
             <>
+              {session.isOrchestrator && <span className="orchestrator-icon" title="Orchestrator">&#9733;</span>}
               {session.name}
+              {childCount > 0 && <span className="child-count-badge">({childCount})</span>}
               {(!session.cliType || session.cliType === 'claude-code') && (
                 <span className="cli-type-badge claude-code">CC</span>
               )}
@@ -154,6 +160,11 @@ function SessionCard({
               {groupInfo && (
                 <span className="group-badge" title={`Group: ${groupInfo.name}`}>
                   {groupInfo.name.length > 8 ? groupInfo.name.substring(0, 8) + '..' : groupInfo.name}
+                </span>
+              )}
+              {session.teamInstanceId && (
+                <span className="group-badge" title={`Team: ${session.teamInstanceId}`}>
+                  TM
                 </span>
               )}
               {session.agentId && (
@@ -252,6 +263,18 @@ function SessionCard({
         <div className="session-time">
           {isPaused ? 'Paused' : `Last activity: ${getRelativeTime(session.lastActivity)}`}
         </div>
+        {canViewGroup && (
+          <button
+            className="btn-icon"
+            onClick={(e) => {
+              e.stopPropagation();
+              onViewOrchestratorGroup(session.id);
+            }}
+            title="View group"
+          >
+            ▦
+          </button>
+        )}
         <button
           className="btn-icon"
           onClick={handleDetailsClick}

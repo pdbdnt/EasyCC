@@ -13,8 +13,10 @@ const DataStore = require('./dataStore');
 const PlanVersionStore = require('./planVersionStore');
 const AgentStore = require('./agentStore');
 const TaskStore = require('./taskStore');
+const TeamStore = require('./teamStore');
 const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
 const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
+const { stripAnsi } = require('./sessionInputUtils');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
@@ -24,6 +26,7 @@ const settingsManager = new SettingsManager();
 const planVersionStore = new PlanVersionStore();
 const agentStore = new AgentStore();
 const taskStore = new TaskStore();
+const teamStore = new TeamStore();
 const { sessionStatusToStage } = require('./stagesConfig');
 
 const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || path.parse(os.homedir()).root;
@@ -34,6 +37,61 @@ const kanbanSyncTimers = new Map();
 // Track WebSocket connections
 const dashboardClients = new Set();
 const terminalClients = new Map(); // sessionId -> Set of clients
+const activeChildren = new Set();
+// Track recent /ec-send senders: recipientId -> Map<senderId, timestamp>
+const recentSenders = new Map();
+
+const VALID_TEAM_STRATEGIES = new Set(['hierarchical', 'parallel']);
+const AGENT_TEMPLATES = {
+  orchestrator: {
+    id: 'orchestrator',
+    name: 'Orchestrator',
+    cliType: 'claude',
+    role: 'Coordinate multiple agents. Spawn sub-agents for subtasks, monitor progress, and collect results. Do not write code directly — delegate to specialized agents.'
+  },
+  'backend-dev': {
+    id: 'backend-dev',
+    name: 'Backend Dev',
+    cliType: 'claude',
+    role: 'Server-side specialist: API routes, database, auth, middleware. Never modify frontend/UI files.'
+  },
+  'frontend-dev': {
+    id: 'frontend-dev',
+    name: 'Frontend Dev',
+    cliType: 'claude',
+    role: 'React components, CSS/Tailwind, UI logic, accessibility. Never modify backend/server files.'
+  },
+  'test-writer': {
+    id: 'test-writer',
+    name: 'Test Writer',
+    cliType: 'claude',
+    role: "Write and run tests (Playwright, Jest). Review coverage gaps. Don't modify source code, only test files."
+  },
+  'code-reviewer': {
+    id: 'code-reviewer',
+    name: 'Code Reviewer',
+    cliType: 'claude',
+    role: 'Review code changes, find bugs, suggest improvements. Read-only - never edit files directly.'
+  },
+  'bug-hunter': {
+    id: 'bug-hunter',
+    name: 'Bug Hunter',
+    cliType: 'claude',
+    role: 'Investigate bugs: read logs, trace code, identify root cause. Propose minimal targeted fixes.'
+  },
+  devops: {
+    id: 'devops',
+    name: 'DevOps',
+    cliType: 'claude',
+    role: 'Docker, CI/CD, deployment, environment config, infrastructure.'
+  },
+  architect: {
+    id: 'architect',
+    name: 'Architect',
+    cliType: 'claude',
+    role: "Design systems, plan architecture, review PRs. Don't write implementation code - produce specs and plans."
+  }
+};
 
 function normalizeWindowsPath(input) {
   if (!input || typeof input !== 'string') return '';
@@ -54,6 +112,199 @@ function normalizePathKey(filePath) {
   if (!filePath || typeof filePath !== 'string') return '';
   const resolved = path.resolve(filePath);
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function buildOrchestratorPrompt(port, sessionId) {
+  return `You are an orchestrator session in EasyCC. You manage child sessions.
+
+The user can type /ec- commands which EasyCC handles directly. But you can also call the orchestrator API yourself using curl when working autonomously:
+
+LIST:   curl -s http://localhost:${port}/api/orchestrator/sessions
+READ:   curl -s http://localhost:${port}/api/orchestrator/sessions/SESSION_ID/screen?lines=50
+SEND:   curl -s -X POST http://localhost:${port}/api/orchestrator/sessions/SESSION_ID/input -H "Content-Type: application/json" -d '{"text":"your message","submit":true,"fromSessionId":"${sessionId}"}'
+SPAWN:  curl -s -X POST http://localhost:${port}/api/orchestrator/sessions/spawn -H "Content-Type: application/json" -d '{"name":"Worker","workingDir":"/path","cliType":"claude","role":"...","startupPrompt":"...","parentSessionId":"${sessionId}"}'
+STATUS: curl -s http://localhost:${port}/api/orchestrator/sessions/SESSION_ID/status
+
+Your session ID is: ${sessionId}
+Poll status before reading screen. Wait for sessions to reach "idle" before reading results.
+
+When you receive a message from another session (prefixed with [From: ...]), reply using the sender's ID prefix (shown in parentheses in the [From: ...] tag): /ec-send <id-prefix> <your response>.`;
+}
+
+const EC_SKILLS_VERSION = 'v3';
+
+function installEcSkills() {
+  const skillsDir = path.join(os.homedir(), '.claude', 'skills');
+  const nodeGet = (pathExpr) => `node -e "const http=require('http');http.get('http://localhost:'+(process.env.EASYCC_PORT||5010)+'${pathExpr}',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))}).on('error',e=>console.error('EasyCC unreachable:',e.message))"`;
+  const skills = {
+    'ec-list': {
+      name: 'ec-list',
+      description: 'List all EasyCC sessions with their status, name, type, and working directory',
+      hint: '',
+      body: `List all active EasyCC sessions by calling the orchestrator API.
+
+## Instructions
+
+1. Run this command using the Bash tool:
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions')}
+\`\`\`
+
+2. Parse the JSON response and display a formatted table with columns: ID (first 8 chars), Name, Status, Type, Orchestrator (star if true), Parent.
+
+3. Show the total count at the bottom. If unreachable, suggest the user start EasyCC with \`npm run start:web\`.`
+    },
+    'ec-status': {
+      name: 'ec-status',
+      description: 'Show compact status of EasyCC sessions or a specific session',
+      hint: '[name-or-id]',
+      body: `Show compact status of EasyCC sessions.
+
+## Instructions
+
+If $ARGUMENTS provided, find the matching session. If no arguments, show all.
+
+1. List all sessions:
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions')}
+\`\`\`
+
+2. If a specific session was requested, match by name (case-insensitive partial) or ID prefix, then get its detailed status (replace SESSION_ID):
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions/SESSION_ID/status')}
+\`\`\`
+
+3. Display as compact one-line-per-session: \`[status] Name (type) - last active Xm ago\``
+    },
+    'ec-read': {
+      name: 'ec-read',
+      description: 'Read the last N lines of terminal output from an EasyCC session',
+      hint: '<name-or-id> [lines]',
+      body: `Read recent terminal output from a specific EasyCC session.
+
+## Instructions
+
+Parse $ARGUMENTS: first word = session name/ID, optional second = lines (default 50).
+
+1. List sessions to find target:
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions')}
+\`\`\`
+2. Match by name (case-insensitive partial) or ID prefix.
+3. Read screen (replace SESSION_ID and LINES):
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions/SESSION_ID/screen?lines=LINES&format=text')}
+\`\`\`
+4. Display with header showing session name and status.`
+    },
+    'ec-send': {
+      name: 'ec-send',
+      description: 'Send a message or prompt to an EasyCC session',
+      hint: '<name-or-id> <message>',
+      body: `Send text input to one or more EasyCC sessions.
+
+## Instructions
+
+Parse $ARGUMENTS as target + message. Support natural language targeting: use the longest reasonable target phrase before the message, not just the first word. Example: \`/ec-send the git checker check status\` should target "git checker" and send "check status".
+
+1. List sessions to find target:
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions')}
+\`\`\`
+2. Always include ID prefixes when reasoning about matches so ambiguous names can be disambiguated.
+3. Resolve target using this order:
+   - Broadcast keywords:
+     - \`group\` = parent + siblings + children in the current orchestrator context
+     - \`children\` = sessions where \`parentSessionId === $EASYCC_SESSION_ID\`
+     - \`siblings\` = sessions sharing my \`parentSessionId\`, excluding self
+     - \`all\` = every other session
+   - Fuzzy name match on the full target text (case-insensitive partial match)
+   - ID prefix match, especially when fuzzy matching returns multiple results
+4. For broadcasts, loop through each resolved target and send individually. Report success count, failure count, and any sessions skipped.
+5. Send. **IMPORTANT: Always use \`node -e\` with JSON.stringify — never curl with inline JSON on Windows.**
+Replace SESSION_ID and MESSAGE_TEXT:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({text:'MESSAGE_TEXT',submit:true,fromSessionId:process.env.EASYCC_SESSION_ID||''});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/orchestrator/sessions/SESSION_ID/input',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+6. Confirm delivery. Report rate limit (429) or loop detection errors.`
+    },
+    'ec-spawn': {
+      name: 'ec-spawn',
+      description: 'Spawn a new child session in EasyCC with a role description',
+      hint: '<description>',
+      body: `Spawn a new child session in EasyCC linked to this session as parent.
+
+## Instructions
+
+$ARGUMENTS = description of what the child should do.
+
+1. Prepare a short name, a detailed role prompt, and an initial startup prompt based on the description.
+2. Optionally gather relevant codebase context to enrich the child's role.
+
+3. Spawn. **IMPORTANT: Always use \`node -e\` with JSON.stringify — never curl with inline JSON on Windows.** Use forward slashes in paths.
+
+\`\`\`bash
+node -e "
+const http = require('http');
+const data = JSON.stringify({
+  name: 'CHILD_NAME',
+  workingDir: 'WORKING_DIR_WITH_FORWARD_SLASHES',
+  cliType: 'claude',
+  role: 'DETAILED_ROLE_PROMPT',
+  startupPrompt: 'INITIAL_TASK_PROMPT',
+  parentSessionId: process.env.EASYCC_SESSION_ID || ''
+});
+const req = http.request({
+  hostname: 'localhost',
+  port: process.env.EASYCC_PORT || 5010,
+  path: '/api/orchestrator/sessions/spawn',
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+}, r => { let d = ''; r.on('data', c => d += c); r.on('end', () => console.log(d)); });
+req.write(data);
+req.end();
+"
+\`\`\`
+
+4. Report new session ID/name. Suggest \`/ec-read CHILD_NAME\` to monitor and \`/ec-send CHILD_NAME message\` for follow-up.
+
+EasyCC automatically gives the child parent/sibling context and instructions for reporting back. The parent is auto-notified when children go idle, and existing siblings are notified when a new child joins.
+
+**Key rules:**
+- Use forward slashes in paths (e.g., \`C:/Users/denni/apps/MyProject\`)
+- Use \`JSON.stringify()\` for all POST bodies — it handles escaping automatically
+- The role should be detailed enough for the child to work autonomously`
+    }
+  };
+
+  for (const [dir, skill] of Object.entries(skills)) {
+    const skillDir = path.join(skillsDir, dir);
+    const skillFile = path.join(skillDir, 'SKILL.md');
+
+    // Only auto-overwrite EasyCC-managed skill files.
+    try {
+      const existing = fs.readFileSync(skillFile, 'utf8');
+      if (existing.includes(`<!-- EasyCC ${EC_SKILLS_VERSION} -->`)) continue;
+      if (!existing.includes('<!-- EasyCC v')) {
+        console.warn(`Skipping ${dir} — user-modified (no version marker)`);
+        continue;
+      }
+    } catch { /* file doesn't exist, create it */ }
+
+    fs.mkdirSync(skillDir, { recursive: true });
+
+    const hintLine = skill.hint ? `\nargument-hint: ${skill.hint}` : '';
+    const content = `---
+name: ${skill.name}
+description: ${skill.description}${hintLine}
+---
+
+<!-- EasyCC ${EC_SKILLS_VERSION} -->
+
+${skill.body}
+`;
+    fs.writeFileSync(skillFile, content, 'utf8');
+  }
 }
 
 function isAllowedPlanFilePath(filePath) {
@@ -180,6 +431,164 @@ function normalizeStringArray(value) {
     .filter((entry) => typeof entry === 'string')
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function buildTeamRoster(team) {
+  return (team.members || [])
+    .map((member) => {
+      const template = AGENT_TEMPLATES[member.template];
+      const label = template?.name || member.template;
+      return `- ${member.role}: ${label}${member.isOrchestrator ? ' (orchestrator)' : ''}`;
+    })
+    .join('\n');
+}
+
+function buildTeamLaunchRole(baseRole, team, goal) {
+  const sections = [];
+  if (baseRole) sections.push(baseRole);
+  sections.push(
+    `Team: ${team.name}`,
+    `Goal: ${goal || 'No explicit goal provided.'}`,
+    `Strategy: ${team.strategy}`,
+    `Team roster:\n${buildTeamRoster(team)}`
+  );
+  if (team.strategy === 'hierarchical') {
+    sections.push('You are responsible for deciding when to spawn child sessions to execute the team goal.');
+  }
+  return sections.filter(Boolean).join('\n\n');
+}
+
+function buildChildRoleContext(parentSession, siblings, baseRole) {
+  const siblingList = siblings.length > 0
+    ? `\nYour siblings: ${siblings.map((s) => `"${s.name}" (${s.id.substring(0, 8)})`).join(', ')}`
+    : '';
+  const childContext = `You are a child agent in EasyCC, spawned by parent "${parentSession.name}" (ID: ${parentSession.id}).${siblingList}
+
+When you finish your task, report results back to the parent (use ID for reliable targeting):
+  /ec-send ${parentSession.id.substring(0, 8)} <your results summary>
+
+You can also communicate with siblings using their name or ID prefix: /ec-send <name-or-id> <message>
+When you receive a message from any session (prefixed with [From: ...]), reply with /ec-send <sender-name-or-id> <your response> when done.
+Discover all sessions: /ec-list | Read output: /ec-read <name-or-id> | Status: /ec-status`;
+
+  return childContext + (baseRole ? '\n\n---\n\n' + baseRole : '');
+}
+
+function buildTeamMemberStartupPrompt(team, member, goal, orchestratorSession) {
+  const lines = [
+    `You are part of the "${team.name}" team.`,
+    `Team goal: ${goal || 'No explicit goal provided.'}`,
+    `Your assigned role: ${member.role}.`
+  ];
+  if (orchestratorSession) {
+    lines.push(`Report to orchestrator "${orchestratorSession.name}" (${orchestratorSession.id.substring(0, 8)}).`);
+  }
+  lines.push('When you receive a message from any session (prefixed with [From: ...]), reply with /ec-send <sender-name-or-id> <your response> when done.');
+  return lines.join('\n');
+}
+
+function validateTeamTemplateInput(payload, { partial = false, existing = null } = {}) {
+  const normalized = existing ? {
+    name: existing.name,
+    description: existing.description || '',
+    strategy: existing.strategy,
+    members: Array.isArray(existing.members) ? existing.members.map((member) => ({ ...member })) : []
+  } : {};
+
+  if (!partial || payload.name !== undefined) {
+    if (typeof payload.name !== 'string' || !payload.name.trim()) {
+      return { error: 'name is required' };
+    }
+    normalized.name = payload.name.trim();
+  }
+
+  if (!partial || payload.description !== undefined) {
+    if (payload.description !== undefined && typeof payload.description !== 'string') {
+      return { error: 'description must be a string' };
+    }
+    normalized.description = typeof payload.description === 'string' ? payload.description.trim() : '';
+  }
+
+  if (!partial || payload.strategy !== undefined) {
+    if (!VALID_TEAM_STRATEGIES.has(payload.strategy)) {
+      return { error: 'strategy must be "hierarchical" or "parallel"' };
+    }
+    normalized.strategy = payload.strategy;
+  }
+
+  if (!partial || payload.members !== undefined) {
+    if (!Array.isArray(payload.members) || payload.members.length === 0) {
+      return { error: 'members must be a non-empty array' };
+    }
+    const seenRoles = new Set();
+    let orchestratorCount = 0;
+    normalized.members = [];
+    for (const member of payload.members) {
+      const role = typeof member?.role === 'string' ? member.role.trim() : '';
+      const template = typeof member?.template === 'string' ? member.template.trim() : '';
+      const isOrchestrator = !!member?.isOrchestrator;
+      if (!role) return { error: 'each member.role is required' };
+      if (seenRoles.has(role)) return { error: `duplicate team role: ${role}` };
+      if (!AGENT_TEMPLATES[template]) return { error: `unknown agent template: ${template}` };
+      if (isOrchestrator) orchestratorCount += 1;
+      seenRoles.add(role);
+      normalized.members.push({ role, template, isOrchestrator });
+    }
+    if (orchestratorCount !== 1) {
+      return { error: 'exactly one member must have isOrchestrator: true' };
+    }
+  }
+
+  return { value: normalized };
+}
+
+function enrichTeamInstance(instance) {
+  if (!instance) return null;
+  const sessions = (instance.sessionIds || [])
+    .map((sessionId) => sessionManager.getSession(sessionId))
+    .filter(Boolean);
+  return {
+    ...instance,
+    sessions,
+    sessionIds: sessions.map((session) => session.id)
+  };
+}
+
+function updateTeamInstanceMembership(previousTeamInstanceId, nextTeamInstanceId, sessionId) {
+  if (previousTeamInstanceId && previousTeamInstanceId !== nextTeamInstanceId) {
+    const previous = teamStore.getTeamInstance(previousTeamInstanceId);
+    if (previous) {
+      teamStore.updateTeamInstance(previousTeamInstanceId, {
+        sessionIds: (previous.sessionIds || []).filter((id) => id !== sessionId)
+      });
+    }
+  }
+
+  if (nextTeamInstanceId) {
+    const next = teamStore.getTeamInstance(nextTeamInstanceId);
+    if (next) {
+      const nextIds = Array.from(new Set([...(next.sessionIds || []), sessionId]));
+      teamStore.updateTeamInstance(nextTeamInstanceId, { sessionIds: nextIds });
+    }
+  }
+}
+
+function refreshTeamInstanceStatus(teamInstanceId) {
+  if (!teamInstanceId) return;
+  const instance = teamStore.getTeamInstance(teamInstanceId);
+  if (!instance || instance.status === 'completed') return;
+  const sessionIds = instance.sessionIds || [];
+  if (sessionIds.length === 0) return;
+  const hasActive = sessionIds.some((sessionId) => {
+    const session = sessionManager.getSession(sessionId);
+    return session && session.status !== 'completed';
+  });
+  if (!hasActive) {
+    teamStore.updateTeamInstance(teamInstanceId, {
+      status: 'completed',
+      completedAt: new Date().toISOString()
+    });
+  }
 }
 
 function parseMentionNames(text) {
@@ -425,6 +834,174 @@ async function start() {
     return { success: true };
   });
 
+  // Team template APIs
+  app.get('/api/teams', async () => {
+    return { teams: teamStore.listTeams() };
+  });
+
+  app.post('/api/teams', async (request, reply) => {
+    const normalized = validateTeamTemplateInput(request.body || {});
+    if (normalized.error) {
+      return reply.status(400).send({ error: normalized.error });
+    }
+    const team = teamStore.createTeam(normalized.value);
+    return reply.status(201).send({ team });
+  });
+
+  app.get('/api/teams/:id', async (request, reply) => {
+    const team = teamStore.getTeam(request.params.id);
+    if (!team) {
+      return reply.status(404).send({ error: 'Team not found' });
+    }
+    return { team };
+  });
+
+  app.patch('/api/teams/:id', async (request, reply) => {
+    const existing = teamStore.getTeam(request.params.id);
+    if (!existing) {
+      return reply.status(404).send({ error: 'Team not found' });
+    }
+    if (existing.builtIn) {
+      return reply.status(400).send({ error: 'Built-in teams cannot be modified' });
+    }
+    const normalized = validateTeamTemplateInput(request.body || {}, { partial: true, existing });
+    if (normalized.error) {
+      return reply.status(400).send({ error: normalized.error });
+    }
+    const team = teamStore.updateTeam(request.params.id, normalized.value);
+    return { team };
+  });
+
+  app.delete('/api/teams/:id', async (request, reply) => {
+    const existing = teamStore.getTeam(request.params.id);
+    if (!existing) {
+      return reply.status(404).send({ error: 'Team not found' });
+    }
+    if (existing.builtIn) {
+      return reply.status(400).send({ error: 'Built-in teams cannot be deleted' });
+    }
+    teamStore.deleteTeam(request.params.id);
+    return { ok: true };
+  });
+
+  app.post('/api/teams/:id/launch', async (request, reply) => {
+    const team = teamStore.getTeam(request.params.id);
+    if (!team) {
+      return reply.status(404).send({ error: 'Team not found' });
+    }
+
+    const workingDir = typeof request.body?.workingDir === 'string' && request.body.workingDir.trim()
+      ? request.body.workingDir.trim()
+      : process.cwd();
+    const goal = typeof request.body?.goal === 'string' ? request.body.goal.trim() : '';
+    const orchestratorMember = (team.members || []).find((member) => member.isOrchestrator);
+    const orchestratorTemplate = orchestratorMember ? AGENT_TEMPLATES[orchestratorMember.template] : null;
+    if (!orchestratorMember || !orchestratorTemplate) {
+      return reply.status(400).send({ error: 'Team is missing a valid orchestrator member' });
+    }
+
+    const teamInstance = teamStore.createTeamInstance({
+      templateId: team.id,
+      name: team.name,
+      goal,
+      strategy: team.strategy,
+      orchestratorSessionId: null,
+      sessionIds: [],
+      status: 'active',
+      completedAt: null
+    });
+
+    try {
+      const existingNames = sessionManager.getAllSessions().map((session) => session.name);
+      const orchestratorName = ensureUniqueSessionName(`${team.name} - ${orchestratorTemplate.name}`, existingNames);
+      const orchestratorRole = buildTeamLaunchRole(orchestratorTemplate.role, team, goal);
+      const orchestratorSession = sessionManager.createSession(
+        orchestratorName,
+        workingDir,
+        orchestratorTemplate.cliType,
+        {},
+        orchestratorRole,
+        {
+          isOrchestrator: true,
+          teamInstanceId: teamInstance.id
+        }
+      );
+
+      let sessionIds = [orchestratorSession.id];
+      teamStore.updateTeamInstance(teamInstance.id, {
+        orchestratorSessionId: orchestratorSession.id,
+        sessionIds
+      });
+      updateTeamInstanceMembership(null, teamInstance.id, orchestratorSession.id);
+
+      if (orchestratorTemplate.cliType === 'claude' || orchestratorTemplate.cliType === 'codex') {
+        const port = process.env.PORT || 5010;
+        const bootstrapPrompt = `${buildOrchestratorPrompt(port, orchestratorSession.id)}\n\nTeam goal: ${goal || 'No explicit goal provided.'}\nStrategy: ${team.strategy}\nRoster:\n${buildTeamRoster(team)}`;
+        setTimeout(() => {
+          sessionManager.sendInput(orchestratorSession.id, bootstrapPrompt + '\r');
+        }, 3000);
+      }
+
+      if (team.strategy === 'parallel') {
+        for (const member of team.members.filter((item) => !item.isOrchestrator)) {
+          const template = AGENT_TEMPLATES[member.template];
+          if (!template) continue;
+          const siblingSessions = sessionIds
+            .slice(1)
+            .map((sessionId) => sessionManager.getSession(sessionId))
+            .filter(Boolean);
+          const role = (template.cliType === 'claude' || template.cliType === 'codex')
+            ? buildChildRoleContext(orchestratorSession, siblingSessions, template.role)
+            : template.role;
+          const memberName = ensureUniqueSessionName(`${team.name} - ${template.name}`, sessionManager.getAllSessions().map((session) => session.name));
+          const childSession = sessionManager.createSession(
+            memberName,
+            workingDir,
+            template.cliType,
+            {},
+            role,
+            {
+              parentSessionId: orchestratorSession.id,
+              teamInstanceId: teamInstance.id
+            }
+          );
+          sessionIds = [...sessionIds, childSession.id];
+          teamStore.updateTeamInstance(teamInstance.id, { sessionIds });
+          updateTeamInstanceMembership(null, teamInstance.id, childSession.id);
+
+          const startupPrompt = buildTeamMemberStartupPrompt(team, member, goal, orchestratorSession);
+          if (startupPrompt && (template.cliType === 'claude' || template.cliType === 'codex')) {
+            setTimeout(() => {
+              sessionManager.sendInput(childSession.id, startupPrompt + '\r');
+            }, 2000);
+          }
+        }
+      }
+
+      return reply.status(201).send({ ok: true, teamInstance: enrichTeamInstance(teamStore.getTeamInstance(teamInstance.id)) });
+    } catch (error) {
+      teamStore.updateTeamInstance(teamInstance.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString()
+      });
+      return reply.status(500).send({ error: `Failed to launch team: ${error.message}` });
+    }
+  });
+
+  app.get('/api/team-instances', async () => {
+    return {
+      teamInstances: teamStore.listTeamInstances().map((instance) => enrichTeamInstance(instance))
+    };
+  });
+
+  app.get('/api/team-instances/:id', async (request, reply) => {
+    const instance = teamStore.getTeamInstance(request.params.id);
+    if (!instance) {
+      return reply.status(404).send({ error: 'Team instance not found' });
+    }
+    return { teamInstance: enrichTeamInstance(instance) };
+  });
+
   // List all sessions
   app.get('/api/sessions', async () => {
     return { sessions: sessionManager.getAllSessions() };
@@ -432,7 +1009,7 @@ async function start() {
 
   // Create a new session
   app.post('/api/sessions', async (request, reply) => {
-    const { name, workingDir, cliType, stage, priority, description, role } = request.body || {};
+    const { name, workingDir, cliType, stage, priority, description, role, isOrchestrator, parentSessionId, teamInstanceId, teamAction, teamName } = request.body || {};
     const normalizedRole = normalizeRoleInput(role);
     if (normalizedRole.error) {
       return reply.status(400).send({ error: normalizedRole.error });
@@ -445,12 +1022,77 @@ async function start() {
     const existingNames = sessionManager.getAllSessions().map(s => s.name);
     const resolvedName = normalizedName || ensureUniqueSessionName(generateSessionName(new Date(), normalizedCliType), existingNames);
 
+    // Resolve team/orchestrator/parent from teamAction (new) or legacy fields
+    let resolvedTeamInstanceId = teamInstanceId || null;
+    let resolvedIsOrchestrator = !!isOrchestrator;
+    let resolvedParentSessionId = parentSessionId || null;
+
+    if (teamAction === 'new') {
+      // Auto-create a new team instance, session becomes orchestrator
+      const newTeam = teamStore.createTeamInstance({
+        name: teamName || `${resolvedName}'s Team`,
+        strategy: 'hierarchical',
+        orchestratorSessionId: null, // set after session creation
+        sessionIds: []
+      });
+      resolvedTeamInstanceId = newTeam.id;
+      resolvedIsOrchestrator = true;
+      resolvedParentSessionId = null;
+    } else if (teamAction && teamAction !== 'none') {
+      // Join existing team — teamAction is the team instance ID
+      const team = teamStore.getTeamInstance(teamAction);
+      if (!team) {
+        return reply.status(400).send({ error: 'Team instance not found' });
+      }
+      resolvedTeamInstanceId = team.id;
+      resolvedParentSessionId = team.orchestratorSessionId || null;
+      resolvedIsOrchestrator = false;
+    } else if (!teamAction) {
+      // Legacy path: use explicit isOrchestrator/parentSessionId/teamInstanceId
+      if (parentSessionId) {
+        const parentSession = sessionManager.getSession(parentSessionId);
+        if (!parentSession) {
+          return reply.status(400).send({ error: 'Parent session not found' });
+        }
+        if (teamInstanceId && parentSession.teamInstanceId && teamInstanceId !== parentSession.teamInstanceId) {
+          return reply.status(400).send({ error: 'teamInstanceId must match parent session team' });
+        }
+        resolvedTeamInstanceId = teamInstanceId || parentSession.teamInstanceId || null;
+      }
+    }
+
+    if (resolvedTeamInstanceId && !teamStore.getTeamInstance(resolvedTeamInstanceId)) {
+      return reply.status(400).send({ error: 'Team instance not found' });
+    }
+
     try {
       const session = sessionManager.createSession(resolvedName, workingDir, normalizedCliType, {
         stage: stage || 'todo',
         priority: priority || 0,
         description: description || ''
-      }, normalizedRole.value);
+      }, normalizedRole.value, {
+        isOrchestrator: resolvedIsOrchestrator,
+        parentSessionId: resolvedParentSessionId,
+        teamInstanceId: resolvedTeamInstanceId
+      });
+
+      updateTeamInstanceMembership(null, resolvedTeamInstanceId, session.id);
+
+      // For 'new' team, update orchestratorSessionId now that session exists
+      if (teamAction === 'new' && resolvedTeamInstanceId) {
+        teamStore.updateTeamInstance(resolvedTeamInstanceId, {
+          orchestratorSessionId: session.id
+        });
+      }
+
+      // Inject orchestrator prompt for AI sessions
+      if (resolvedIsOrchestrator && (normalizedCliType === 'claude' || normalizedCliType === 'codex')) {
+        const port = process.env.PORT || 5010;
+        const orchestratorPrompt = buildOrchestratorPrompt(port, session.id);
+        setTimeout(() => {
+          sessionManager.sendInput(session.id, orchestratorPrompt + '\r');
+        }, 3000);
+      }
 
       return reply.status(201).send({ session });
     } catch (error) {
@@ -494,10 +1136,72 @@ async function start() {
   // Update session metadata
   app.patch('/api/sessions/:id', async (request, reply) => {
     const { id } = request.params;
-    const { name, notes, tags, cliType, role } = request.body || {};
+    const { name, notes, tags, cliType, role, isOrchestrator, parentSessionId, teamInstanceId } = request.body || {};
     const normalizedRole = normalizeRoleInput(role);
     if (normalizedRole.error) {
       return reply.status(400).send({ error: normalizedRole.error });
+    }
+
+    const currentSession = sessionManager.getSession(id);
+    if (!currentSession) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    let resolvedParentSessionId = currentSession.parentSessionId || null;
+    let resolvedTeamInstanceId = currentSession.teamInstanceId || null;
+
+    if (parentSessionId !== undefined) {
+      if (parentSessionId) {
+        if (currentSession.parentSessionId && currentSession.parentSessionId !== parentSessionId) {
+          return reply.status(400).send({ error: 'Cannot reparent a session that already has a parent' });
+        }
+        const parentSession = sessionManager.getSession(parentSessionId);
+        if (!parentSession) {
+          return reply.status(400).send({ error: 'Parent session not found' });
+        }
+        resolvedParentSessionId = parentSessionId;
+        resolvedTeamInstanceId = teamInstanceId !== undefined
+          ? (teamInstanceId || null)
+          : (parentSession.teamInstanceId || null);
+        if (resolvedTeamInstanceId && parentSession.teamInstanceId && resolvedTeamInstanceId !== parentSession.teamInstanceId) {
+          return reply.status(400).send({ error: 'teamInstanceId must match parent session team' });
+        }
+      } else {
+        resolvedParentSessionId = null;
+        if (teamInstanceId === undefined) {
+          resolvedTeamInstanceId = null;
+        }
+      }
+    }
+
+    if (teamInstanceId !== undefined && parentSessionId === undefined) {
+      resolvedTeamInstanceId = teamInstanceId || null;
+      // Auto-set parentSessionId to team's orchestrator when joining a team
+      if (resolvedTeamInstanceId) {
+        const teamInstance = teamStore.getTeamInstance(resolvedTeamInstanceId);
+        if (teamInstance && teamInstance.orchestratorSessionId && teamInstance.orchestratorSessionId !== id) {
+          resolvedParentSessionId = teamInstance.orchestratorSessionId;
+        }
+      } else {
+        // Removing from team — also clear parent if it was the team orchestrator
+        if (currentSession.teamInstanceId) {
+          const oldTeam = teamStore.getTeamInstance(currentSession.teamInstanceId);
+          if (oldTeam && currentSession.parentSessionId === oldTeam.orchestratorSessionId) {
+            resolvedParentSessionId = null;
+          }
+        }
+      }
+    }
+
+    if (resolvedTeamInstanceId) {
+      const teamInstance = teamStore.getTeamInstance(resolvedTeamInstanceId);
+      if (!teamInstance) {
+        return reply.status(400).send({ error: 'Team instance not found' });
+      }
+      const orchestrator = sessionManager.getSession(teamInstance.orchestratorSessionId);
+      if (!orchestrator || orchestrator.status === 'completed') {
+        return reply.status(400).send({ error: 'Target team orchestrator is not active' });
+      }
     }
 
     const session = sessionManager.updateSessionMeta(id, {
@@ -505,11 +1209,25 @@ async function start() {
       notes,
       tags,
       cliType,
-      role: role === undefined ? undefined : normalizedRole.value
+      role: role === undefined ? undefined : normalizedRole.value,
+      isOrchestrator,
+      parentSessionId: resolvedParentSessionId,
+      teamInstanceId: resolvedTeamInstanceId
     });
 
-    if (!session) {
-      return reply.status(404).send({ error: 'Session not found' });
+    updateTeamInstanceMembership(currentSession.teamInstanceId || null, resolvedTeamInstanceId, id);
+
+    // Best-effort prompt injection when toggling orchestrator on a running AI session
+    if (isOrchestrator === true) {
+      const liveSession = sessionManager.getSession(id);
+      if (liveSession && liveSession.status !== 'completed' && liveSession.status !== 'paused') {
+        const sessionCliType = liveSession.cliType || 'claude';
+        if (sessionCliType === 'claude' || sessionCliType === 'codex') {
+          const port = process.env.PORT || 5010;
+          const orchestratorPrompt = buildOrchestratorPrompt(port, id);
+          sessionManager.sendInput(id, orchestratorPrompt + '\r');
+        }
+      }
     }
 
     return { session };
@@ -656,6 +1374,319 @@ async function start() {
     }
 
     return { claudeSessionId: result.claudeSessionId, command: result.command };
+  });
+
+  // ============================================
+  // Orchestrator Endpoints
+  // ============================================
+
+  // Rate limiting state for orchestrator endpoints
+  const orchestratorRateLimit = new Map(); // sessionId -> { count, resetAt }
+  const orchestratorLoopDetect = new Map(); // "fromId->toId" -> timestamps[]
+
+  function checkOrchestratorRateLimit(sessionId) {
+    const now = Date.now();
+    let entry = orchestratorRateLimit.get(sessionId);
+    if (!entry || now > entry.resetAt) {
+      entry = { count: 0, resetAt: now + 1000 };
+      orchestratorRateLimit.set(sessionId, entry);
+    }
+    entry.count++;
+    return entry.count <= 30;
+  }
+
+  function checkLoopPrevention(fromSessionId, toSessionId) {
+    const key = `${fromSessionId}->${toSessionId}`;
+    const now = Date.now();
+    let timestamps = orchestratorLoopDetect.get(key) || [];
+    timestamps = timestamps.filter(t => now - t < 10000);
+    timestamps.push(now);
+    orchestratorLoopDetect.set(key, timestamps);
+    return timestamps.length <= 3;
+  }
+
+  // Cleanup loop detection every 60 seconds
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, timestamps] of orchestratorLoopDetect.entries()) {
+      const recent = timestamps.filter(t => now - t < 10000);
+      if (recent.length === 0) orchestratorLoopDetect.delete(key);
+      else orchestratorLoopDetect.set(key, recent);
+    }
+  }, 60000);
+
+  // 1.1 LIST — Get all sessions for orchestrator consumption
+  app.get('/api/orchestrator/sessions', async () => {
+    const allSessions = sessionManager.getAllSessions();
+    return {
+      sessions: allSessions.map(s => ({
+        id: s.id,
+        name: s.name,
+        status: s.status,
+        cliType: s.cliType,
+        workingDir: s.workingDir,
+        parentSessionId: s.parentSessionId || null,
+        teamInstanceId: s.teamInstanceId || null,
+        isOrchestrator: s.isOrchestrator || false,
+        lastActivity: s.lastActivity
+      }))
+    };
+  });
+
+  // 1.2 READ — Read session screen output
+  app.get('/api/orchestrator/sessions/:id/screen', async (request, reply) => {
+    const { id } = request.params;
+    const lines = Math.min(parseInt(request.query.lines) || 50, 500);
+    const format = request.query.format || 'text';
+    const sinceChunk = request.query.sinceChunk !== undefined ? parseInt(request.query.sinceChunk) : null;
+
+    const output = sessionManager.getSessionOutput(id);
+    if (output === null) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    const session = sessionManager.getSession(id);
+    let chunks = output;
+    let startChunkIndex = 0;
+
+    // Incremental read: only chunks after sinceChunk
+    if (sinceChunk !== null && sinceChunk >= 0) {
+      // sinceChunk is an absolute index; ring buffer may have rotated
+      // We use the buffer length to calculate the offset
+      const totalChunks = output.length;
+      const startFrom = Math.max(0, sinceChunk);
+      if (startFrom < totalChunks) {
+        chunks = output.slice(startFrom);
+        startChunkIndex = startFrom;
+      } else {
+        chunks = [];
+        startChunkIndex = totalChunks;
+      }
+    }
+
+    const rawText = chunks.join('');
+    const screenText = format === 'raw' ? rawText : stripAnsi(rawText);
+
+    // Take last N lines
+    const allLines = screenText.split('\n');
+    const lastLines = allLines.slice(-lines).join('\n');
+
+    return {
+      screen: lastLines,
+      latestChunk: output.length,
+      sessionId: id,
+      status: session ? session.status : 'unknown'
+    };
+  });
+
+  // 1.3a SEND by name — Resolve target by name/ID prefix, then send
+  app.post('/api/orchestrator/send', async (request, reply) => {
+    const { target, text, submit, fromSessionId } = request.body || {};
+    if (!target || !text) {
+      return reply.status(400).send({ error: 'target and text are required' });
+    }
+
+    // Only search active/reachable sessions (not completed/killed)
+    const allSessions = sessionManager.getAllSessions().filter(s => s.status !== 'completed');
+    // Resolve target in strict order: exact ID → exact name → ID prefix → partial name
+    let matched = allSessions.find(s => s.id === target);
+    if (!matched) {
+      const lower = target.toLowerCase();
+      matched = allSessions.find(s => s.name?.toLowerCase() === lower);
+    }
+    if (!matched) {
+      const prefixMatches = allSessions.filter(s => s.id.startsWith(target));
+      if (prefixMatches.length === 1) matched = prefixMatches[0];
+    }
+    if (!matched) {
+      const lower = target.toLowerCase();
+      const nameMatches = allSessions.filter(s => s.name?.toLowerCase().includes(lower));
+      if (nameMatches.length === 1) matched = nameMatches[0];
+      else if (nameMatches.length > 1) {
+        return reply.status(400).send({
+          error: 'Ambiguous target — multiple sessions match',
+          matches: nameMatches.map(s => ({ id: s.id.substring(0, 8), name: s.name }))
+        });
+      }
+    }
+    if (!matched) {
+      return reply.status(404).send({ error: `No session matching "${target}"` });
+    }
+
+    // Rate limiting
+    if (fromSessionId && !checkOrchestratorRateLimit(fromSessionId)) {
+      return reply.status(429).send({ error: 'Rate limit exceeded' });
+    }
+    if (fromSessionId && !checkLoopPrevention(fromSessionId, matched.id)) {
+      return reply.status(429).send({ error: 'Loop detected' });
+    }
+
+    // Prepend sender attribution
+    let messageText = text;
+    if (fromSessionId) {
+      const senderSession = sessionManager.getSession(fromSessionId);
+      const senderName = senderSession?.name || fromSessionId.substring(0, 8);
+      messageText = `[From: ${senderName} (${fromSessionId.substring(0, 8)})] ${text}`;
+
+      if (!recentSenders.has(matched.id)) recentSenders.set(matched.id, new Map());
+      recentSenders.get(matched.id).set(fromSessionId, Date.now());
+    }
+
+    const inputText = submit ? messageText + '\r' : messageText;
+    const success = sessionManager.sendInput(matched.id, inputText);
+    if (!success) {
+      return reply.status(404).send({ error: 'Session not active' });
+    }
+    return { ok: true, sessionId: matched.id, sessionName: matched.name, sent: text.substring(0, 200) };
+  });
+
+  // 1.3b SEND by ID — Send input to a session
+  app.post('/api/orchestrator/sessions/:id/input', async (request, reply) => {
+    const { id } = request.params;
+    const { text, submit, fromSessionId } = request.body || {};
+
+    if (!text || typeof text !== 'string') {
+      return reply.status(400).send({ error: 'text is required' });
+    }
+
+    // Rate limiting
+    if (fromSessionId && !checkOrchestratorRateLimit(fromSessionId)) {
+      return reply.status(429).send({ error: 'Rate limit exceeded (30 req/s per session)' });
+    }
+
+    // Loop prevention
+    if (fromSessionId && !checkLoopPrevention(fromSessionId, id)) {
+      return reply.status(429).send({ error: 'Loop detected: too many sends between these sessions' });
+    }
+
+    // Prepend sender attribution if fromSessionId is provided
+    let messageText = text;
+    if (fromSessionId) {
+      const senderSession = sessionManager.getSession(fromSessionId);
+      const senderName = senderSession?.name || fromSessionId.substring(0, 8);
+      messageText = `[From: ${senderName} (${fromSessionId.substring(0, 8)})] ${text}`;
+
+      // Track sender for reply notifications (expire after 5 minutes)
+      if (!recentSenders.has(id)) recentSenders.set(id, new Map());
+      recentSenders.get(id).set(fromSessionId, Date.now());
+      // Clean up expired entries
+      const senders = recentSenders.get(id);
+      const expiry = Date.now() - 5 * 60 * 1000;
+      for (const [sid, ts] of senders) {
+        if (ts < expiry) senders.delete(sid);
+      }
+    }
+
+    const inputText = submit ? messageText + '\r' : messageText;
+    const success = sessionManager.sendInput(id, inputText);
+
+    if (!success) {
+      return reply.status(404).send({ error: 'Session not found or not active' });
+    }
+
+    return { ok: true, sessionId: id, sent: text.substring(0, 200) };
+  });
+
+  // 1.4 SPAWN — Create and start a new child session
+  app.post('/api/orchestrator/sessions/spawn', async (request, reply) => {
+    const { name, workingDir, cliType, role, startupPrompt, parentSessionId } = request.body || {};
+
+    if (!parentSessionId) {
+      return reply.status(400).send({ error: 'parentSessionId is required' });
+    }
+
+    // Verify parent exists
+    const parentSession = sessionManager.getSession(parentSessionId);
+    if (!parentSession) {
+      return reply.status(404).send({ error: 'Parent session not found' });
+    }
+
+    const sessionName = name || `Child of ${parentSession.name}`;
+    const sessionDir = workingDir || parentSession.workingDir;
+    const sessionCliType = cliType || 'claude';
+    const sessionRole = role || '';
+    const inheritedTeamInstanceId = parentSession.teamInstanceId || null;
+    let enrichedRole = sessionRole;
+
+    if (sessionCliType === 'claude' || sessionCliType === 'codex') {
+      const allSessions = sessionManager.getAllSessions();
+      const siblings = allSessions.filter((s) =>
+        s.parentSessionId === parentSessionId
+      );
+      enrichedRole = buildChildRoleContext(parentSession, siblings, sessionRole);
+    }
+
+    try {
+      const session = sessionManager.createSession(
+        sessionName,
+        sessionDir,
+        sessionCliType,
+        {},
+        enrichedRole,
+        {
+          parentSessionId,
+          teamInstanceId: inheritedTeamInstanceId
+        }
+      );
+
+      updateTeamInstanceMembership(null, inheritedTeamInstanceId, session.id);
+
+      if (sessionCliType === 'claude' || sessionCliType === 'codex') {
+        const allSessions = sessionManager.getAllSessions();
+        const existingSiblings = allSessions.filter((s) =>
+          s.parentSessionId === parentSessionId &&
+          s.id !== session.id &&
+          s.status !== 'completed'
+        );
+
+        for (const sibling of existingSiblings) {
+          const siblingClients = terminalClients.get(sibling.id);
+          if (!siblingClients) continue;
+
+          const notification = JSON.stringify({
+            type: 'easycc-notification',
+            message: `New sibling "${sessionName}" (${session.id.substring(0, 8)}) joined the group.`,
+            childSessionId: session.id,
+            childName: sessionName
+          });
+
+          for (const client of siblingClients) {
+            try {
+              client.send(notification);
+            } catch {}
+          }
+        }
+      }
+
+      // Send startup prompt if provided
+      if (startupPrompt) {
+        // Wait a bit for the session to initialize, then send
+        setTimeout(() => {
+          sessionManager.sendInput(session.id, startupPrompt + '\r');
+        }, 2000);
+      }
+
+      const snapshot = sessionManager.getSession(session.id);
+      return { ok: true, session: snapshot };
+    } catch (error) {
+      return reply.status(500).send({ error: `Failed to spawn session: ${error.message}` });
+    }
+  });
+
+  // 1.5 STATUS — Lightweight status check
+  app.get('/api/orchestrator/sessions/:id/status', async (request, reply) => {
+    const { id } = request.params;
+    const session = sessionManager.getSession(id);
+
+    if (!session) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    return {
+      sessionId: id,
+      status: session.status,
+      lastActivity: session.lastActivity
+    };
   });
 
   // Create a new plan from pasted content
@@ -1896,6 +2927,11 @@ async function start() {
     }
   });
 
+  // Broadcast new session creation to all dashboard clients
+  sessionManager.on('sessionCreated', ({ id, session }) => {
+    broadcastDashboard({ type: 'sessionCreated', session });
+  });
+
   // Broadcast status changes to dashboard clients
   sessionManager.on('statusChange', ({ sessionId, status, currentTask }) => {
     const message = JSON.stringify({
@@ -1954,6 +2990,73 @@ async function start() {
         }
       }
     }
+  });
+
+  sessionManager.on('statusChange', ({ sessionId, status }) => {
+    if (status === 'thinking' || status === 'active') {
+      activeChildren.add(sessionId);
+      return;
+    }
+
+    if (status === 'completed' || status === 'paused') {
+      activeChildren.delete(sessionId);
+      return;
+    }
+
+    if (status !== 'idle' || !activeChildren.has(sessionId)) return;
+    activeChildren.delete(sessionId);
+
+    const session = sessionManager.sessions.get(sessionId);
+    if (!session?.parentSessionId) return;
+    if (!sessionManager.sessions.has(session.parentSessionId)) return;
+
+    const parentTermClients = terminalClients.get(session.parentSessionId);
+    if (!parentTermClients) return;
+
+    const notification = JSON.stringify({
+      type: 'easycc-notification',
+      message: `Child "${session.name}" (${sessionId.substring(0, 8)}) is now idle. Use /ec-read ${session.name} to see results.`,
+      childSessionId: sessionId,
+      childName: session.name
+    });
+
+    for (const client of parentTermClients) {
+      try {
+        client.send(notification);
+      } catch {}
+    }
+  });
+
+  // Notify recent senders when a recipient goes idle (reply notification)
+  sessionManager.on('statusChange', ({ sessionId, status }) => {
+    if (status !== 'idle') return;
+    const senders = recentSenders.get(sessionId);
+    if (!senders || senders.size === 0) return;
+
+    const session = sessionManager.sessions.get(sessionId);
+    if (!session) return;
+
+    const expiry = Date.now() - 5 * 60 * 1000;
+    for (const [senderId, ts] of senders) {
+      if (ts < expiry) { senders.delete(senderId); continue; }
+      // Don't notify if sender is also the parent (already notified above)
+      if (senderId === session.parentSessionId) continue;
+
+      const senderClients = terminalClients.get(senderId);
+      if (!senderClients) continue;
+
+      const replyNotification = JSON.stringify({
+        type: 'easycc-notification',
+        message: `"${session.name}" (${sessionId.substring(0, 8)}) finished processing your message. Use /ec-read ${session.name} to see results.`,
+        childSessionId: sessionId,
+        childName: session.name
+      });
+      for (const client of senderClients) {
+        try { client.send(replyNotification); } catch {}
+      }
+    }
+    // Clear senders after notification
+    recentSenders.delete(sessionId);
   });
 
   // Broadcast session updates to dashboard clients
@@ -2026,6 +3129,7 @@ async function start() {
         if (t) broadcastDashboard({ type: 'taskUpdated', task: t });
       }
     }
+    refreshTeamInstanceStatus(session?.teamInstanceId);
   });
 
   // Broadcast session ended to clients
@@ -2058,6 +3162,7 @@ async function start() {
         if (t) broadcastDashboard({ type: 'taskUpdated', task: t });
       }
     }
+    refreshTeamInstanceStatus(session?.teamInstanceId);
   });
 
   // Clear debounce timer on session kill
@@ -2251,6 +3356,13 @@ async function start() {
   const port = parseInt(process.env.PORT || '5010', 10);
 
   try {
+    sessionManager.port = port;
+    try {
+      installEcSkills();
+      console.log('Installed /ec-* Claude Code skills');
+    } catch (err) {
+      console.warn('Could not install /ec-* skills:', err.message);
+    }
     await app.listen({ port, host });
     console.log(`\nEasyCC running at:`);
     console.log(`  Local:   http://localhost:${port}`);

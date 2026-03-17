@@ -7,6 +7,8 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
   const [notes, setNotes] = useState(session?.notes || '');
   const [tagInput, setTagInput] = useState('');
   const [tags, setTags] = useState(session?.tags || []);
+  const [teamInstanceId, setTeamInstanceId] = useState(session?.teamInstanceId || '');
+  const [activeTeams, setActiveTeams] = useState([]);
   const [plans, setPlans] = useState([]);
   const [loadingPlans, setLoadingPlans] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -17,8 +19,28 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
       setName(session.name || '');
       setNotes(session.notes || '');
       setTags(session.tags || []);
+      setTeamInstanceId(session.teamInstanceId || '');
     }
   }, [session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadActiveTeams = async () => {
+      try {
+        const res = await fetch('/api/team-instances');
+        const data = await res.json();
+        if (!cancelled) {
+          setActiveTeams(data.teamInstances || []);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setActiveTeams([]);
+        }
+      }
+    };
+    loadActiveTeams();
+    return () => { cancelled = true; };
+  }, []);
 
   // Close on ESC key
   useEffect(() => {
@@ -55,7 +77,7 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onUpdate(session.id, { name, notes, tags });
+      await onUpdate(session.id, { name, notes, tags, teamInstanceId: teamInstanceId || null });
     } catch (error) {
       console.error('Error saving session:', error);
     }
@@ -193,6 +215,23 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
                   />
                   <button className="btn btn-secondary btn-small" onClick={handleAddTag}>Add</button>
                 </div>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="teamInstance">Team</label>
+                <select
+                  id="teamInstance"
+                  value={teamInstanceId}
+                  onChange={(e) => setTeamInstanceId(e.target.value)}
+                  className="cli-select"
+                >
+                  <option value="">None</option>
+                  {activeTeams.map((team) => (
+                    <option key={team.id} value={team.id}>
+                      {team.name} ({team.sessionIds?.length || 0} members)
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="session-actions">

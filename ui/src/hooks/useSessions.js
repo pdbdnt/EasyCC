@@ -76,6 +76,13 @@ export function useSessions() {
         });
         break;
 
+      case 'sessionCreated':
+        setSessions(prev => {
+          if (prev.some(s => s.id === data.session.id)) return prev;
+          return [...prev, data.session];
+        });
+        break;
+
       case 'statusChange':
         setSessions(prev => prev.map(session =>
           session.id === data.sessionId
@@ -201,11 +208,11 @@ export function useSessions() {
 
   const createSession = useCallback(async (name, workingDir, cliType = 'claude', options = {}) => {
     try {
-      const { select = true, stage, priority, description, role } = options;
+      const { select = true, stage, priority, description, role, isOrchestrator, parentSessionId, teamAction, teamName } = options;
       const response = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, workingDir, cliType, stage, priority, description, role })
+        body: JSON.stringify({ name, workingDir, cliType, stage, priority, description, role, isOrchestrator, parentSessionId, teamAction, teamName })
       });
 
       if (!response.ok) {
@@ -214,7 +221,10 @@ export function useSessions() {
       }
 
       const { session } = await response.json();
-      setSessions(prev => [...prev, session]);
+      setSessions(prev => {
+        if (prev.some(s => s.id === session.id)) return prev;
+        return [...prev, session];
+      });
       if (select) {
         setSelectedIds([session.id]);
       }
@@ -630,6 +640,7 @@ export function useSessions() {
     sessionsByStage,
     selectedId,
     selectedIds,
+    setSelectedIds,
     selectSession,
     selectMultiple,
     setActiveSelectedId,
@@ -660,7 +671,7 @@ export function useSessions() {
     deleteAgent,
     connectionStatus,
     isConnected
-  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
+  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, setSelectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
 }
 
 export default useSessions;

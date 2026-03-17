@@ -168,7 +168,8 @@ function KanbanBoard({
   }, [activeTasks]);
 
   const projects = useMemo(() => {
-    const projectSet = new Set((sessions || []).map(s => s.workingDir).filter(Boolean));
+    // Normalize path separators to avoid duplicates (C:\ vs C:/)
+    const projectSet = new Set((sessions || []).map(s => s.workingDir?.replace(/\//g, '\\') || '').filter(Boolean));
     return Array.from(projectSet).sort();
   }, [sessions]);
 
@@ -177,7 +178,7 @@ function KanbanBoard({
     const filtered = {};
     for (const stage of stages || []) {
       filtered[stage.id] = (sessionsByStage[stage.id] || [])
-        .filter(s => selectedProjects.has(s.workingDir));
+        .filter(s => selectedProjects.has(s.workingDir?.replace(/\//g, '\\')));
     }
     return filtered;
   }, [sessionsByStage, selectedProjects, stages]);

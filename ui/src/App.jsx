@@ -87,6 +87,7 @@ function App() {
     sessionsByStage,
     selectedId,
     selectedIds,
+    setSelectedIds,
     selectSession,
     selectMultiple,
     setActiveSelectedId,
@@ -166,6 +167,8 @@ function App() {
   const kanbanProjectFilterRef = useRef(null);
   const dashboardProjectFilterRef = useRef(null);
   const sidebarRectsRef = useRef(null);
+  const prevSessionIdsRef = useRef(new Set());
+  const hydratedRef = useRef(false);
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -826,6 +829,7 @@ function App() {
   // Refs for keyboard handler -- allows mount-once effect with no dependency churn
   const hintModeActiveRef = useRef(hintModeActive);
   const currentViewRef = useRef(currentView);
+  const sessionsRef = useRef(sessions);
   const selectedIdRef = useRef(selectedId);
   const stagesRef = useRef(stages);
   const sessionsByStageRef = useRef(sessionsByStage);
@@ -839,6 +843,7 @@ function App() {
   const requestCloseCurrentSessionRef = useRef(requestCloseCurrentSession);
   const handleSessionSelectFromKanbanRef = useRef(handleSessionSelectFromKanban);
   const switchViewRef = useRef(switchView);
+  const viewOrchestratorGroupRef = useRef(null);
   const focusedColumnIdRef = useRef(focusedColumnId);
   const kanbanColumnFilterRef = useRef(kanbanColumnFilter);
   const navigationKeysRef = useRef(settings.keyboard?.navigation);
@@ -846,6 +851,7 @@ function App() {
   // Sync refs during render (no effect needed)
   hintModeActiveRef.current = hintModeActive;
   currentViewRef.current = currentView;
+  sessionsRef.current = sessions;
   selectedIdRef.current = selectedId;
   stagesRef.current = stages;
   sessionsByStageRef.current = sessionsByStage;
@@ -877,6 +883,16 @@ function App() {
         e.preventDefault();
         e.stopPropagation();
         closeFocusedPaneRef.current();
+        return;
+      }
+
+      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'g') {
+        const selectedSession = sessionsRef.current.find((session) => session.id === selectedIdRef.current);
+        if (selectedSession?.isOrchestrator) {
+          e.preventDefault();
+          e.stopPropagation();
+          viewOrchestratorGroupRef.current(selectedSession.id);
+        }
         return;
       }
 
@@ -1106,6 +1122,15 @@ function App() {
     }
   }, [sessionIdToGroup, activeGroupId, sessions, toggleSelectSession, setActiveSelectedId, selectMultiple, selectSession]);
 
+  const viewOrchestratorGroup = useCallback((orchestratorId) => {
+    const children = sessions.filter(s => s.parentSessionId === orchestratorId);
+    const groupIds = [orchestratorId, ...children.map(child => child.id)];
+    selectMultiple(groupIds, orchestratorId);
+    setMultiPaneLayout('auto');
+  }, [selectMultiple, sessions]);
+
+  viewOrchestratorGroupRef.current = viewOrchestratorGroup;
+
   const handleSaveGroup = useCallback((name) => {
     const group = saveGroup(name, selectedIds);
     setActiveGroupId(group.id);
@@ -1129,13 +1154,73 @@ function App() {
     }
   }, [activeGroupId, selectedIds, sessionGroups]);
 
-  const handleCreateSession = async (name, workingDir, cliType, role = '') => {
-    const createdSession = await createSession(name, workingDir, cliType, { role });
+  useEffect(() => {
+    if (!hydratedRef.current) {
+      prevSessionIdsRef.current = new Set(sessions.map(session => session.id));
+      hydratedRef.current = true;
+      return;
+    }
+
+    if (currentView !== 'sessions') {
+      prevSessionIdsRef.current = new Set(sessions.map(session => session.id));
+      return;
+    }
+
+    const newChildren = sessions.filter((session) =>
+      session.parentSessionId && !prevSessionIdsRef.current.has(session.id)
+    );
+
+    for (const child of newChildren) {
+      if (!selectedIds.includes(child.parentSessionId)) continue;
+      setSelectedIds((prev) => {
+        if (prev.includes(child.id)) return prev;
+        return [...prev, child.id];
+      });
+    }
+
+    prevSessionIdsRef.current = new Set(sessions.map(session => session.id));
+  }, [currentView, selectedIds, sessions, setSelectedIds]);
+
+  const handleCreateSession = async (name, workingDir, cliType, role = '', opts = {}) => {
+    const createdSession = await createSession(name, workingDir, cliType, {
+      role,
+      isOrchestrator: opts.isOrchestrator || false,
+      parentSessionId: opts.parentSessionId || null,
+      teamAction: opts.teamAction || undefined,
+      teamName: opts.teamName || undefined
+    });
     if (createdSession) {
       setShowNewSessionModal(false);
     }
     return !!createdSession;
   };
+
+  const handleLaunchTeam = useCallback(async (teamId, launchConfig) => {
+    const response = await fetch(`/api/teams/${teamId}/launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(launchConfig)
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to launch team');
+    }
+
+    const instance = payload.teamInstance;
+    const sessionIds = instance?.sessionIds || [];
+    const orchestratorSessionId = instance?.orchestratorSessionId || sessionIds[0] || null;
+
+    switchView('sessions', { reason: 'other', fromView: currentView });
+    if (sessionIds.length > 1 && orchestratorSessionId) {
+      selectMultiple(sessionIds, orchestratorSessionId);
+      setMultiPaneLayout('auto');
+    } else if (orchestratorSessionId) {
+      selectSession(orchestratorSessionId);
+    }
+    setShowNewSessionModal(false);
+    return payload.teamInstance;
+  }, [currentView, selectMultiple, selectSession, switchView]);
 
   const handleClearKanbanFilter = useCallback(() => {
     setKanbanColumnFilter(null);
@@ -1291,6 +1376,7 @@ function App() {
             onClearKanbanProjectFilter={handleClearKanbanProjectFilter}
             onProjectFilterChange={handleDashboardProjectFilterChange}
             stages={stages}
+            onViewOrchestratorGroup={viewOrchestratorGroup}
             viewTransition={viewTransition}
             flipTriggerNonce={flipTriggerNonce}
             kanbanRects={kanbanRectsRef.current}
@@ -1511,6 +1597,7 @@ function App() {
                         }
                       }}
                       session={paneSession}
+                      sessions={sessions}
                       onKillSession={() => killSession(paneSession.id)}
                       onPauseSession={pauseSession}
                       onResumeSession={resumeSession}
@@ -1550,7 +1637,9 @@ function App() {
         <NewSessionModal
           onClose={() => setShowNewSessionModal(false)}
           onCreate={handleCreateSession}
+          onLaunchTeam={handleLaunchTeam}
           defaultWorkingDir={selectedSession?.workingDir}
+          sessions={sessions}
         />
       )}
       {showSettingsModal && (
