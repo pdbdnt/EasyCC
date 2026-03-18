@@ -855,7 +855,7 @@ class SessionManager extends EventEmitter {
 
       // Detect Claude Code /rename command output (strip ANSI sequences first)
       const cleanData = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-      const renameMatch = cleanData.match(/Session renamed to "([^"]+)"/);
+      const renameMatch = cleanData.match(/Session renamed to:?\s*"?([^"\r\n]+)"?/);
       if (renameMatch && renameMatch[1]) {
         const newName = renameMatch[1].trim();
         if (newName && newName !== session.name) {
@@ -982,9 +982,13 @@ class SessionManager extends EventEmitter {
     const sessions = claudeSessions || this.getClaudeSessions(session.workingDir);
     if (sessions.length === 0) return;
 
-    // Find the most recently modified session
+    // Find the most recently modified session that isn't owned by another EasyCC session
     sessions.sort((a, b) => new Date(b.modified) - new Date(a.modified));
-    const latestClaudeSession = sessions[0];
+    const ownedIds = new Set();
+    for (const [id, s] of this.sessions) {
+      if (id !== session.id && s.claudeSessionId) ownedIds.add(s.claudeSessionId);
+    }
+    const latestClaudeSession = sessions.find(cs => !ownedIds.has(cs.sessionId)) || null;
 
     // Check if this is a new/different Claude session
     if (latestClaudeSession && latestClaudeSession.sessionId !== session.claudeSessionId) {
@@ -1048,9 +1052,20 @@ class SessionManager extends EventEmitter {
       /conversation\s+([a-z0-9-]+)/i
     ];
 
+    // Collect IDs already owned by other EasyCC sessions
+    const ownedIds = new Set();
+    for (const [id, s] of this.sessions) {
+      if (id !== session.id && s.claudeSessionId) ownedIds.add(s.claudeSessionId);
+    }
+
     for (const pattern of patterns) {
       const match = data.match(pattern);
       if (match && match[1] && match[1].length >= 6) {
+        // Don't adopt an ID already owned by another EasyCC session
+        if (ownedIds.has(match[1])) {
+          console.log(`Skipping Claude session ID ${match[1]} — already owned by another session`);
+          continue;
+        }
         session.claudeSessionId = match[1];
         this.dataStore.saveSession(session);
         console.log(`Detected Claude session ID: ${match[1]}`);
@@ -1829,12 +1844,13 @@ class SessionManager extends EventEmitter {
    */
   applyHookStatus({ cwd, claudeSessionId, status, hookEvent }) {
     // Find session: prefer exact claudeSessionId match, fall back to workingDir
+    // Fallback only matches sessions with a running PTY to avoid cross-contamination
     let session = claudeSessionId
       ? [...this.sessions.values()].find(s => s.claudeSessionId === claudeSessionId)
       : null;
     if (!session) {
       session = [...this.sessions.values()].find(
-        s => s.workingDir === cwd && s.cliType === 'claude' && s.status !== 'paused'
+        s => s.workingDir === cwd && s.cliType === 'claude' && s.status !== 'paused' && s.pty
       );
     }
     if (!session) return;
