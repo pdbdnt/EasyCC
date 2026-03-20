@@ -8,10 +8,15 @@ const DataStore = require('./dataStore');
 const PlanManager = require('./planManager');
 const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStatusToStage } = require('./stagesConfig');
 const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInputUtils');
+const { createComment, addReactionToComment } = require('./commentUtils');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
 const MEDIUM_OUTPUT_BUFFER_CHUNKS = 3000;
+
+// Message queue constants
+const MAX_MESSAGE_QUEUE_SIZE = 20;
+const MESSAGE_QUEUE_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
 // Debug logger that writes to file
 const DEBUG_LOG_FILE = path.join(__dirname, '..', 'data', 'debug.log');
@@ -135,11 +140,16 @@ class SessionManager extends EventEmitter {
           completedAt: sessionData.completedAt || null,
           updatedAt: sessionData.updatedAt || null,
           comments: sessionData.comments || [],
+          // Message queue
+          messageQueue: sessionData.messageQueue || [],
           // Orchestrator fields
           isOrchestrator: sessionData.isOrchestrator || false,
           parentSessionId: sessionData.parentSessionId || null,
           teamInstanceId: sessionData.teamInstanceId || null
         };
+
+        // Sweep expired queue messages on restart
+        this._sweepExpiredQueueMessages(session);
 
         this.sessions.set(id, session);
         // Update persisted status to paused
@@ -412,16 +422,20 @@ class SessionManager extends EventEmitter {
     return normalized.slice(0, 4096);
   }
 
-  getEasyccEnv(easyccSessionId = '') {
-    return {
+  getEasyccEnv(easyccSessionId = '', meta = {}) {
+    const env = {
       ...process.env,
       EASYCC_PORT: String(this.port || 5010),
       EASYCC_SESSION_ID: easyccSessionId || ''
     };
+    if (meta.taskId) {
+      env.EASYCC_TASK_ID = meta.taskId;
+    }
+    return env;
   }
 
-  spawnTerminalProcess(workingDir, { easyccSessionId = '' } = {}) {
-    const env = this.getEasyccEnv(easyccSessionId);
+  spawnTerminalProcess(workingDir, { easyccSessionId = '', meta = {} } = {}) {
+    const env = this.getEasyccEnv(easyccSessionId, meta);
     const isWindows = process.platform === 'win32';
     if (isWindows) {
       return pty.spawn('powershell.exe', ['-NoLogo'], {
@@ -443,8 +457,8 @@ class SessionManager extends EventEmitter {
     });
   }
 
-  spawnCodexProcess(workingDir, { resume = false, easyccSessionId = '' } = {}) {
-    const env = this.getEasyccEnv(easyccSessionId);
+  spawnCodexProcess(workingDir, { resume = false, easyccSessionId = '', meta = {} } = {}) {
+    const env = this.getEasyccEnv(easyccSessionId, meta);
     const isWindows = process.platform === 'win32';
     if (isWindows) {
       const wslPath = this.convertToWslPath(workingDir).replace(/'/g, "'\\''").replace(/"/g, '\\"');
@@ -471,8 +485,8 @@ class SessionManager extends EventEmitter {
     });
   }
 
-  spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '', easyccSessionId = '' } = {}) {
-    const env = this.getEasyccEnv(easyccSessionId);
+  spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '', easyccSessionId = '', meta = {} } = {}) {
+    const env = this.getEasyccEnv(easyccSessionId, meta);
     const args = ['--dangerously-skip-permissions'];
     if (resumeId) {
       args.push('--resume', resumeId);
@@ -700,6 +714,10 @@ class SessionManager extends EventEmitter {
       startup.active = false;
       startup.completedAt = new Date().toISOString();
       this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      // Drain message queue now that startup is complete
+      if (this.canAcceptOrchestratorInput(session)) {
+        this.drainMessageQueue(session);
+      }
       return;
     }
 
@@ -713,6 +731,10 @@ class SessionManager extends EventEmitter {
     if (!nextCommand) {
       startup.active = false;
       startup.completedAt = new Date().toISOString();
+      // Drain message queue now that startup is complete
+      if (this.canAcceptOrchestratorInput(session)) {
+        this.drainMessageQueue(session);
+      }
       return;
     }
 
@@ -757,11 +779,11 @@ class SessionManager extends EventEmitter {
 
     try {
       if (cliType === 'terminal') {
-        ptyProcess = this.spawnTerminalProcess(workingDir, { easyccSessionId: id });
+        ptyProcess = this.spawnTerminalProcess(workingDir, { easyccSessionId: id, meta: sessionMeta });
       } else if (cliType === 'codex') {
-        ptyProcess = this.spawnCodexProcess(workingDir, { resume: false, easyccSessionId: id });
+        ptyProcess = this.spawnCodexProcess(workingDir, { resume: false, easyccSessionId: id, meta: sessionMeta });
       } else {
-        ptyProcess = this.spawnClaudeProcess(workingDir, { sessionId: claudeSessionId, role: sanitizedRole, easyccSessionId: id });
+        ptyProcess = this.spawnClaudeProcess(workingDir, { sessionId: claudeSessionId, role: sanitizedRole, easyccSessionId: id, meta: sessionMeta });
       }
     } catch (error) {
       const cliName = cliType === 'codex' ? 'Codex' : cliType === 'terminal' ? 'Terminal' : 'Claude';
@@ -813,7 +835,9 @@ class SessionManager extends EventEmitter {
       rejectionHistory: [],
       completedAt: null,
       updatedAt: now.toISOString(),
-      comments: []
+      comments: [],
+      // Message queue for orchestrator sends when session is busy
+      messageQueue: []
     };
 
     // Handle PTY output
@@ -1755,6 +1779,10 @@ class SessionManager extends EventEmitter {
           currentTask: session.currentTask
         });
 
+        // Drain message queue when session becomes ready for orchestrator input
+        if (this.canAcceptOrchestratorInput(session)) {
+          this.drainMessageQueue(session);
+        }
       }
       session.statusDebounceTimer = null;
     }, 500);
@@ -1921,6 +1949,66 @@ class SessionManager extends EventEmitter {
         bytes += charBytes;
         end += charLen;
       }
+
+      // Guard: never split escape sequences across chunks.
+      // Bracket paste sequences (\x1b[200~ / \x1b[201~) split across delayed
+      // writes cause the CLI to interpret a lone \x1b as Escape, hanging paste mode.
+      if (end < text.length && end > pos) {
+        let adjusted = end;
+
+        // Rule 1: never end a chunk on bare \x1b
+        if (text.charCodeAt(adjusted - 1) === 0x1b) {
+          adjusted--;
+        }
+
+        // Rule 2: protect CSI sequences (especially bracket paste wrappers)
+        // Check if any ESC within the last 6 chars starts a sequence past adjusted
+        if (adjusted > pos) {
+          for (let scan = Math.max(pos, adjusted - 5); scan < adjusted; scan++) {
+            if (text.charCodeAt(scan) === 0x1b) {
+              const remaining = text.length - scan;
+              if (remaining >= 2 && text.charCodeAt(scan + 1) === 0x5b) { // '['
+                let seqEnd = scan + 2;
+                while (seqEnd < text.length &&
+                       text.charCodeAt(seqEnd) >= 0x20 &&
+                       text.charCodeAt(seqEnd) <= 0x3f) {
+                  seqEnd++; // parameter bytes
+                }
+                if (seqEnd < text.length) seqEnd++; // final byte (~ for bracket paste)
+                if (seqEnd > adjusted) {
+                  adjusted = scan;
+                  break;
+                }
+              } else {
+                // Non-CSI escape — pull back to before ESC
+                adjusted = scan;
+                break;
+              }
+            }
+          }
+        }
+
+        // If pullback collapsed to pos, ESC starts at chunk start.
+        // Extend forward to include the full sequence instead of splitting it.
+        if (adjusted <= pos) {
+          if (text.charCodeAt(pos) === 0x1b) {
+            let seqEnd = pos + 1;
+            if (seqEnd < text.length && text.charCodeAt(seqEnd) === 0x5b) {
+              seqEnd++;
+              while (seqEnd < text.length &&
+                     text.charCodeAt(seqEnd) >= 0x20 &&
+                     text.charCodeAt(seqEnd) <= 0x3f) {
+                seqEnd++;
+              }
+              if (seqEnd < text.length) seqEnd++; // final byte
+            }
+            end = Math.max(end, seqEnd);
+          }
+        } else {
+          end = adjusted;
+        }
+      }
+
       session._writeQueue.push(text.slice(pos, end));
       pos = end;
     }
@@ -1933,6 +2021,12 @@ class SessionManager extends EventEmitter {
     }
     session._writeDraining = true;
     const chunk = session._writeQueue.shift();
+    // [paste-debug] Temporary logging — remove after verifying paste fix
+    if (chunk.includes('\x1b')) {
+      const hexTail = Buffer.from(chunk.slice(-10)).toString('hex');
+      const hexHead = Buffer.from(chunk.slice(0, 10)).toString('hex');
+      console.log(`[paste-debug] chunk len=${chunk.length}, head=${hexHead}, tail=${hexTail}, remaining=${session._writeQueue.length}`);
+    }
     if (session.pty) {
       session.pty.write(chunk);
     } else {
@@ -2329,6 +2423,8 @@ class SessionManager extends EventEmitter {
       completedAt: session.completedAt || null,
       updatedAt: session.updatedAt || null,
       comments: session.comments || [],
+      // Message queue
+      queuedMessages: (session.messageQueue || []).filter(m => m.status === 'queued').length,
       // Orchestrator fields
       isOrchestrator: session.isOrchestrator || false,
       parentSessionId: session.parentSessionId || null,
@@ -2732,18 +2828,200 @@ class SessionManager extends EventEmitter {
   /**
    * Add a comment to a session
    */
-  addComment(sessionId, text, author = 'user') {
+  // ============================================
+  // Message Queue Methods
+  // ============================================
+
+  /**
+   * Check if a session can accept orchestrator input right now.
+   * Direct terminal typing bypasses this — it always goes via sendInput().
+   */
+  canAcceptOrchestratorInput(session) {
+    if (!session || !session.pty) return false;
+    if (session.status === 'completed' || session.status === 'paused') return false;
+    if (session.startupSequence?.active) return false;
+    if (session._writeDraining) return false;
+    return ['idle', 'waiting'].includes(session.status);
+  }
+
+  /**
+   * Send input directly or enqueue if session is busy.
+   * Only for orchestrator/API sends — NOT for direct terminal typing.
+   * @returns {{ sent: boolean, queued: boolean, messageId?: string, queuePosition?: number }}
+   */
+  sendOrEnqueue(id, text, { fromSessionId = null } = {}) {
+    const session = this.sessions.get(id);
+    if (!session) return { sent: false, queued: false, error: 'session_not_found' };
+    if (session.status === 'completed') return { sent: false, queued: false, error: 'session_completed' };
+
+    if (this.canAcceptOrchestratorInput(session)) {
+      const result = this.sendInput(id, text);
+      return { sent: result, queued: false };
+    }
+
+    // Session is busy — enqueue
+    return this.enqueueMessage(id, text, fromSessionId);
+  }
+
+  /**
+   * Add a message to the session's queue.
+   * @returns {{ sent: false, queued: boolean, messageId?: string, queuePosition?: number, error?: string }}
+   */
+  enqueueMessage(id, text, fromSessionId = null) {
+    const session = this.sessions.get(id);
+    if (!session) return { sent: false, queued: false, error: 'session_not_found' };
+
+    const queuedCount = (session.messageQueue || []).filter(m => m.status === 'queued').length;
+    if (queuedCount >= MAX_MESSAGE_QUEUE_SIZE) {
+      return { sent: false, queued: false, error: 'queue_full', maxSize: MAX_MESSAGE_QUEUE_SIZE };
+    }
+
+    const msg = {
+      id: uuidv4().slice(0, 8),
+      text,
+      fromSessionId: fromSessionId || null,
+      queuedAt: new Date().toISOString(),
+      status: 'queued'
+    };
+
+    if (!session.messageQueue) session.messageQueue = [];
+    session.messageQueue.push(msg);
+    session.updatedAt = new Date().toISOString();
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    debugLog(`Queued message ${msg.id} for session ${id} (queue size: ${queuedCount + 1})`);
+
+    return { sent: false, queued: true, messageId: msg.id, queuePosition: queuedCount + 1 };
+  }
+
+  /**
+   * Drain the next queued message if session is ready.
+   * Only one drain runs per session at a time (concurrency guard).
+   */
+  drainMessageQueue(session) {
+    if (!session || session._queueDraining) return;
+    if (!session.messageQueue?.length) return;
+    if (!this.canAcceptOrchestratorInput(session)) return;
+
+    session._queueDraining = true;
+
+    try {
+      // Expire old messages first
+      this._sweepExpiredQueueMessages(session);
+
+      // Find the next queued message
+      const idx = session.messageQueue.findIndex(m => m.status === 'queued');
+      if (idx === -1) {
+        session._queueDraining = false;
+        return;
+      }
+
+      const msg = session.messageQueue[idx];
+      const result = this.sendInput(session.id, msg.text);
+
+      if (result) {
+        msg.status = 'delivered';
+        msg.deliveredAt = new Date().toISOString();
+        // Remove delivered message from queue
+        session.messageQueue.splice(idx, 1);
+        debugLog(`Delivered queued message ${msg.id} to session ${session.id}`);
+      } else {
+        // PTY write failed — leave message in queue, stop draining
+        debugLog(`Failed to deliver queued message ${msg.id} to session ${session.id} — re-queued`);
+      }
+
+      session.updatedAt = new Date().toISOString();
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    } finally {
+      session._queueDraining = false;
+    }
+  }
+
+  /**
+   * Sweep expired messages from a session's queue.
+   */
+  _sweepExpiredQueueMessages(session) {
+    if (!session.messageQueue?.length) return;
+
+    const now = Date.now();
+    let changed = false;
+
+    session.messageQueue = session.messageQueue.filter(msg => {
+      if (msg.status !== 'queued') return false; // Remove delivered/expired
+      const age = now - new Date(msg.queuedAt).getTime();
+      if (age > MESSAGE_QUEUE_EXPIRY_MS) {
+        debugLog(`Expired queued message ${msg.id} for session ${session.id} (age: ${Math.round(age / 1000)}s)`);
+        changed = true;
+        return false;
+      }
+      return true;
+    });
+
+    if (changed) {
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    }
+  }
+
+  /**
+   * Get the message queue for a session.
+   * @returns {Array|null} Queue array or null if session not found
+   */
+  getMessageQueue(id) {
+    const session = this.sessions.get(id);
+    if (!session) return null;
+    return (session.messageQueue || []).filter(m => m.status === 'queued');
+  }
+
+  /**
+   * Clear all queued messages for a session.
+   * @returns {boolean} Success
+   */
+  clearMessageQueue(id) {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+
+    const hadMessages = (session.messageQueue || []).some(m => m.status === 'queued');
+    session.messageQueue = [];
+    session.updatedAt = new Date().toISOString();
+    this.dataStore.saveSession(session);
+    if (hadMessages) {
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    }
+    return true;
+  }
+
+  addComment(sessionId, textOrOpts, author = 'user') {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-    const comment = {
-      id: uuidv4().slice(0, 8),
-      text,
-      author,
-      createdAt: new Date().toISOString()
-    };
+    // Support both old (text, author) and new ({ text, author, parentId, mentions }) signatures
+    const opts = typeof textOrOpts === 'string'
+      ? { text: textOrOpts, author }
+      : { author, ...textOrOpts };
+
+    const comment = createComment(opts);
 
     session.comments.push(comment);
+    session.updatedAt = new Date().toISOString();
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+
+    return comment;
+  }
+
+  /**
+   * Toggle a reaction on a session comment.
+   * @returns {object|null} Updated comment or null
+   */
+  addReaction(sessionId, commentId, emoji, author = 'user') {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const comment = (session.comments || []).find(c => c.id === commentId);
+    if (!comment) return null;
+
+    addReactionToComment(comment, emoji, author);
     session.updatedAt = new Date().toISOString();
     this.dataStore.saveSession(session);
     this.emit('sessionUpdated', this.getSessionSnapshot(session));
