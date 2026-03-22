@@ -129,7 +129,10 @@ function App() {
     renameGroup
   } = useSessionGroups(sessions);
   const [activeGroupId, setActiveGroupId] = useState(null);
-  const [sessionsWidth, setSessionsWidth] = useState(280);
+  const [sessionsWidth, setSessionsWidth] = useState(() => {
+    const saved = localStorage.getItem('sessionsWidth');
+    return saved ? Math.max(150, Math.min(600, parseInt(saved, 10) || 280)) : 280;
+  });
   const [contextWidth, setContextWidth] = useState(320);
   const [focusedPanel, setFocusedPanel] = useState(null); // 'terminal' | 'context' | null
   const [groupedSessions, setGroupedSessions] = useState([]);
@@ -195,6 +198,20 @@ function App() {
     const next = effectiveCurrent === 'midnight' ? 'parchment' : 'midnight';
     updateSettings({ ui: { theme: next } });
   }, [settings?.ui?.theme, updateSettings]);
+
+  // One-time migration of starred folders from localStorage to backend settings
+  useEffect(() => {
+    if (settings?.starredFolders !== undefined) return; // already migrated
+    try {
+      const raw = JSON.parse(localStorage.getItem('starredFolders') || 'null');
+      if (Array.isArray(raw) && raw.length > 0) {
+        updateSettings({ starredFolders: raw });
+        localStorage.removeItem('starredFolders');
+      } else {
+        updateSettings({ starredFolders: [] });
+      }
+    } catch { /* ignore */ }
+  }, [settings?.starredFolders, updateSettings]);
 
   const selectedSession = sessions.find(s => s.id === selectedId);
   const selectedAgent = selectedSession?.agentId ? agents.find(a => a.id === selectedSession.agentId) : null;
@@ -1082,7 +1099,11 @@ function App() {
   }, []);
 
   const handleSessionsResize = useCallback((delta) => {
-    setSessionsWidth(w => Math.max(200, Math.min(400, w + delta)));
+    setSessionsWidth(w => {
+      const newWidth = Math.max(150, Math.min(600, w + delta));
+      localStorage.setItem('sessionsWidth', newWidth);
+      return newWidth;
+    });
   }, []);
 
   const handleContextResize = useCallback((delta) => {
@@ -1385,7 +1406,7 @@ function App() {
           />
         )}
       </aside>
-      <ResizeHandle onResize={handleSessionsResize} />
+      <ResizeHandle direction="vertical" onResize={handleSessionsResize} />
       {currentView === 'kanban' ? (
         <main className={`main-content ${ctrlOTransitionClass}`.trim()}>
           <KanbanBoard
@@ -1640,6 +1661,14 @@ function App() {
           onLaunchTeam={handleLaunchTeam}
           defaultWorkingDir={selectedSession?.workingDir}
           sessions={sessions}
+          starredFolders={settings?.starredFolders || []}
+          onToggleStar={(folderPath) => {
+            const current = settings?.starredFolders || [];
+            const newStarred = current.includes(folderPath)
+              ? current.filter(f => f !== folderPath)
+              : [...current, folderPath];
+            updateSettings({ starredFolders: newStarred });
+          }}
         />
       )}
       {showSettingsModal && (

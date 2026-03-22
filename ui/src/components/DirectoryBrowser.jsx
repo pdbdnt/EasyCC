@@ -51,18 +51,11 @@ function getBreadcrumbSegments(path) {
   return segments;
 }
 
-function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = false }) {
+function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = false, starredFolders = [], onToggleStar }) {
   const initialBase = defaultBase ? normalizeWindowsPath(defaultBase) : '';
 
   const [folders, setFolders] = useState([]);
-  const [starredFolders, setStarredFolders] = useState(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem('starredFolders') || '[]');
-      return Array.isArray(raw) ? raw.filter(f => typeof f === 'string') : [];
-    } catch {
-      return [];
-    }
-  });
+  const [starredCollapsed, setStarredCollapsed] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [customPath, setCustomPath] = useState('');
   const [customPathConfirmed, setCustomPathConfirmed] = useState(false);
@@ -134,11 +127,7 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
 
   const toggleStar = (folderPath, e) => {
     e.stopPropagation();
-    const newStarred = starredFolders.includes(folderPath)
-      ? starredFolders.filter(f => f !== folderPath)
-      : [...starredFolders, folderPath];
-    setStarredFolders(newStarred);
-    localStorage.setItem('starredFolders', JSON.stringify(newStarred));
+    onToggleStar?.(folderPath);
   };
 
   const handleBrowseCustomPath = () => {
@@ -234,6 +223,62 @@ function DirectoryBrowser({ selectedPath, onSelectPath, defaultBase, disabled = 
               disabled={disabled}
               autoFocus
             />
+          )}
+          {starredFolders.length > 0 && (
+            <div className="starred-section">
+              <div
+                className="starred-section-header"
+                onClick={() => setStarredCollapsed(!starredCollapsed)}
+              >
+                <span className="starred-chevron">{starredCollapsed ? '▸' : '▾'}</span>
+                <span>Starred Folders ({starredFolders.length})</span>
+              </div>
+              {!starredCollapsed && starredFolders.map(starPath => {
+                const normalized = normalizeWindowsPath(starPath);
+                const segments = normalized.split('\\').filter(Boolean);
+                const shortLabel = segments.length >= 2
+                  ? segments.slice(-2).join('\\')
+                  : segments[segments.length - 1] || normalized;
+                const isSelected = normalizeWindowsPath(selectedPath).toLowerCase() === normalized.toLowerCase();
+                return (
+                  <div
+                    key={normalized}
+                    className={`starred-folder-item ${isSelected ? 'selected' : ''}`}
+                    onClick={() => {
+                      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+                      clickTimerRef.current = setTimeout(() => {
+                        onSelectPath?.(normalized);
+                        setCustomPath('');
+                        setCustomPathConfirmed(false);
+                      }, 250);
+                    }}
+                    onDoubleClick={() => {
+                      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+                      setCurrentBase(normalized);
+                      setCustomPath('');
+                      onSelectPath?.(normalized);
+                      setCustomPathConfirmed(false);
+                      setFilterText('');
+                    }}
+                    title={normalized}
+                  >
+                    <span className="folder-name">
+                      <span className="star-icon">*</span>
+                      {shortLabel}
+                    </span>
+                    <button
+                      type="button"
+                      className="star-btn"
+                      onClick={(e) => toggleStar(normalized, e)}
+                      title="Unstar"
+                    >
+                      *
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="starred-separator" />
+            </div>
           )}
           {filteredFolders.length === 0 && (
             <div className="folder-empty">{filterText ? 'No matching folders' : 'No subfolders found'}</div>

@@ -13,6 +13,7 @@ const DataStore = require('./dataStore');
 const PlanVersionStore = require('./planVersionStore');
 const AgentStore = require('./agentStore');
 const TaskStore = require('./taskStore');
+const PresetStore = require('./presetStore');
 const TeamStore = require('./teamStore');
 const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
 const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
@@ -26,10 +27,11 @@ const settingsManager = new SettingsManager();
 const planVersionStore = new PlanVersionStore();
 const agentStore = new AgentStore();
 const taskStore = new TaskStore();
+const presetStore = new PresetStore();
 const teamStore = new TeamStore();
 const { sessionStatusToStage } = require('./stagesConfig');
 
-const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || path.parse(os.homedir()).root;
+const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || os.homedir();
 
 // Per-session debounce timers for kanban stage sync (3s stability)
 const kanbanSyncTimers = new Map();
@@ -128,10 +130,10 @@ STATUS: curl -s http://localhost:${port}/api/orchestrator/sessions/SESSION_ID/st
 Your session ID is: ${sessionId}
 Poll status before reading screen. Wait for sessions to reach "idle" before reading results.
 
-When you receive a message from another session (prefixed with [From: ...]), reply using the sender's ID prefix (shown in parentheses in the [From: ...] tag): /ec-send <id-prefix> <your response>.`;
+When you receive a message from another session (prefixed with [From: name#sessionId]), reply using: /ec-send 'name'#sessionId <your response>. The #sessionId allows instant delivery without a lookup.`;
 }
 
-const EC_SKILLS_VERSION = 'v3';
+const EC_SKILLS_VERSION = 'v6';
 
 function installEcSkills() {
   const skillsDir = path.join(os.homedir(), '.claude', 'skills');
@@ -164,7 +166,9 @@ ${nodeGet('/api/orchestrator/sessions')}
 
 If $ARGUMENTS provided, find the matching session. If no arguments, show all.
 
-1. List all sessions:
+**FAST PATH:** If the argument contains \`#\`, split on \`#\`: left = name, right = full session ID. Use the ID directly in step 2 — skip listing.
+
+1. List all sessions (skip if fast path and specific session requested):
 \`\`\`bash
 ${nodeGet('/api/orchestrator/sessions')}
 \`\`\`
@@ -186,7 +190,9 @@ ${nodeGet('/api/orchestrator/sessions/SESSION_ID/status')}
 
 Parse $ARGUMENTS: first word = session name/ID, optional second = lines (default 50).
 
-1. List sessions to find target:
+**FAST PATH:** If the target contains \`#\`, split on \`#\`: left = name, right = full session ID. Use the ID directly in step 3 — skip steps 1-2.
+
+1. List sessions to find target (skip if fast path):
 \`\`\`bash
 ${nodeGet('/api/orchestrator/sessions')}
 \`\`\`
@@ -207,7 +213,11 @@ ${nodeGet('/api/orchestrator/sessions/SESSION_ID/screen?lines=LINES&format=text'
 
 Parse $ARGUMENTS as target + message. Support natural language targeting: use the longest reasonable target phrase before the message, not just the first word. Example: \`/ec-send the git checker check status\` should target "git checker" and send "check status".
 
-1. List sessions to find target:
+**FAST PATH — skip steps 1-3 entirely when an ID is already known:**
+- If the target contains \`#\`, split on \`#\`: left = display name, right = full session ID. Use the ID directly in step 5. This happens when the @ picker was used.
+- If replying to a \`[From: name#sessionId]\` message, extract the session ID after \`#\`. Use it directly in step 5.
+
+1. List sessions to find target (skip if fast path):
 \`\`\`bash
 ${nodeGet('/api/orchestrator/sessions')}
 \`\`\`
@@ -274,6 +284,307 @@ EasyCC automatically gives the child parent/sibling context and instructions for
 - Use forward slashes in paths (e.g., \`C:/Users/denni/apps/MyProject\`)
 - Use \`JSON.stringify()\` for all POST bodies — it handles escaping automatically
 - The role should be detailed enough for the child to work autonomously`
+    },
+    'ec-task-comment': {
+      name: 'ec-task-comment',
+      description: 'Reply to a task comment in EasyCC (post a comment back to a task)',
+      hint: '<task-id> <comment-text>',
+      body: `Post a comment to an EasyCC task. Use this to reply to [Task mention] messages.
+
+## Instructions
+
+Parse $ARGUMENTS: first word = task ID, rest = comment text.
+If no task ID in arguments, fall back to $EASYCC_TASK_ID environment variable.
+
+1. Post the comment. **Use node -e with JSON.stringify.** Replace TASK_ID and COMMENT_TEXT:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({text:'COMMENT_TEXT',sessionId:process.env.EASYCC_SESSION_ID||''});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/tasks/TASK_ID/auto-comment',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+
+2. Confirm: "Comment posted to task TASK_ID".
+
+**Note:** The sessionId is sent automatically via $EASYCC_SESSION_ID — the backend resolves it to your display name. No need to specify an author manually.`
+    },
+    'ec-kb-columns': {
+      name: 'ec-kb-columns',
+      description: 'List all kanban board columns (stages) with card counts',
+      hint: '',
+      body: `List all kanban columns with their card counts.
+
+## Instructions
+
+1. Fetch stages and sessions grouped by stage:
+\`\`\`bash
+${nodeGet('/api/stages')}
+\`\`\`
+\`\`\`bash
+${nodeGet('/api/sessions/by-stage')}
+\`\`\`
+
+2. Parse both JSON responses. For each stage, count the sessions in that stage from the by-stage response.
+
+3. Display a formatted table with columns: Order, Name, ID, Cards (count), Color, Pool Type.
+
+4. Show total card count at the bottom.`
+    },
+    'ec-kb-cards': {
+      name: 'ec-kb-cards',
+      description: 'List cards (sessions) in a kanban column, or all columns if no argument',
+      hint: '[column-name]',
+      body: `List cards in a specific kanban column, or show all columns with counts.
+
+## Instructions
+
+Parse $ARGUMENTS as column name (optional).
+
+1. Fetch sessions grouped by stage:
+\`\`\`bash
+${nodeGet('/api/sessions/by-stage')}
+\`\`\`
+
+2. If no column specified, display a summary: each column name with its card count. Done.
+
+3. If column specified, fuzzy match the argument against stage names and IDs (case-insensitive partial match). If multiple matches, pick the best one or ask user.
+
+4. Display cards in the matched column as a table: Name, Status, CLI Type, Working Dir, Priority, Entered (relative time), Blocked By (if any).
+
+5. If no cards in column, say so.`
+    },
+    'ec-kb-move': {
+      name: 'ec-kb-move',
+      description: 'Move a session/card to a specific kanban column',
+      hint: '<session-name-or-id> <target-column>',
+      body: `Move a session to a specific kanban column.
+
+## Instructions
+
+Parse $ARGUMENTS: everything before the last word(s) = session target, last word(s) = column target. Use judgement to split — column names may be multi-word (e.g., "in progress", "in review").
+
+**FAST PATH:** If the session target contains \`#\`, split on \`#\`: left = name, right = full session ID. Use the ID directly — skip step 1.
+
+1. List sessions to resolve target (skip if fast path):
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions')}
+\`\`\`
+
+2. Fetch stages to resolve column:
+\`\`\`bash
+${nodeGet('/api/stages')}
+\`\`\`
+
+3. Fuzzy match session by name (case-insensitive partial) or ID prefix.
+4. Fuzzy match column by name or ID (case-insensitive partial).
+
+5. Move the session. **Use node -e with JSON.stringify.** Replace SESSION_ID and STAGE_ID:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({stage:'STAGE_ID',reason:'Moved via /ec-kb-move'});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/sessions/SESSION_ID/move',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+
+6. Confirm: "Moved [session name] to [column name]".`
+    },
+    'ec-kb-advance': {
+      name: 'ec-kb-advance',
+      description: 'Advance a card to the next kanban stage',
+      hint: '[session-name-or-id]',
+      body: `Advance a session to the next kanban stage.
+
+## Instructions
+
+Parse $ARGUMENTS as session name/ID. If no argument, use the current session via $EASYCC_SESSION_ID.
+
+**FAST PATH:** If the argument contains \`#\`, split on \`#\`: left = name, right = full session ID. Use the ID directly — skip step 1.
+
+1. If argument provided, list sessions to resolve (skip if fast path):
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions')}
+\`\`\`
+Fuzzy match by name or ID prefix. Otherwise use $EASYCC_SESSION_ID directly.
+
+2. Advance. Replace SESSION_ID:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/sessions/SESSION_ID/advance',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+
+3. Report result: "Advanced [session name] from [old stage] to [new stage]".`
+    },
+    'ec-kb-comment': {
+      name: 'ec-kb-comment',
+      description: 'Add a comment to a kanban card/session',
+      hint: '<session-name-or-id> <comment-text>',
+      body: `Add a comment to a session's kanban card.
+
+## Instructions
+
+Parse $ARGUMENTS: first word(s) = session target, rest = comment text. Use judgement to split target from comment — session names may be multi-word.
+
+**FAST PATH:** If the session target contains \`#\`, split on \`#\`: left = name, right = full session ID. Use the ID directly — skip step 1.
+
+1. List sessions to resolve target (skip if fast path):
+\`\`\`bash
+${nodeGet('/api/orchestrator/sessions')}
+\`\`\`
+
+2. Fuzzy match by name (case-insensitive partial) or ID prefix.
+
+3. Post comment. **Use node -e with JSON.stringify.** Replace SESSION_ID, COMMENT_TEXT, and AUTHOR:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({text:'COMMENT_TEXT',author:process.env.EASYCC_SESSION_NAME||'External Agent'});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/sessions/SESSION_ID/comments',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+
+4. Confirm: "Comment added to [session name]".`
+    },
+    'ec-kb-stats': {
+      name: 'ec-kb-stats',
+      description: 'Show kanban board statistics and summary',
+      hint: '',
+      body: `Show kanban board statistics.
+
+## Instructions
+
+1. Fetch board stats:
+\`\`\`bash
+${nodeGet('/api/sessions/stats')}
+\`\`\`
+
+2. Also fetch sessions by stage for additional detail:
+\`\`\`bash
+${nodeGet('/api/sessions/by-stage')}
+\`\`\`
+
+3. Display a summary:
+   - Total sessions across all stages
+   - Count per stage (column name: count)
+   - Any blocked sessions (sessions with non-empty blockedBy arrays)
+   - Recently active sessions (last 10 minutes)
+
+4. Keep it concise — this is a quick dashboard overview.`
+    },
+    'ec-kb-process': {
+      name: 'ec-kb-process',
+      description: 'Process all cards in a kanban column by spawning worker agents',
+      hint: '<column-name> <action>',
+      body: `Process all cards in a kanban column sequentially using worker agents.
+
+## Instructions
+
+Parse $ARGUMENTS: first part = column name, last part = action to run on each card (e.g., "verify-plan", "review", or a custom prompt).
+
+### Step 1: Get cards in column
+\`\`\`bash
+${nodeGet('/api/sessions/by-stage')}
+\`\`\`
+Fuzzy match column name. Get all cards (sessions) in that stage.
+
+### Step 2: Group cards by workingDir
+Group the cards so all cards from the same repo are processed together. This saves tokens — the worker retains codebase knowledge between cards via /compact.
+
+### Step 3: Process each group
+For each workingDir group:
+
+**a) Spawn a worker** in that workingDir using /ec-spawn:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({name:'KB Worker',workingDir:'WORKING_DIR',cliType:'claude',role:'You are a worker agent processing kanban cards. After each task, wait for the next instruction. Report results clearly as PASS or FAIL with a brief reason.',startupPrompt:'Ready for tasks.',parentSessionId:process.env.EASYCC_SESSION_ID||''});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/orchestrator/sessions/spawn',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+
+**b) For each card in the group:**
+1. Send the action task to the worker via /ec-send: "Process card: [card name]. Action: [action]. Working on: [card description/notes if any]"
+2. Wait for worker to go idle (poll via /ec-status every 15s, or watch for idle notification)
+3. Read worker output via /ec-read to determine result (PASS/FAIL)
+4. Move card based on result:
+   - PASS: advance to next stage via POST /api/sessions/CARD_ID/advance
+   - FAIL: add comment with failure reason
+5. Add comment to card summarizing result
+6. Send /compact to worker (type "/compact" via /ec-send) to free context while preserving repo knowledge
+7. Proceed to next card
+
+**c) After all cards in group:** optionally stop the worker or keep alive for reuse.
+
+### Step 4: Report summary
+Display: total cards processed, passed, failed, per-group breakdown.
+
+**Key rules:**
+- Always use \`node -e\` with \`JSON.stringify()\` for POST requests
+- Use forward slashes in paths
+- Process cards sequentially, not in parallel
+- Reuse worker within same workingDir group (send /compact between cards, NOT /clear)
+- Spawn fresh worker for different workingDir groups`
+    },
+    'ec-agent-list': {
+      name: 'ec-agent-list',
+      description: 'List available agents in the EasyCC roster with their status',
+      hint: '',
+      body: `List all agents in the EasyCC agent roster.
+
+## Instructions
+
+1. Fetch all agents:
+\`\`\`bash
+${nodeGet('/api/agents')}
+\`\`\`
+
+2. Parse the JSON response (array of agent objects).
+
+3. Display a formatted table with columns:
+   - Name
+   - Role (first 50 chars)
+   - CLI Type
+   - Status (Running/Stopped — check if activeSessionId is set and session exists)
+   - Working Dir
+   - Tags
+
+4. Show total count. Highlight running agents.`
+    },
+    'ec-agent-start': {
+      name: 'ec-agent-start',
+      description: 'Start a roster agent, optionally in a different working directory',
+      hint: '<agent-name> [workingDir]',
+      body: `Start an agent from the EasyCC roster, optionally targeting a specific repo/directory.
+
+## Instructions
+
+Parse $ARGUMENTS: first part = agent name, optional second part = working directory path.
+
+1. Fetch agents to resolve name:
+\`\`\`bash
+${nodeGet('/api/agents')}
+\`\`\`
+
+2. Fuzzy match agent by name (case-insensitive partial match). If multiple matches, pick the best or ask user.
+
+3. Start the agent. **Use node -e with JSON.stringify.** Replace AGENT_ID and optionally include workingDir:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({workingDir:'OPTIONAL_WORKING_DIR_OR_EMPTY'});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/agents/AGENT_ID/start',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+
+If no workingDir argument provided, omit it from the JSON body (agent uses its stored default).
+If workingDir provided, use forward slashes (e.g., C:/Users/denni/apps/MyApp).
+
+4. Report: "Started agent [name] in [workingDir]" with the session ID.
+5. Suggest /ec-read and /ec-send for interacting with the running agent.`
+    },
+    'ec-agent-stop': {
+      name: 'ec-agent-stop',
+      description: 'Stop a running roster agent',
+      hint: '<agent-name>',
+      body: `Stop a running agent from the EasyCC roster.
+
+## Instructions
+
+Parse $ARGUMENTS as agent name.
+
+1. Fetch agents to resolve name:
+\`\`\`bash
+${nodeGet('/api/agents')}
+\`\`\`
+
+2. Fuzzy match agent by name (case-insensitive partial match).
+
+3. Stop the agent. Replace AGENT_ID:
+\`\`\`bash
+node -e "const http=require('http');const data=JSON.stringify({});const req=http.request({hostname:'localhost',port:process.env.EASYCC_PORT||5010,path:'/api/agents/AGENT_ID/stop',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>console.log(d))});req.write(data);req.end()"
+\`\`\`
+
+4. Confirm: "Stopped agent [name]".`
     }
   };
 
@@ -468,7 +779,7 @@ When you finish your task, report results back to the parent (use ID for reliabl
   /ec-send ${parentSession.id.substring(0, 8)} <your results summary>
 
 You can also communicate with siblings using their name or ID prefix: /ec-send <name-or-id> <message>
-When you receive a message from any session (prefixed with [From: ...]), reply with /ec-send <sender-name-or-id> <your response> when done.
+When you receive a message from any session (prefixed with [From: name#sessionId]), reply with /ec-send 'name'#sessionId <your response> when done. The #sessionId enables instant delivery.
 Discover all sessions: /ec-list | Read output: /ec-read <name-or-id> | Status: /ec-status`;
 
   return childContext + (baseRole ? '\n\n---\n\n' + baseRole : '');
@@ -481,9 +792,9 @@ function buildTeamMemberStartupPrompt(team, member, goal, orchestratorSession) {
     `Your assigned role: ${member.role}.`
   ];
   if (orchestratorSession) {
-    lines.push(`Report to orchestrator "${orchestratorSession.name}" (${orchestratorSession.id.substring(0, 8)}).`);
+    lines.push(`Report to orchestrator: /ec-send '${orchestratorSession.name}'#${orchestratorSession.id} <message>`);
   }
-  lines.push('When you receive a message from any session (prefixed with [From: ...]), reply with /ec-send <sender-name-or-id> <your response> when done.');
+  lines.push('When you receive a message from any session (prefixed with [From: name#sessionId]), reply with /ec-send \'name\'#sessionId <your response> when done. The #sessionId enables instant delivery.');
   return lines.join('\n');
 }
 
@@ -591,19 +902,33 @@ function refreshTeamInstanceStatus(teamInstanceId) {
   }
 }
 
-function parseMentionNames(text) {
+function parseMentions(text) {
   if (typeof text !== 'string') return [];
-  const matches = text.match(/@([a-zA-Z0-9_-]+)/g) || [];
-  return matches.map((mention) => mention.slice(1).trim()).filter(Boolean);
+  // Match @name or @name#agentId patterns
+  const matches = text.match(/@([a-zA-Z0-9_-]+(?:#[a-zA-Z0-9-]+)?)/g) || [];
+  return matches.map((mention) => {
+    const raw = mention.slice(1).trim(); // remove @
+    if (raw.includes('#')) {
+      const [name, id] = raw.split('#', 2);
+      return { name, id };
+    }
+    return { name: raw, id: null };
+  }).filter(m => m.name);
 }
 
 function resolveMentionAgentIds(text, explicitMentions = []) {
   const directIds = normalizeStringArray(explicitMentions);
-  const byName = parseMentionNames(text);
-  if (byName.length === 0) return directIds;
+  const mentions = parseMentions(text);
+  if (mentions.length === 0) return directIds;
   const agents = agentStore.listAgents();
   const ids = new Set(directIds);
-  for (const name of byName) {
+  for (const { name, id } of mentions) {
+    // Fast path: if #id was embedded by picker, use it directly
+    if (id) {
+      const agent = agentStore.getAgent(id);
+      if (agent) { ids.add(id); continue; }
+    }
+    // Fallback: fuzzy name match
     const matched = agents.find((agent) => agent.name.toLowerCase() === name.toLowerCase());
     if (matched) ids.add(matched.id);
   }
@@ -619,6 +944,80 @@ function getActiveRunForAgent(task, agentId) {
     }
   }
   return null;
+}
+
+/**
+ * Start an agent for a task — creates session if needed, injects task context, creates run entry.
+ * Reused by /api/tasks/:id/start-run and auto-spawn on mention.
+ * @returns {{ session, agent, createdNewSession, error? }}
+ */
+function startAgentForTask(agent, task) {
+  const taskContext = {
+    title: task.title || '',
+    description: task.description || '',
+    comments: (task.comments || []).slice(-5).map(c => ({
+      author: c.author || 'unknown',
+      text: (c.text || '').slice(0, 500)
+    }))
+  };
+
+  let session = null;
+  let createdNewSession = false;
+
+  if (agent.activeSessionId) {
+    session = sessionManager.getSession(agent.activeSessionId);
+  }
+
+  if (!session || session.status === 'completed') {
+    try {
+      session = sessionManager.createSession(
+        agent.name,
+        agent.workingDir,
+        agent.cliType,
+        {},
+        agent.role || '',
+        { agentId: agent.id, taskId: task.id }
+      );
+      createdNewSession = true;
+      const updatedAgent = agentStore.updateAgent(agent.id, {
+        activeSessionId: session.id,
+        lastActiveAt: new Date().toISOString(),
+        sessionHistory: [...(agent.sessionHistory || []), session.id]
+      });
+      if (updatedAgent) {
+        broadcastDashboard({ type: 'agentUpdated', agent: updatedAgent });
+      }
+    } catch (error) {
+      return { session: null, agent, createdNewSession: false, error: error.message };
+    }
+  } else {
+    const updatedSession = sessionManager.updateSessionMeta(session.id, { taskId: task.id });
+    if (updatedSession) session = updatedSession;
+  }
+
+  // Inject task context
+  if (createdNewSession) {
+    sessionManager.appendTaskContext(session.id, taskContext);
+  } else {
+    const instruction = `You have been assigned a new task:\n\nTitle: ${taskContext.title}` +
+      (taskContext.description ? `\n\nDescription:\n${taskContext.description}` : '') +
+      `\n\nPlease begin working on this task.\r`;
+    sessionManager.sendInput(session.id, instruction);
+  }
+
+  // Create or reuse run entry
+  const freshTask = taskStore.getTask(task.id);
+  const existingRun = getActiveRunForAgent(freshTask, agent.id);
+  if (!existingRun || existingRun.sessionId !== session.id) {
+    taskStore.appendRun(task.id, {
+      sessionId: session.id,
+      agentId: agent.id,
+      startedAt: new Date().toISOString(),
+      status: 'active'
+    });
+  }
+
+  return { session, agent, createdNewSession };
 }
 
 function broadcastDashboard(payload) {
@@ -722,6 +1121,7 @@ async function start() {
 
   app.post('/api/agents/:id/start', async (request, reply) => {
     const { id } = request.params;
+    const { workingDir: overrideWorkingDir } = request.body || {};
     const agent = agentStore.getAgent(id);
     if (!agent || agent.deletedAt) {
       return reply.status(404).send({ error: 'Agent not found' });
@@ -734,10 +1134,12 @@ async function start() {
       }
     }
 
+    const effectiveWorkingDir = overrideWorkingDir || agent.workingDir;
+
     try {
       const session = sessionManager.createSession(
         agent.name,
-        agent.workingDir,
+        effectiveWorkingDir,
         agent.cliType,
         {},
         agent.role || '',
@@ -1002,6 +1404,76 @@ async function start() {
     return { teamInstance: enrichTeamInstance(instance) };
   });
 
+  // ─── Presets ────────────────────────────────────────────────────────
+  app.get('/api/presets', async () => {
+    return { presets: presetStore.list() };
+  });
+
+  app.get('/api/presets/:id', async (request, reply) => {
+    const preset = presetStore.get(request.params.id);
+    if (!preset) return reply.status(404).send({ error: 'Preset not found' });
+    return { preset };
+  });
+
+  app.post('/api/presets', async (request, reply) => {
+    try {
+      const preset = presetStore.create(request.body);
+      return reply.status(201).send({ preset });
+    } catch (error) {
+      return reply.status(400).send({ error: error.message });
+    }
+  });
+
+  app.put('/api/presets/:id', async (request, reply) => {
+    try {
+      const preset = presetStore.update(request.params.id, request.body);
+      if (!preset) return reply.status(404).send({ error: 'Preset not found' });
+      return { preset };
+    } catch (error) {
+      return reply.status(400).send({ error: error.message });
+    }
+  });
+
+  app.delete('/api/presets/:id', async (request, reply) => {
+    const preset = presetStore.delete(request.params.id);
+    if (!preset) return reply.status(404).send({ error: 'Preset not found' });
+    return { ok: true };
+  });
+
+  app.post('/api/presets/:id/launch', async (request, reply) => {
+    const preset = presetStore.get(request.params.id);
+    if (!preset) return reply.status(404).send({ error: 'Preset not found' });
+
+    const launched = [];
+    const failed = [];
+
+    for (let i = 0; i < preset.sessions.length; i++) {
+      const entry = preset.sessions[i];
+      const sessionName = entry.name || `${preset.name} #${i + 1}`;
+      try {
+        const session = sessionManager.createSession(
+          sessionName,
+          entry.workingDir,
+          entry.cliType || 'claude',
+          {},
+          entry.role || ''
+        );
+        launched.push(session.id);
+
+        if (entry.initialPrompt && entry.cliType !== 'terminal') {
+          const sid = session.id;
+          setTimeout(() => {
+            sessionManager.sendInput(sid, entry.initialPrompt + '\r');
+          }, 2000);
+        }
+      } catch (error) {
+        failed.push({ index: i, name: sessionName, error: error.message });
+      }
+    }
+
+    return { launched, failed };
+  });
+
   // List all sessions
   app.get('/api/sessions', async () => {
     return { sessions: sessionManager.getAllSessions() };
@@ -1136,7 +1608,7 @@ async function start() {
   // Update session metadata
   app.patch('/api/sessions/:id', async (request, reply) => {
     const { id } = request.params;
-    const { name, notes, tags, cliType, role, isOrchestrator, parentSessionId, teamInstanceId } = request.body || {};
+    const { name, notes, tags, cliType, role, isOrchestrator, parentSessionId, teamInstanceId, teamAction, teamName } = request.body || {};
     const normalizedRole = normalizeRoleInput(role);
     if (normalizedRole.error) {
       return reply.status(400).send({ error: normalizedRole.error });
@@ -1149,8 +1621,23 @@ async function start() {
 
     let resolvedParentSessionId = currentSession.parentSessionId || null;
     let resolvedTeamInstanceId = currentSession.teamInstanceId || null;
+    let resolvedIsOrchestrator = currentSession.isOrchestrator || false;
 
-    if (parentSessionId !== undefined) {
+    // Handle teamAction: 'new' — create a new team with this session as orchestrator
+    if (teamAction === 'new') {
+      if (currentSession.teamInstanceId) {
+        return reply.status(400).send({ error: 'Session is already in a team. Remove it first.' });
+      }
+      const newTeam = teamStore.createTeamInstance({
+        name: teamName || `${currentSession.name || name || 'Session'}'s Team`,
+        strategy: 'hierarchical',
+        orchestratorSessionId: id,
+        sessionIds: [id]
+      });
+      resolvedTeamInstanceId = newTeam.id;
+      resolvedIsOrchestrator = true;
+      resolvedParentSessionId = null;
+    } else if (parentSessionId !== undefined) {
       if (parentSessionId) {
         if (currentSession.parentSessionId && currentSession.parentSessionId !== parentSessionId) {
           return reply.status(400).send({ error: 'Cannot reparent a session that already has a parent' });
@@ -1193,7 +1680,7 @@ async function start() {
       }
     }
 
-    if (resolvedTeamInstanceId) {
+    if (resolvedTeamInstanceId && teamAction !== 'new') {
       const teamInstance = teamStore.getTeamInstance(resolvedTeamInstanceId);
       if (!teamInstance) {
         return reply.status(400).send({ error: 'Team instance not found' });
@@ -1210,7 +1697,7 @@ async function start() {
       tags,
       cliType,
       role: role === undefined ? undefined : normalizedRole.value,
-      isOrchestrator,
+      isOrchestrator: teamAction === 'new' ? resolvedIsOrchestrator : isOrchestrator,
       parentSessionId: resolvedParentSessionId,
       teamInstanceId: resolvedTeamInstanceId
     });
@@ -1526,16 +2013,25 @@ async function start() {
     if (fromSessionId) {
       const senderSession = sessionManager.getSession(fromSessionId);
       const senderName = senderSession?.name || fromSessionId.substring(0, 8);
-      messageText = `[From: ${senderName} (${fromSessionId.substring(0, 8)})] ${text}`;
+      messageText = `[From: ${senderName}#${fromSessionId}] ${text}`;
 
       if (!recentSenders.has(matched.id)) recentSenders.set(matched.id, new Map());
       recentSenders.get(matched.id).set(fromSessionId, Date.now());
     }
 
     const inputText = submit ? messageText + '\r' : messageText;
-    const success = sessionManager.sendInput(matched.id, inputText);
-    if (!success) {
+    const result = sessionManager.sendOrEnqueue(matched.id, inputText, { fromSessionId });
+    if (result.error === 'session_not_found') {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+    if (result.error === 'session_completed') {
       return reply.status(404).send({ error: 'Session not active' });
+    }
+    if (result.error === 'queue_full') {
+      return reply.status(429).send({ error: `Message queue full (max ${result.maxSize})` });
+    }
+    if (result.queued) {
+      return { ok: true, queued: true, messageId: result.messageId, queuePosition: result.queuePosition, sessionId: matched.id, sessionName: matched.name };
     }
     return { ok: true, sessionId: matched.id, sessionName: matched.name, sent: text.substring(0, 200) };
   });
@@ -1564,7 +2060,7 @@ async function start() {
     if (fromSessionId) {
       const senderSession = sessionManager.getSession(fromSessionId);
       const senderName = senderSession?.name || fromSessionId.substring(0, 8);
-      messageText = `[From: ${senderName} (${fromSessionId.substring(0, 8)})] ${text}`;
+      messageText = `[From: ${senderName}#${fromSessionId}] ${text}`;
 
       // Track sender for reply notifications (expire after 5 minutes)
       if (!recentSenders.has(id)) recentSenders.set(id, new Map());
@@ -1577,11 +2073,29 @@ async function start() {
       }
     }
 
-    const inputText = submit ? messageText + '\r' : messageText;
-    const success = sessionManager.sendInput(id, inputText);
+    const result = sessionManager.sendOrEnqueue(id, messageText, { fromSessionId });
 
-    if (!success) {
-      return reply.status(404).send({ error: 'Session not found or not active' });
+    if (result.error === 'session_not_found') {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+    if (result.error === 'session_completed') {
+      return reply.status(404).send({ error: 'Session not active' });
+    }
+    if (result.error === 'queue_full') {
+      return reply.status(429).send({ error: `Message queue full (max ${result.maxSize})` });
+    }
+
+    // Send Enter as a separate write so TUI apps (Codex, Claude) recognize it as a keystroke
+    if (submit) {
+      if (result.sent) {
+        setTimeout(() => sessionManager.sendInput(id, '\r'), 50);
+      } else if (result.queued) {
+        sessionManager.enqueueMessage(id, '\r', fromSessionId);
+      }
+    }
+
+    if (result.queued) {
+      return { ok: true, queued: true, messageId: result.messageId, queuePosition: result.queuePosition, sessionId: id };
     }
 
     return { ok: true, sessionId: id, sent: text.substring(0, 200) };
@@ -2124,11 +2638,46 @@ async function start() {
     }
   });
 
-  // Delete a saved plan
+  // Delete a saved plan — by path query param OR by content hash in body
   app.delete('/api/saved-plans', async (request, reply) => {
     const { path: filePath } = request.query;
+    const { workingDir, content } = request.body || {};
+
+    // Content-based deletion: find and delete files matching the content hash
+    if (!filePath && workingDir && content) {
+      const resolvedDir = path.resolve(workingDir);
+      const plansDir = path.join(resolvedDir, 'plans');
+      if (!fs.existsSync(plansDir) || !fs.statSync(plansDir).isDirectory()) {
+        return reply.status(404).send({ error: 'No plans/ directory found' });
+      }
+
+      const targetHash = crypto.createHash('md5').update(content.trim()).digest('hex');
+      const deletedFiles = [];
+
+      try {
+        const files = fs.readdirSync(plansDir).filter(f => f.endsWith('.md'));
+        for (const file of files) {
+          const fp = path.join(plansDir, file);
+          const fileContent = fs.readFileSync(fp, 'utf8');
+          const fileHash = crypto.createHash('md5').update(fileContent.trim()).digest('hex');
+          if (fileHash === targetHash) {
+            fs.unlinkSync(fp);
+            deletedFiles.push(fp);
+          }
+        }
+      } catch (error) {
+        return reply.status(500).send({ error: `Failed to delete: ${error.message}` });
+      }
+
+      if (deletedFiles.length === 0) {
+        return reply.status(404).send({ error: 'No saved plan matches the given content' });
+      }
+      return { success: true, deletedFiles };
+    }
+
+    // Path-based deletion (existing behavior)
     if (!filePath) {
-      return reply.status(400).send({ error: 'path query param is required' });
+      return reply.status(400).send({ error: 'path query param or { workingDir, content } body is required' });
     }
 
     // Security: resolve symlinks, only allow .md files inside plans/ directories
@@ -2463,14 +3012,19 @@ async function start() {
   // Add comment to session
   app.post('/api/sessions/:id/comments', async (request, reply) => {
     const { id } = request.params;
-    const { text, author } = request.body || {};
+    const { text, author, parentId, mentions } = request.body || {};
 
     if (!text || !text.trim()) {
       return reply.status(400).send({ error: 'Comment text is required' });
     }
 
     try {
-      const comment = sessionManager.addComment(id, text.trim(), author);
+      const comment = sessionManager.addComment(id, {
+        text: text.trim(),
+        author: author || 'user',
+        parentId: parentId || null,
+        mentions: Array.isArray(mentions) ? mentions : []
+      });
       return { comment };
     } catch (error) {
       if (error.message.includes('not found')) {
@@ -2490,6 +3044,43 @@ async function start() {
     }
 
     return { comments: session.comments || [] };
+  });
+
+  // Session message queue API
+  app.get('/api/sessions/:id/queue', async (request, reply) => {
+    const queue = sessionManager.getMessageQueue(request.params.id);
+    if (queue === null) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+    return { queue };
+  });
+
+  app.delete('/api/sessions/:id/queue', async (request, reply) => {
+    const success = sessionManager.clearMessageQueue(request.params.id);
+    if (!success) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+    return { ok: true };
+  });
+
+  // Session comment reactions (toggle)
+  app.post('/api/sessions/:id/comments/:commentId/reactions', async (request, reply) => {
+    const { emoji, author } = request.body || {};
+    if (!emoji) return reply.status(400).send({ error: 'emoji is required' });
+    const comment = sessionManager.addReaction(request.params.id, request.params.commentId, emoji, author || 'user');
+    if (!comment) return reply.status(404).send({ error: 'Session or comment not found' });
+    return { comment };
+  });
+
+  // Task comment reactions (toggle)
+  app.post('/api/tasks/:id/comments/:commentId/reactions', async (request, reply) => {
+    const { emoji, author } = request.body || {};
+    if (!emoji) return reply.status(400).send({ error: 'emoji is required' });
+    const comment = taskStore.addReaction(request.params.id, request.params.commentId, emoji, author || 'user');
+    if (!comment) return reply.status(404).send({ error: 'Task or comment not found' });
+    const task = taskStore.getTask(request.params.id);
+    broadcastDashboard({ type: 'taskUpdated', task });
+    return { comment };
   });
 
   // Task cards API (first-class task entities)
@@ -2558,78 +3149,14 @@ async function start() {
       return reply.status(404).send({ error: 'Agent not found' });
     }
 
-    // Build task context to send to agent
-    const taskContext = {
-      title: task.title || '',
-      description: task.description || '',
-      comments: (task.comments || []).slice(-5).map(c => ({
-        author: c.author || 'unknown',
-        text: (c.text || '').slice(0, 500)
-      }))
-    };
-
-    let session = null;
-    let createdNewSession = false;
-    if (agent.activeSessionId) {
-      session = sessionManager.getSession(agent.activeSessionId);
-    }
-
-    if (!session || session.status === 'completed') {
-      try {
-        const created = sessionManager.createSession(
-          agent.name,
-          agent.workingDir,
-          agent.cliType,
-          {},
-          agent.role || '',
-          { agentId: agent.id, taskId: task.id }
-        );
-        session = created;
-        createdNewSession = true;
-        const updatedAgent = agentStore.updateAgent(agent.id, {
-          activeSessionId: created.id,
-          lastActiveAt: new Date().toISOString(),
-          sessionHistory: [...(agent.sessionHistory || []), created.id]
-        });
-        if (updatedAgent) {
-          broadcastDashboard({ type: 'agentUpdated', agent: updatedAgent });
-        }
-      } catch (error) {
-        return reply.status(500).send({ error: error.message });
-      }
-    } else {
-      const updatedSession = sessionManager.updateSessionMeta(session.id, { taskId: task.id });
-      if (updatedSession) {
-        session = updatedSession;
-      }
-    }
-
-    // Inject task context into agent session
-    if (createdNewSession) {
-      // Task context will be appended to startup sequence
-      sessionManager.appendTaskContext(session.id, taskContext);
-    } else {
-      // Session already running - send task context directly
-      const instruction = `You have been assigned a new task:\n\nTitle: ${taskContext.title}` +
-        (taskContext.description ? `\n\nDescription:\n${taskContext.description}` : '') +
-        `\n\nPlease begin working on this task.\r`;
-      sessionManager.sendInput(session.id, instruction);
-    }
-
-    const freshTask = taskStore.getTask(task.id);
-    const existingRun = getActiveRunForAgent(freshTask, agent.id);
-    if (!existingRun || existingRun.sessionId !== session.id) {
-      taskStore.appendRun(task.id, {
-        sessionId: session.id,
-        agentId: agent.id,
-        startedAt: new Date().toISOString(),
-        status: 'active'
-      });
+    const result = startAgentForTask(agent, task);
+    if (result.error) {
+      return reply.status(500).send({ error: result.error });
     }
 
     const taskWithRun = taskStore.getTask(task.id);
     broadcastDashboard({ type: 'taskUpdated', task: taskWithRun });
-    return { task: taskWithRun, session };
+    return { task: taskWithRun, session: result.session };
   });
 
   app.post('/api/tasks/:id/stop-run', async (request, reply) => {
@@ -2671,20 +3198,64 @@ async function start() {
 
   app.post('/api/tasks/:id/comments', async (request, reply) => {
     const body = request.body || {};
-    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    let text = typeof body.text === 'string' ? body.text.trim() : '';
     if (!text) return reply.status(400).send({ error: 'Comment text is required' });
+
+    const task = taskStore.getTask(request.params.id);
+    if (!task || task.archivedAt) return reply.status(404).send({ error: 'Task not found' });
+
+    // Process @spawn:template-id mentions BEFORE normal mention resolution
+    const spawnedAgentIds = [];
+    const spawnMatches = text.match(/@(?:spawn|new):(\S+)/g);
+    const processedTemplates = new Set();
+    if (spawnMatches) {
+      for (const match of spawnMatches) {
+        const templateId = match.replace(/@(?:spawn|new):/, '');
+        if (processedTemplates.has(templateId)) continue; // Skip duplicates
+        processedTemplates.add(templateId);
+
+        const template = AGENT_TEMPLATES[templateId];
+        if (!template) continue; // Unknown template — will be ignored
+
+        // Create agent from template
+        const commentIdSuffix = (body._commentId || require('uuid').v4()).slice(0, 4);
+        const newAgent = agentStore.createAgent({
+          name: `${template.name}-${commentIdSuffix}`,
+          cliType: template.cliType || 'claude',
+          role: template.role || '',
+          workingDir: process.cwd()
+        });
+
+        // Assign agent to task
+        const currentAssigned = task.assignedAgents || [];
+        if (!currentAssigned.includes(newAgent.id)) {
+          taskStore.updateTask(request.params.id, {
+            assignedAgents: [...currentAssigned, newAgent.id]
+          });
+        }
+
+        spawnedAgentIds.push({ agentId: newAgent.id, templateId });
+        // Replace @spawn:template in text with @AgentName for stored comment
+        text = text.replace(match, `@${newAgent.name}#${newAgent.id}`);
+      }
+    }
+
     const mentions = resolveMentionAgentIds(text, body.mentions);
     const comment = taskStore.addComment(request.params.id, {
       author: body.author || 'user',
       text,
-      mentions
+      mentions,
+      parentId: body.parentId || null
     });
     if (!comment) return reply.status(404).send({ error: 'Task not found' });
 
     const delivered = [];
     const skipped = [];
+    let autoStartedAgents = null;
+    const spawnedAgentIdSet = new Set(spawnedAgentIds.map(s => s.agentId));
 
     // Mention delivery: prefer active run linked to this task, fall back to active agent session.
+    // If no session exists, auto-spawn the agent for this task.
     for (const agentId of mentions) {
       const agent = agentStore.getAgent(agentId);
       if (!agent) {
@@ -2699,29 +3270,51 @@ async function start() {
         targetSessionId = agent.activeSessionId;
       }
       if (!targetSessionId) {
-        skipped.push({ agentId, reason: 'no_active_session' });
-        continue;
+        // Auto-spawn: start the agent for this task instead of skipping
+        const spawnResult = startAgentForTask(agent, taskStore.getTask(request.params.id));
+        if (spawnResult.error) {
+          skipped.push({ agentId, reason: 'spawn_failed', error: spawnResult.error });
+          continue;
+        }
+        targetSessionId = spawnResult.session.id;
+        // Flag that this agent was auto-started
+        autoStartedAgents = autoStartedAgents || new Set();
+        autoStartedAgents.add(agentId);
       }
-      const instruction = `[Task mention] ${text}\nPlease acknowledge and execute this instruction if applicable.\r`;
-      const ok = sessionManager.sendInput(targetSessionId, instruction);
-      if (ok) {
-        delivered.push({ agentId, sessionId: targetSessionId });
+      const taskForMention = taskStore.getTask(request.params.id);
+      const taskTitle = taskForMention?.title || 'Untitled';
+      const agentName = agent.name || 'unknown';
+      const instruction = `[Task mention] (task: ${request.params.id} | "${taskTitle}")\nTo: ${agentName} (session: ${targetSessionId})\nMessage: ${text}\nReply with: /ec-task-comment ${request.params.id} <your response>\r`;
+      const sendResult = sessionManager.sendOrEnqueue(targetSessionId, instruction);
+      const autoStarted = autoStartedAgents?.has(agentId) || false;
+      const spawned = spawnedAgentIdSet.has(agentId);
+      const extraFlags = { ...(autoStarted && { autoStarted: true }), ...(spawned && { spawned: true }) };
+      if (sendResult.sent) {
+        delivered.push({ agentId, sessionId: targetSessionId, ...extraFlags });
+      } else if (sendResult.queued) {
+        delivered.push({ agentId, sessionId: targetSessionId, queued: true, queuePosition: sendResult.queuePosition, ...extraFlags });
       } else {
-        skipped.push({ agentId, reason: 'input_rejected', sessionId: targetSessionId });
+        skipped.push({ agentId, reason: sendResult.error || 'input_rejected', sessionId: targetSessionId });
       }
     }
 
-    const task = taskStore.getTask(request.params.id);
-    broadcastDashboard({ type: 'taskUpdated', task });
-    return { comment, task, delivered, skipped };
+    const updatedTask = taskStore.getTask(request.params.id);
+    broadcastDashboard({ type: 'taskUpdated', task: updatedTask });
+    return { comment, task: updatedTask, delivered, skipped };
   });
 
   app.post('/api/tasks/:id/auto-comment', async (request, reply) => {
     const body = request.body || {};
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     if (!text) return reply.status(400).send({ error: 'Comment text is required' });
+    // Resolve author from sessionId if provided
+    let author = body.author || 'agent';
+    if (body.sessionId) {
+      const sess = sessionManager.getSession(body.sessionId);
+      if (sess) author = sess.name || author;
+    }
     const comment = taskStore.addComment(request.params.id, {
-      author: body.author || 'agent',
+      author,
       text,
       mentions: normalizeStringArray(body.mentions)
     });
@@ -2974,20 +3567,8 @@ async function start() {
           broadcastDashboard({ type: 'agentUpdated', agent: updated });
         }
 
-        if (status === 'idle') {
-          const tasks = taskStore.listTasks().filter((task) => (task.assignedAgents || []).includes(agent.id));
-          for (const task of tasks) {
-            taskStore.addComment(task.id, {
-              author: agent.id,
-              text: `Auto-update: ${agent.name} reached idle state on session ${sessionId.slice(0, 8)}.`,
-              mentions: []
-            });
-            const updatedTask = taskStore.getTask(task.id);
-            if (updatedTask) {
-              broadcastDashboard({ type: 'taskUpdated', task: updatedTask });
-            }
-          }
-        }
+        // Idle auto-comments removed — they were too noisy.
+        // Agents can post meaningful updates via /ec-task-comment instead.
       }
     }
   });

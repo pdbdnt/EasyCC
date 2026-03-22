@@ -9,6 +9,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [unsaving, setUnsaving] = useState(false);
   const [savedContentSet, setSavedContentSet] = useState(new Set());
   const [allExpanded, setAllExpanded] = useState(null); // null=default, true=all open, false=all closed
   const [currentIsSaved, setCurrentIsSaved] = useState(false);
@@ -152,15 +153,66 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
     }
   };
 
+  // Re-fetch saved state from server (versions isSaved flags + savedContentSet)
+  const refreshSavedState = async () => {
+    try {
+      const [versionsRes, savedRes] = await Promise.all([
+        fetch(workingDir
+          ? `/api/plans/${plan.filename}/versions?workingDir=${encodeURIComponent(workingDir)}${planPathQuery}`
+          : `/api/plans/${plan.filename}/versions?planPath=${encodeURIComponent(plan.path || '')}`
+        ),
+        workingDir
+          ? fetch(`/api/saved-plans?workingDir=${encodeURIComponent(workingDir)}`)
+          : Promise.resolve(null)
+      ]);
+
+      if (versionsRes.ok) {
+        const data = await versionsRes.json();
+        setVersions(data.versions || []);
+        setCurrentIsSaved(data.currentIsSaved || false);
+      }
+
+      if (savedRes && savedRes.ok) {
+        const data = await savedRes.json();
+        setSavedContentSet(new Set((data.plans || []).map(p => p.content.trim())));
+      }
+    } catch (err) {
+      console.error('Error refreshing saved state:', err);
+    }
+  };
+
   const handleSavePlan = async () => {
     const content = currentVersionIndex === null ? plan.content : versionContent;
     if (!content || !workingDir) return;
 
-    // Extract title from first h1
+    const alreadySavedNow = savedContentSet.has(content.trim());
+
+    if (alreadySavedNow) {
+      // Unsave: delete matching saved file(s) by content hash
+      try {
+        setUnsaving(true);
+        const response = await fetch('/api/saved-plans', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workingDir, content })
+        });
+        if (response.ok) {
+          await refreshSavedState();
+          setTimeout(() => setUnsaving(false), 2000);
+        } else {
+          setUnsaving(false);
+        }
+      } catch (err) {
+        console.error('Failed to unsave plan:', err);
+        setUnsaving(false);
+      }
+      return;
+    }
+
+    // Save: existing save logic
     const titleMatch = content.match(/^#\s+(.+)$/m);
     const title = titleMatch ? titleMatch[1] : plan.name || 'plan';
 
-    // Version info
     const versionNumber = currentVersionIndex === null
       ? null
       : versions.length - currentVersionIndex;
@@ -176,15 +228,7 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
       });
       if (response.ok) {
         setSaved(true);
-        setSavedContentSet(prev => new Set(prev).add(content.trim()));
-        // Update dot strip: mark the current version/current as saved
-        if (currentVersionIndex !== null) {
-          setVersions(prev => prev.map((v, i) =>
-            i === currentVersionIndex ? { ...v, isSaved: true } : v
-          ));
-        } else {
-          setCurrentIsSaved(true);
-        }
+        await refreshSavedState();
         setTimeout(() => setSaved(false), 2000);
       }
     } catch (err) {
@@ -242,10 +286,10 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
                 <button
                   className={`btn-small ${(saved || alreadySaved) ? 'btn-saved' : ''}`}
                   onClick={handleSavePlan}
-                  disabled={!displayContent || saved || alreadySaved}
-                  title={alreadySaved ? 'This version is already saved' : 'Save this version to project plans'}
+                  disabled={!displayContent || saved || unsaving}
+                  title={unsaving ? 'Unsaved from project plans' : alreadySaved ? 'Click to unsave from project plans' : 'Save this version to project plans'}
                 >
-                  {(saved || alreadySaved) ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
+                  {unsaving ? 'Unsaved!' : saved ? '\u2713 Saved' : alreadySaved ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
                 </button>
                 <button
                   className="btn-small"
@@ -326,10 +370,10 @@ function PlanViewer({ plan, compact = false, workingDir = null }) {
               <button
                 className={`btn-small ${(saved || alreadySaved) ? 'btn-saved' : ''}`}
                 onClick={handleSavePlan}
-                disabled={!displayContent || saved || alreadySaved}
-                title={alreadySaved ? 'This version is already saved' : 'Save this version to project plans'}
+                disabled={!displayContent || saved || unsaving}
+                title={unsaving ? 'Unsaved from project plans' : alreadySaved ? 'Click to unsave from project plans' : 'Save this version to project plans'}
               >
-                {(saved || alreadySaved) ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
+                {unsaving ? 'Unsaved!' : saved ? '\u2713 Saved' : alreadySaved ? '\u2713 Saved' : '\uD83D\uDCBE Save'}
               </button>
               <button
                 className="btn-small"

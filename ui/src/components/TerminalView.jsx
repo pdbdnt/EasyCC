@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -130,13 +130,16 @@ const TerminalView = forwardRef(function TerminalView({
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Send initial resize
+      // Guard: ignore if this socket was superseded by a newer connect() call
+      if (wsRef.current !== ws) return;
       if (xtermRef.current) {
+        fitAddonRef.current?.fit(); // fit first so cols/rows are accurate
         ws.send(JSON.stringify({
           type: 'resize',
           cols: xtermRef.current.cols,
           rows: xtermRef.current.rows
         }));
+        xtermRef.current.focus();
       }
     };
 
@@ -282,10 +285,11 @@ const TerminalView = forwardRef(function TerminalView({
     ecDismissTimerRef.current = setTimeout(() => setEcResult(null), 10000);
   }, [session]);
 
-  const handleAtPickerSelect = useCallback((sessionName) => {
+  const handleAtPickerSelect = useCallback((sessionName, sessionId) => {
     if (!sessionName) return;
-    // Send name + trailing space so user can continue typing the message
-    const text = sessionName + ' ';
+    // Wrap name in quotes + embed #id for direct lookup, trailing space for message
+    const idSuffix = sessionId ? `#${sessionId}` : '';
+    const text = `'${sessionName}'${idSuffix} `;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'input', data: text }));
     }
@@ -352,6 +356,15 @@ const TerminalView = forwardRef(function TerminalView({
         if (event.key === 'Escape') {
           atPickerRef.current = null;
           setAtPicker(null);
+          return false;
+        }
+        // Double @@ = close picker and send literal @
+        if (event.key === '@') {
+          atPickerRef.current = null;
+          setAtPicker(null);
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'input', data: '@' }));
+          }
           return false;
         }
         if (event.key === 'ArrowDown') {
@@ -499,9 +512,74 @@ const TerminalView = forwardRef(function TerminalView({
       if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
         return false;
       }
-      // Ctrl+Up/Down: scroll to prompt / bottom
-      if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey &&
-          (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      // Ctrl+Up: step backwards through prompt history
+      if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && event.key === 'ArrowUp') {
+        event.preventDefault();
+        const sa = searchAddonRef.current;
+        if (!sa) return false;
+        const history = promptHistoryRef.current;
+        if (history.length === 0) return false;
+
+        let idx;
+        if (promptNavIndexRef.current === null) {
+          idx = history.length - 1;
+        } else if (promptNavIndexRef.current > 0) {
+          idx = promptNavIndexRef.current - 1;
+        } else {
+          return false;
+        }
+
+        const searchTerm = sanitizeSearchTerm(history[idx].text);
+        if (!searchTerm) return false;
+
+        sa.clearDecorations();
+        xtermRef.current.scrollToBottom();
+        requestAnimationFrame(() => {
+          sa.findPrevious(searchTerm, {
+            regex: false,
+            caseSensitive: true,
+            decorations: {
+              matchBackground: '#44444400',
+              activeMatchBackground: '#665500',
+              activeMatchColorOverviewRuler: '#ffaa00'
+            }
+          });
+          promptNavIndexRef.current = idx;
+        });
+        return false;
+      }
+
+      // Ctrl+Down: step forwards through prompt history / scroll to bottom
+      if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && event.key === 'ArrowDown') {
+        event.preventDefault();
+        const sa = searchAddonRef.current;
+        if (!sa) return false;
+        const history = promptHistoryRef.current;
+
+        if (promptNavIndexRef.current !== null && promptNavIndexRef.current < history.length - 1) {
+          const idx = promptNavIndexRef.current + 1;
+          const searchTerm = sanitizeSearchTerm(history[idx].text);
+          if (!searchTerm) return false;
+
+          sa.clearDecorations();
+          xtermRef.current.scrollToTop();
+          requestAnimationFrame(() => {
+            sa.findNext(searchTerm, {
+              regex: false,
+              caseSensitive: true,
+              decorations: {
+                matchBackground: '#44444400',
+                activeMatchBackground: '#665500',
+                activeMatchColorOverviewRuler: '#ffaa00'
+              }
+            });
+            promptNavIndexRef.current = idx;
+          });
+        } else {
+          sa.clearDecorations();
+          xtermRef.current?.scrollToBottom();
+          promptNavIndexRef.current = null;
+        }
         return false;
       }
       // Panel resize: Ctrl+Alt+Arrow keys
@@ -587,8 +665,8 @@ const TerminalView = forwardRef(function TerminalView({
     const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(terminalRef.current);
 
-    // Focus terminal
-    term.focus();
+    // Focus terminal (deferred so the container has layout before xterm tries to focus)
+    requestAnimationFrame(() => term.focus());
 
     return () => {
       if (ctrlCTimerRef.current) {
@@ -744,76 +822,6 @@ const TerminalView = forwardRef(function TerminalView({
         return;
       }
 
-      // Ctrl+Up: step backwards through prompt history
-      if (event.ctrlKey && event.key === 'ArrowUp' && !event.altKey && !event.shiftKey) {
-        event.preventDefault();
-        if (!searchAddonRef.current) return;
-        const history = promptHistoryRef.current;
-        if (history.length === 0) return;
-
-        let idx;
-        if (promptNavIndexRef.current === null) {
-          idx = history.length - 1;
-        } else if (promptNavIndexRef.current > 0) {
-          idx = promptNavIndexRef.current - 1;
-        } else {
-          return; // Already at oldest prompt
-        }
-
-        const searchTerm = sanitizeSearchTerm(history[idx].text);
-        if (!searchTerm) return;
-
-        searchAddonRef.current.clearDecorations();
-        xtermRef.current.scrollToBottom();
-        requestAnimationFrame(() => {
-          searchAddonRef.current.findPrevious(searchTerm, {
-            regex: false,
-            caseSensitive: true,
-            decorations: {
-              matchBackground: '#44444400',
-              activeMatchBackground: '#665500',
-              activeMatchColorOverviewRuler: '#ffaa00'
-            }
-          });
-          promptNavIndexRef.current = idx;
-        });
-        return;
-      }
-
-      // Ctrl+Down: step forwards through prompt history / scroll to bottom
-      if (event.ctrlKey && event.key === 'ArrowDown' && !event.altKey && !event.shiftKey) {
-        event.preventDefault();
-        if (!searchAddonRef.current) return;
-        const history = promptHistoryRef.current;
-
-        if (promptNavIndexRef.current !== null && promptNavIndexRef.current < history.length - 1) {
-          const idx = promptNavIndexRef.current + 1;
-          const searchTerm = sanitizeSearchTerm(history[idx].text);
-          if (!searchTerm) return;
-
-          searchAddonRef.current.clearDecorations();
-          xtermRef.current.scrollToTop();
-          requestAnimationFrame(() => {
-            searchAddonRef.current.findNext(searchTerm, {
-              regex: false,
-              caseSensitive: true,
-              decorations: {
-                matchBackground: '#44444400',
-                activeMatchBackground: '#665500',
-                activeMatchColorOverviewRuler: '#ffaa00'
-              }
-            });
-            promptNavIndexRef.current = idx;
-          });
-        } else {
-          // At most recent prompt or no nav state — scroll to bottom
-          searchAddonRef.current.clearDecorations();
-          xtermRef.current?.scrollToBottom();
-          promptNavIndexRef.current = null;
-        }
-        return;
-      }
-
       // cancelKey is handled by xterm's custom key handler (for confirmation).
     };
 
@@ -869,17 +877,80 @@ const TerminalView = forwardRef(function TerminalView({
   const isPaused = sessionStatus === 'paused';
   const isCompleted = sessionStatus === 'completed';
 
-  // Compute filtered session list for @ picker
-  const pickerSessions = atPicker !== null
-    ? (sessions || [])
-        .filter(s => s.id !== session?.id && s.status !== 'completed')
-        .filter(s => !atPicker.query || s.name?.toLowerCase().includes(atPicker.query.toLowerCase()))
-        .slice(0, 8)
-    : [];
-  const clampedPickerIndex = Math.min(atPicker?.selectedIndex ?? 0, Math.max(0, pickerSessions.length - 1));
+  // Compute filtered & grouped session list for @ picker
+  const { pickerItems, pickerSelectableSessions } = useMemo(() => {
+    if (atPicker === null) return { pickerItems: [], pickerSelectableSessions: [] };
+    const filtered = (sessions || [])
+      .filter(s => s.id !== session?.id && s.status !== 'completed')
+      .filter(s => !atPicker.query || s.name?.toLowerCase().includes(atPicker.query.toLowerCase()));
+
+    // Group by team
+    const myTeamId = session?.teamInstanceId || null;
+    const myTeam = [];
+    const otherTeams = new Map(); // teamInstanceId -> sessions[]
+    const ungrouped = [];
+
+    for (const s of filtered) {
+      if (s.teamInstanceId) {
+        if (s.teamInstanceId === myTeamId) {
+          myTeam.push(s);
+        } else {
+          if (!otherTeams.has(s.teamInstanceId)) otherTeams.set(s.teamInstanceId, []);
+          otherTeams.get(s.teamInstanceId).push(s);
+        }
+      } else {
+        ungrouped.push(s);
+      }
+    }
+
+    // Sort: orchestrators first within each group
+    const sortGroup = (arr) => arr.sort((a, b) => (b.isOrchestrator ? 1 : 0) - (a.isOrchestrator ? 1 : 0));
+    sortGroup(myTeam);
+    sortGroup(ungrouped);
+
+    // Build items list with headers
+    const items = [];
+    const selectable = [];
+    if (myTeam.length > 0) {
+      items.push({ type: 'header', label: 'My Team' });
+      for (const s of myTeam) { items.push({ type: 'session', session: s }); selectable.push(s); }
+    }
+    for (const [, teamSessions] of otherTeams) {
+      sortGroup(teamSessions);
+      const orch = teamSessions.find(s => s.isOrchestrator);
+      items.push({ type: 'header', label: orch ? orch.name : 'Team' });
+      for (const s of teamSessions) { items.push({ type: 'session', session: s }); selectable.push(s); }
+    }
+    if (ungrouped.length > 0) {
+      if (myTeam.length > 0 || otherTeams.size > 0) {
+        items.push({ type: 'header', label: 'Other Sessions' });
+      }
+      for (const s of ungrouped) { items.push({ type: 'session', session: s }); selectable.push(s); }
+    }
+
+    return { pickerItems: items, pickerSelectableSessions: selectable.slice(0, 12) };
+  }, [atPicker, sessions, session?.id, session?.teamInstanceId]);
+
+  // Rebuild items capped to selectable limit
+  const cappedPickerItems = useMemo(() => {
+    if (pickerSelectableSessions.length === 0) return [];
+    const selectableSet = new Set(pickerSelectableSessions.map(s => s.id));
+    const items = [];
+    let lastHeader = null;
+    for (const item of pickerItems) {
+      if (item.type === 'header') { lastHeader = item; continue; }
+      if (selectableSet.has(item.session.id)) {
+        if (lastHeader) { items.push(lastHeader); lastHeader = null; }
+        items.push(item);
+      }
+    }
+    return items;
+  }, [pickerItems, pickerSelectableSessions]);
+
+  const clampedPickerIndex = Math.min(atPicker?.selectedIndex ?? 0, Math.max(0, pickerSelectableSessions.length - 1));
   // Update select ref so the xterm Enter handler can trigger selection
-  atPickerSelectRef.current = pickerSessions.length > 0
-    ? () => handleAtPickerSelect(pickerSessions[clampedPickerIndex]?.name)
+  atPickerSelectRef.current = pickerSelectableSessions.length > 0
+    ? () => handleAtPickerSelect(pickerSelectableSessions[clampedPickerIndex]?.name, pickerSelectableSessions[clampedPickerIndex]?.id)
     : null;
 
   // Get context toggle hint code from settings or use default
@@ -1032,19 +1103,32 @@ const TerminalView = forwardRef(function TerminalView({
             <div className="at-picker__header">
               @{atPicker.query || <span className="at-picker__hint"> type to filter</span>}
             </div>
-            {pickerSessions.length === 0 ? (
+            {pickerSelectableSessions.length === 0 ? (
               <div className="at-picker__empty">No sessions</div>
-            ) : pickerSessions.map((s, i) => (
-              <div
-                key={s.id}
-                className={`at-picker__item${i === clampedPickerIndex ? ' at-picker__item--active' : ''}`}
-                onClick={() => handleAtPickerSelect(s.name)}
-              >
-                <span className={`status-indicator ${s.status}`} />
-                <span className="at-picker__name">{s.name}</span>
-                <span className="at-picker__type">{s.cliType}</span>
-              </div>
-            ))}
+            ) : (() => {
+              let selectableIdx = -1;
+              return cappedPickerItems.map((item, i) => {
+                if (item.type === 'header') {
+                  return <div key={`hdr-${i}`} className="at-picker__group-header">{item.label}</div>;
+                }
+                selectableIdx++;
+                const s = item.session;
+                return (
+                  <div
+                    key={s.id}
+                    className={`at-picker__item${selectableIdx === clampedPickerIndex ? ' at-picker__item--active' : ''}`}
+                    onClick={() => handleAtPickerSelect(s.name, s.id)}
+                  >
+                    <span className={`status-indicator ${s.status}`} />
+                    <span className="at-picker__name">
+                      {s.isOrchestrator && <span className="at-picker__orch-badge">ORCH</span>}
+                      {s.name}
+                    </span>
+                    <span className="at-picker__type">{s.cliType}</span>
+                  </div>
+                );
+              });
+            })()}
           </div>
         )}
       </div>

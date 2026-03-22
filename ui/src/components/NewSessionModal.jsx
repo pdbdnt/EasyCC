@@ -9,7 +9,7 @@ function generateDefaultSessionName() {
   return `Session ${date}-${time}`;
 }
 
-function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = '', sessions = [], defaultParentSessionId = null }) {
+function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = '', sessions = [], defaultParentSessionId = null, starredFolders = [], onToggleStar }) {
   const normalizedDefaultWorkingDir = normalizeWindowsPath(defaultWorkingDir);
   const [activeTab, setActiveTab] = useState('session');
   const [name, setName] = useState(() => generateDefaultSessionName());
@@ -31,6 +31,13 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
   const [teamsError, setTeamsError] = useState('');
   const [selectedTeamId, setSelectedTeamId] = useState('');
   const [teamGoal, setTeamGoal] = useState('');
+
+  // Presets tab state
+  const [presets, setPresets] = useState([]);
+  const [presetsLoading, setPresetsLoading] = useState(false);
+  const [selectedPresetId, setSelectedPresetId] = useState('');
+  const [editingPreset, setEditingPreset] = useState(null);
+  const [presetBrowseRowIndex, setPresetBrowseRowIndex] = useState(-1);
 
   // Close on ESC key
   useEffect(() => {
@@ -61,6 +68,26 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
     loadActiveTeams();
     return () => { cancelled = true; };
   }, []);
+
+  // Fetch presets for the presets tab
+  useEffect(() => {
+    if (activeTab !== 'presets') return;
+    let cancelled = false;
+    const loadPresets = async () => {
+      setPresetsLoading(true);
+      try {
+        const res = await fetch('/api/presets');
+        const data = await res.json();
+        if (!cancelled) {
+          setPresets(data.presets || []);
+          setSelectedPresetId((prev) => prev || (data.presets || [])[0]?.id || '');
+        }
+      } catch { /* ignore */ }
+      finally { if (!cancelled) setPresetsLoading(false); }
+    };
+    loadPresets();
+    return () => { cancelled = true; };
+  }, [activeTab]);
 
   // Fetch team templates for the teams tab
   useEffect(() => {
@@ -96,6 +123,71 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
       cancelled = true;
     };
   }, [activeTab]);
+
+  const handleLaunchPreset = async () => {
+    if (!selectedPresetId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/presets/${selectedPresetId}/launch`, { method: 'POST' });
+      const data = await res.json();
+      if (data.launched?.length > 0) {
+        onClose();
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSavePreset = async (preset) => {
+    try {
+      if (preset.id) {
+        const res = await fetch(`/api/presets/${preset.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(preset)
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setPresets(prev => prev.map(p => p.id === data.preset.id ? data.preset : p));
+        }
+      } else {
+        const res = await fetch('/api/presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(preset)
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setPresets(prev => [...prev, data.preset]);
+          setSelectedPresetId(data.preset.id);
+        }
+      }
+    } catch { /* ignore */ }
+    setEditingPreset(null);
+  };
+
+  const handleDeletePreset = async (id) => {
+    try {
+      await fetch(`/api/presets/${id}`, { method: 'DELETE' });
+      setPresets(prev => prev.filter(p => p.id !== id));
+      if (selectedPresetId === id) setSelectedPresetId('');
+    } catch { /* ignore */ }
+  };
+
+  const handleSaveCurrentAsPreset = () => {
+    const currentSessions = sessions.filter(s => s.status !== 'completed');
+    setEditingPreset({
+      name: '',
+      description: '',
+      sessions: currentSessions.map(s => ({
+        name: s.name || '',
+        workingDir: s.workingDir || '',
+        cliType: s.cliType || 'claude',
+        role: '',
+        initialPrompt: ''
+      }))
+    });
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -157,9 +249,17 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
           >
             Teams
           </button>
+          <button
+            type="button"
+            className={`tab-btn ${activeTab === 'presets' ? 'active' : ''}`}
+            onClick={() => setActiveTab('presets')}
+            disabled={loading}
+          >
+            Presets
+          </button>
         </div>
 
-        {activeTab === 'session' ? (
+        {activeTab === 'session' && (
           <form onSubmit={handleSubmit}>
             <div className="modal-form-grid">
               <div className="form-group-right">
@@ -278,6 +378,8 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                     onSelectPath={setSelectedPath}
                     defaultBase={normalizedDefaultWorkingDir || undefined}
                     disabled={loading}
+                    starredFolders={starredFolders}
+                    onToggleStar={onToggleStar}
                   />
                 </div>
               </div>
@@ -301,7 +403,9 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
               </div>
             </div>
           </form>
-        ) : (
+        )}
+
+        {activeTab === 'teams' && (
           <div className="modal-form-grid">
             <div className="form-group-left">
               <div className="form-group">
@@ -311,6 +415,8 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                   onSelectPath={setSelectedPath}
                   defaultBase={normalizedDefaultWorkingDir || undefined}
                   disabled={loading}
+                  starredFolders={starredFolders}
+                  onToggleStar={onToggleStar}
                 />
               </div>
 
@@ -392,6 +498,238 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'presets' && (
+          <div className="modal-form-grid">
+            <div className="form-group-left">
+              {editingPreset ? (
+                <div className="preset-editor">
+                  <div className="form-group">
+                    <label>Preset Name</label>
+                    <input
+                      type="text"
+                      value={editingPreset.name}
+                      onChange={(e) => setEditingPreset({ ...editingPreset, name: e.target.value })}
+                      placeholder="e.g. My Fullstack Setup"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Description</label>
+                    <input
+                      type="text"
+                      value={editingPreset.description}
+                      onChange={(e) => setEditingPreset({ ...editingPreset, description: e.target.value })}
+                      placeholder="Optional description"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Sessions ({editingPreset.sessions.length})</label>
+                    {editingPreset.sessions.map((entry, i) => (
+                      <div key={i} className="preset-session-entry">
+                        <input
+                          type="text"
+                          value={entry.name}
+                          onChange={(e) => {
+                            const sessions = [...editingPreset.sessions];
+                            sessions[i] = { ...sessions[i], name: e.target.value };
+                            setEditingPreset({ ...editingPreset, sessions });
+                          }}
+                          placeholder={`Session #${i + 1}`}
+                          className="preset-session-name"
+                        />
+                        <div className="preset-session-dir-row">
+                          <input
+                            type="text"
+                            value={entry.workingDir}
+                            onChange={(e) => {
+                              const sessions = [...editingPreset.sessions];
+                              sessions[i] = { ...sessions[i], workingDir: e.target.value };
+                              setEditingPreset({ ...editingPreset, sessions });
+                            }}
+                            placeholder="Working directory"
+                            className="preset-session-dir"
+                          />
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-small"
+                            onClick={() => setPresetBrowseRowIndex(presetBrowseRowIndex === i ? -1 : i)}
+                          >
+                            {presetBrowseRowIndex === i ? 'Hide' : 'Browse'}
+                          </button>
+                        </div>
+                        {presetBrowseRowIndex === i && (
+                          <DirectoryBrowser
+                            selectedPath={entry.workingDir}
+                            onSelectPath={(path) => {
+                              const sessions = [...editingPreset.sessions];
+                              sessions[i] = { ...sessions[i], workingDir: path };
+                              setEditingPreset({ ...editingPreset, sessions });
+                            }}
+                            starredFolders={starredFolders}
+                            onToggleStar={onToggleStar}
+                          />
+                        )}
+                        <div className="preset-session-options">
+                          <select
+                            value={entry.cliType}
+                            onChange={(e) => {
+                              const sessions = [...editingPreset.sessions];
+                              sessions[i] = { ...sessions[i], cliType: e.target.value };
+                              setEditingPreset({ ...editingPreset, sessions });
+                            }}
+                            className="cli-select preset-session-cli"
+                          >
+                            <option value="claude">Claude</option>
+                            <option value="codex">Codex</option>
+                            <option value="terminal">Terminal</option>
+                          </select>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-small"
+                            onClick={() => {
+                              const sessions = editingPreset.sessions.filter((_, idx) => idx !== i);
+                              setEditingPreset({ ...editingPreset, sessions });
+                              if (presetBrowseRowIndex === i) setPresetBrowseRowIndex(-1);
+                            }}
+                            disabled={editingPreset.sessions.length <= 1}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-small"
+                      onClick={() => setEditingPreset({
+                        ...editingPreset,
+                        sessions: [...editingPreset.sessions, { name: '', workingDir: '', cliType: 'claude', role: '', initialPrompt: '' }]
+                      })}
+                      disabled={editingPreset.sessions.length >= 20}
+                    >
+                      + Add Session
+                    </button>
+                  </div>
+                  <div className="modal-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => { setEditingPreset(null); setPresetBrowseRowIndex(-1); }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => handleSavePreset(editingPreset)}
+                      disabled={!editingPreset.name.trim() || editingPreset.sessions.length === 0 || editingPreset.sessions.some(s => !s.workingDir.trim())}
+                    >
+                      {editingPreset.id ? 'Save Changes' : 'Create Preset'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="preset-actions-bar">
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-small"
+                      onClick={() => setEditingPreset({ name: '', description: '', sessions: [{ name: '', workingDir: '', cliType: 'claude', role: '', initialPrompt: '' }] })}
+                    >
+                      + New Preset
+                    </button>
+                    {sessions.length > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-small"
+                        onClick={handleSaveCurrentAsPreset}
+                      >
+                        Save Current Sessions
+                      </button>
+                    )}
+                  </div>
+                  {selectedPresetId && (
+                    <div className="preset-detail">
+                      {(() => {
+                        const p = presets.find(pr => pr.id === selectedPresetId);
+                        if (!p) return null;
+                        return (
+                          <>
+                            <div className="preset-detail-title">{p.name}</div>
+                            {p.description && <div className="preset-detail-desc">{p.description}</div>}
+                            <div className="preset-detail-sessions">
+                              {p.sessions.map((s, i) => (
+                                <div key={i} className="preset-detail-session">
+                                  <span className="preset-detail-session-name">{s.name || `#${i + 1}`}</span>
+                                  <span className="preset-detail-session-dir" title={s.workingDir}>
+                                    {s.workingDir.split('\\').slice(-2).join('\\')}
+                                  </span>
+                                  <span className="preset-detail-session-type">{s.cliType}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="modal-actions">
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => setEditingPreset({ ...p })}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => handleDeletePreset(p.id)}
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={handleLaunchPreset}
+                                disabled={loading}
+                              >
+                                {loading ? 'Launching...' : `Launch ${p.sessions.length} Session${p.sessions.length !== 1 ? 's' : ''}`}
+                              </button>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="form-group-right">
+              {presetsLoading ? (
+                <div className="team-launch-empty">Loading presets...</div>
+              ) : presets.length === 0 && !editingPreset ? (
+                <div className="team-launch-empty">No presets yet. Create one to launch multiple sessions at once.</div>
+              ) : (
+                <div className="team-template-list">
+                  {presets.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className={`team-template-card ${selectedPresetId === preset.id ? 'active' : ''}`}
+                      onClick={() => { setSelectedPresetId(preset.id); setEditingPreset(null); setPresetBrowseRowIndex(-1); }}
+                      disabled={loading}
+                    >
+                      <div className="team-template-card__header">
+                        <span>{preset.name}</span>
+                        <span className="team-template-card__strategy">{preset.sessions.length} session{preset.sessions.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      {preset.description && (
+                        <div className="team-template-card__description">{preset.description}</div>
+                      )}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

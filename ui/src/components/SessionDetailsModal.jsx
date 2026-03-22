@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import PlanViewer from './PlanViewer';
 
+const REACTION_EMOJIS = ['\uD83D\uDC4D', '\u2705', '\uD83D\uDC40', '\u2764\uFE0F', '\uD83C\uDF89', '\uD83E\uDD14'];
+
 function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, onKill }) {
   const [activeTab, setActiveTab] = useState('details');
   const [name, setName] = useState(session?.name || '');
@@ -8,10 +10,14 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
   const [tagInput, setTagInput] = useState('');
   const [tags, setTags] = useState(session?.tags || []);
   const [teamInstanceId, setTeamInstanceId] = useState(session?.teamInstanceId || '');
+  const [teamName, setTeamName] = useState('');
   const [activeTeams, setActiveTeams] = useState([]);
   const [plans, setPlans] = useState([]);
   const [loadingPlans, setLoadingPlans] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [commentText, setCommentText] = useState('');
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(null);
 
   // Update form when session changes
   useEffect(() => {
@@ -77,7 +83,14 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onUpdate(session.id, { name, notes, tags, teamInstanceId: teamInstanceId || null });
+      const updates = { name, notes, tags };
+      if (teamInstanceId === '__new__') {
+        updates.teamAction = 'new';
+        if (teamName.trim()) updates.teamName = teamName.trim();
+      } else {
+        updates.teamInstanceId = teamInstanceId || null;
+      }
+      await onUpdate(session.id, updates);
     } catch (error) {
       console.error('Error saving session:', error);
     }
@@ -104,6 +117,110 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
     }
   };
 
+  const handleAddComment = async () => {
+    if (!commentText.trim()) return;
+    try {
+      await fetch(`/api/sessions/${session.id}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: commentText.trim(),
+          author: 'user',
+          parentId: replyingTo?.id || null
+        })
+      });
+      setCommentText('');
+      setReplyingTo(null);
+    } catch (error) {
+      console.error('Error adding comment:', error);
+    }
+  };
+
+  const handleToggleReaction = async (commentId, emoji) => {
+    try {
+      await fetch(`/api/sessions/${session.id}/comments/${commentId}/reactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emoji, author: 'user' })
+      });
+      setShowEmojiPicker(null);
+    } catch (error) {
+      console.error('Error toggling reaction:', error);
+    }
+  };
+
+  const renderThreadedComments = (comments, entityId, entityType) => {
+    const topLevel = comments.filter(c => !c.parentId);
+    const replies = comments.filter(c => c.parentId);
+    const replyMap = {};
+    replies.forEach(r => {
+      if (!replyMap[r.parentId]) replyMap[r.parentId] = [];
+      replyMap[r.parentId].push(r);
+    });
+
+    const renderComment = (comment, isReply = false) => (
+      <div key={comment.id} className={`comment-item ${isReply ? 'comment-reply' : ''}`}>
+        <div className="comment-header">
+          <span className={`comment-author ${comment.author === 'user' ? 'author-user' : 'author-agent'}`}>
+            {comment.author}
+          </span>
+          <span className="comment-time">
+            {formatCommentTime(comment.createdAt || comment.timestamp)}
+          </span>
+        </div>
+        <div className="comment-text">{comment.text}</div>
+        <div className="comment-actions-row">
+          {(comment.reactions || []).length > 0 && (
+            <div className="comment-reactions">
+              {groupReactions(comment.reactions).map(({ emoji, count, hasUser }) => (
+                <button
+                  key={emoji}
+                  className={`comment-reaction ${hasUser ? 'active' : ''}`}
+                  onClick={() => handleToggleReaction(comment.id, emoji)}
+                  title={`${count} reaction${count > 1 ? 's' : ''}`}
+                >
+                  {emoji} {count}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="comment-action-btns">
+            <button
+              className="comment-reply-btn"
+              onClick={() => setReplyingTo(comment)}
+            >
+              Reply
+            </button>
+            <div className="emoji-picker-wrapper">
+              <button
+                className="comment-react-btn"
+                onClick={() => setShowEmojiPicker(showEmojiPicker === comment.id ? null : comment.id)}
+              >
+                +
+              </button>
+              {showEmojiPicker === comment.id && (
+                <div className="emoji-picker">
+                  {REACTION_EMOJIS.map(emoji => (
+                    <button
+                      key={emoji}
+                      className="emoji-picker-btn"
+                      onClick={() => handleToggleReaction(comment.id, emoji)}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        {replyMap[comment.id]?.map(reply => renderComment(reply, true))}
+      </div>
+    );
+
+    return topLevel.map(c => renderComment(c));
+  };
+
   if (!session) return null;
 
   return (
@@ -120,6 +237,12 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
             onClick={() => setActiveTab('details')}
           >
             Details
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'comments' ? 'active' : ''}`}
+            onClick={() => setActiveTab('comments')}
+          >
+            Comments ({(session.comments || []).length})
           </button>
           <button
             className={`tab-btn ${activeTab === 'plans' ? 'active' : ''}`}
@@ -222,16 +345,26 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
                 <select
                   id="teamInstance"
                   value={teamInstanceId}
-                  onChange={(e) => setTeamInstanceId(e.target.value)}
+                  onChange={(e) => { setTeamInstanceId(e.target.value); if (e.target.value !== '__new__') setTeamName(''); }}
                   className="cli-select"
                 >
                   <option value="">None</option>
+                  {!session.teamInstanceId && <option value="__new__">+ Create New Team (become orchestrator)</option>}
                   {activeTeams.map((team) => (
                     <option key={team.id} value={team.id}>
                       {team.name} ({team.sessionIds?.length || 0} members)
                     </option>
                   ))}
                 </select>
+                {teamInstanceId === '__new__' && (
+                  <input
+                    type="text"
+                    value={teamName}
+                    onChange={(e) => setTeamName(e.target.value)}
+                    placeholder={`${name || session.name || 'Session'}'s Team`}
+                    style={{ marginTop: '6px' }}
+                  />
+                )}
               </div>
 
               <div className="session-actions">
@@ -247,6 +380,51 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
                 <button className="btn btn-danger" onClick={() => onKill(session.id)}>
                   Delete Session
                 </button>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'comments' && (
+            <div className="comments-tab">
+              <div className="comment-input-area">
+                {replyingTo && (
+                  <div className="replying-to-banner">
+                    Replying to <strong>{replyingTo.author}</strong>
+                    <button className="replying-to-cancel" onClick={() => setReplyingTo(null)}>&times;</button>
+                  </div>
+                )}
+                <div className="comment-input-row">
+                  <textarea
+                    className="comment-textarea"
+                    value={commentText}
+                    onChange={e => setCommentText(e.target.value)}
+                    placeholder={replyingTo ? 'Write a reply...' : 'Add a comment...'}
+                    rows={2}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAddComment();
+                      }
+                    }}
+                  />
+                  <button
+                    className="btn btn-primary btn-small"
+                    onClick={handleAddComment}
+                    disabled={!commentText.trim()}
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+
+              <div className="comments-list">
+                {(session.comments || []).length === 0 ? (
+                  <div className="empty-state">
+                    <p className="text-muted">No comments yet.</p>
+                  </div>
+                ) : (
+                  renderThreadedComments(session.comments || [], session.id, 'session')
+                )}
               </div>
             </div>
           )}
@@ -304,6 +482,23 @@ function formatDate(dateString) {
   if (!dateString) return 'Unknown';
   const date = new Date(dateString);
   return date.toLocaleString();
+}
+
+function formatCommentTime(dateString) {
+  if (!dateString) return '';
+  const d = new Date(dateString);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[d.getMonth()]} ${d.getDate()}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+function groupReactions(reactions) {
+  const map = {};
+  (reactions || []).forEach(r => {
+    if (!map[r.emoji]) map[r.emoji] = { emoji: r.emoji, count: 0, hasUser: false };
+    map[r.emoji].count++;
+    if (r.author === 'user') map[r.emoji].hasUser = true;
+  });
+  return Object.values(map);
 }
 
 export default SessionDetailsModal;

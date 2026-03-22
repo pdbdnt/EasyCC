@@ -751,68 +751,70 @@ function Dashboard({
                 {hintModeActive && (
                   <span className="session-group-hint">{hintLetter}</span>
                 )}
-                <button
-                  className="group-gear-btn"
-                  title={`Saved plans for ${displayName}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const workingDir = sessionsInGroup[0]?.session?.workingDir;
-                    if (workingDir) {
-                      setSavedPlansTarget({ dirName, workingDir });
-                    }
-                  }}
-                >
-                  ⚙
-                </button>
-                {onResumeSession && sessionsInGroup.some(s => s.session.status === 'paused') && (
-                  <>
-                    <button
-                      className="group-resume-btn"
-                      title={`Resume all paused sessions in ${displayName}`}
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        const pausedIds = sessionsInGroup
-                          .filter(s => s.session.status === 'paused')
-                          .map(s => s.session.id);
-                        for (const id of pausedIds) {
-                          await onResumeSession(id);
-                        }
-                      }}
-                    >
-                      ▶
-                    </button>
-                    <button
-                      className="group-fresh-btn"
-                      title={`Start fresh for all paused sessions in ${displayName}`}
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        const pausedIds = sessionsInGroup
-                          .filter(s => s.session.status === 'paused')
-                          .map(s => s.session.id);
-                        for (const id of pausedIds) {
-                          await onResumeSession(id, { fresh: true });
-                        }
-                      }}
-                    >
-                      ⟳
-                    </button>
-                  </>
-                )}
-                {onKillSession && (
+                <span className="group-action-buttons">
                   <button
-                    className="group-kill-btn"
-                    title={`Kill all sessions in ${displayName}`}
+                    className="group-gear-btn"
+                    title={`Saved plans for ${displayName}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setKillGroupTarget({
-                        dirName,
-                        sessionIds: sessionsInGroup.map(s => s.session.id)
-                      });
+                      const workingDir = sessionsInGroup[0]?.session?.workingDir;
+                      if (workingDir) {
+                        setSavedPlansTarget({ dirName, workingDir });
+                      }
                     }}
                   >
-                    ✕
+                    ⚙
                   </button>
-                )}
+                  {onResumeSession && sessionsInGroup.some(s => s.session.status === 'paused') && (
+                    <>
+                      <button
+                        className="group-resume-btn"
+                        title={`Resume all paused sessions in ${displayName}`}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const pausedIds = sessionsInGroup
+                            .filter(s => s.session.status === 'paused')
+                            .map(s => s.session.id);
+                          for (const id of pausedIds) {
+                            await onResumeSession(id);
+                          }
+                        }}
+                      >
+                        ▶
+                      </button>
+                      <button
+                        className="group-fresh-btn"
+                        title={`Start fresh for all paused sessions in ${displayName}`}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const pausedIds = sessionsInGroup
+                            .filter(s => s.session.status === 'paused')
+                            .map(s => s.session.id);
+                          for (const id of pausedIds) {
+                            await onResumeSession(id, { fresh: true });
+                          }
+                        }}
+                      >
+                        ⟳
+                      </button>
+                    </>
+                  )}
+                  {onKillSession && (
+                    <button
+                      className="group-kill-btn"
+                      title={`Kill all sessions in ${displayName}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setKillGroupTarget({
+                          dirName,
+                          sessionIds: sessionsInGroup.map(s => s.session.id)
+                        });
+                      }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </span>
               </button>
               {!collapsedGroups.has(dirName) && sessionsInGroup.filter(({ session }) => !session.parentSessionId).map(({ session, globalIndex, hintCode }) => {
                 const recentlyEntered = kanbanColumnFilter && session.stageEnteredAt &&

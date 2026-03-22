@@ -227,91 +227,90 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
           {activeTab === 'keyboard' && (
             <div className="settings-section">
               <p className="settings-description">
-                Configure keyboard shortcuts for the terminal. Click "Record" and press a key combination.
+                Configure keyboard shortcuts. Click "Record" and press a key combination.
               </p>
-              <div className="keyboard-shortcuts-list">
-                {Object.entries(localSettings.keyboard)
-                  .filter(([key]) => key !== 'hintMode' && key !== 'navigation')
-                  .map(([key, value]) => (
-                  <div className="shortcut-row" key={key}>
-                    <label className="shortcut-label">{keyboardLabels[key] || key}</label>
-                    <div className="shortcut-input-group">
-                      <input
-                        type="text"
-                        className={`shortcut-input ${recordingKey === key ? 'recording' : ''}`}
-                        value={recordingKey === key ? 'Press key...' : value}
-                        readOnly
-                      />
-                      <button
-                        className={`btn btn-small ${recordingKey === key ? 'btn-danger' : 'btn-secondary'}`}
-                        onClick={() => recordingKey === key ? setRecordingKey(null) : startRecording(key)}
-                      >
-                        {recordingKey === key ? 'Cancel' : 'Record'}
-                      </button>
-                    </div>
+              <div className="shortcuts-columns">
+                <div>
+                  <div className="shortcuts-column-header">Terminal</div>
+                  <div className="keyboard-shortcuts-list">
+                    {Object.entries(localSettings.keyboard)
+                      .filter(([key]) => key !== 'hintMode' && key !== 'navigation')
+                      .map(([key, value]) => (
+                      <div className="shortcut-row" key={key}>
+                        <label className="shortcut-label">{keyboardLabels[key] || key}</label>
+                        <div className="shortcut-input-group">
+                          <input
+                            type="text"
+                            className={`shortcut-input ${recordingKey === key ? 'recording' : ''}`}
+                            value={recordingKey === key ? 'Press key...' : value}
+                            readOnly
+                          />
+                          <button
+                            className={`btn btn-small ${recordingKey === key ? 'btn-danger' : 'btn-secondary'}`}
+                            onClick={() => recordingKey === key ? setRecordingKey(null) : startRecording(key)}
+                          >
+                            {recordingKey === key ? 'Cancel' : 'Record'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-
-              <div className="settings-divider" />
-
-              <h4 className="settings-subtitle">Session Navigation</h4>
-              <p className="settings-description">
-                Shortcuts for switching between sessions and groups.
-              </p>
-              <div className="keyboard-shortcuts-list">
-                {Object.entries(navigationSettings).map(([key, value]) => (
-                  <div className="shortcut-row" key={key}>
-                    <label className="shortcut-label">{navigationLabels[key] || key}</label>
-                    <div className="shortcut-input-group">
-                      <input
-                        type="text"
-                        className={`shortcut-input ${recordingKey === key ? 'recording' : ''}`}
-                        value={recordingKey === key ? 'Press key...' : value}
-                        readOnly
-                      />
-                      <button
-                        className={`btn btn-small ${recordingKey === key ? 'btn-danger' : 'btn-secondary'}`}
-                        onClick={() => recordingKey === key ? setRecordingKey(null) : startRecording(key)}
-                      >
-                        {recordingKey === key ? 'Cancel' : 'Record'}
-                      </button>
-                    </div>
+                </div>
+                <div>
+                  <div className="shortcuts-column-header">Session Navigation</div>
+                  <div className="keyboard-shortcuts-list">
+                    {Object.entries(navigationSettings).map(([key, value]) => (
+                      <div className="shortcut-row" key={key}>
+                        <label className="shortcut-label">{navigationLabels[key] || key}</label>
+                        <div className="shortcut-input-group">
+                          <input
+                            type="text"
+                            className={`shortcut-input ${recordingKey === key ? 'recording' : ''}`}
+                            value={recordingKey === key ? 'Press key...' : value}
+                            readOnly
+                          />
+                          <button
+                            className={`btn btn-small ${recordingKey === key ? 'btn-danger' : 'btn-secondary'}`}
+                            onClick={() => recordingKey === key ? setRecordingKey(null) : startRecording(key)}
+                          >
+                            {recordingKey === key ? 'Cancel' : 'Record'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
               </div>
 
               <div className="settings-divider" />
 
               <h4 className="settings-subtitle">Hint Mode (Vimium-style)</h4>
-              <p className="settings-description">
-                Hold the trigger key to show hint badges on UI elements. Type the hint code to activate that element.
-              </p>
 
-              <div className="form-group checkbox-group">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={hintModeSettings.enabled}
-                    onChange={e => updateHintSetting('enabled', e.target.checked)}
-                  />
-                  Enable Hint Mode
-                </label>
-              </div>
+              <div className="hint-mode-inline-row">
+                <div className="form-group checkbox-group">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={hintModeSettings.enabled}
+                      onChange={e => updateHintSetting('enabled', e.target.checked)}
+                    />
+                    Enable Hint Mode
+                  </label>
+                </div>
 
-              <div className="form-group">
-                <label>Trigger Key</label>
-                <select
-                  value={hintModeSettings.triggerKey}
-                  onChange={e => updateHintSetting('triggerKey', e.target.value)}
-                  disabled={!hintModeSettings.enabled}
-                >
-                  <option value="`">` (Backtick)</option>
-                  <option value="Ctrl+Alt">Ctrl+Alt</option>
-                  <option value="Alt">Alt</option>
-                  <option value="Ctrl">Ctrl</option>
-                  <option value="Shift">Shift</option>
-                </select>
+                <div className="form-group">
+                  <select
+                    value={hintModeSettings.triggerKey}
+                    onChange={e => updateHintSetting('triggerKey', e.target.value)}
+                    disabled={!hintModeSettings.enabled}
+                  >
+                    <option value="`">Trigger: ` (Backtick)</option>
+                    <option value="Ctrl+Alt">Trigger: Ctrl+Alt</option>
+                    <option value="Alt">Trigger: Alt</option>
+                    <option value="Ctrl">Trigger: Ctrl</option>
+                    <option value="Shift">Trigger: Shift</option>
+                  </select>
+                </div>
               </div>
 
               <div className="hint-codes-section">

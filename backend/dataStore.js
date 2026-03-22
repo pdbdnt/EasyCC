@@ -86,6 +86,8 @@ class DataStore {
         stageEnteredAt: session.stageEnteredAt || null,
         updatedAt: session.updatedAt || null,
         comments: session.comments || [],
+        // Message queue (persisted for restart recovery)
+        messageQueue: (session.messageQueue || []).filter(m => m.status === 'queued'),
         // Orchestrator fields
         isOrchestrator: session.isOrchestrator || false,
         parentSessionId: session.parentSessionId || null,
@@ -137,7 +139,7 @@ class DataStore {
       // Update allowed metadata fields
       const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'status', 'lastActivity',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt', 'placementLocked',
-        'rejectionHistory', 'completedAt', 'updatedAt', 'comments',
+        'rejectionHistory', 'completedAt', 'updatedAt', 'comments', 'messageQueue',
         'isOrchestrator', 'parentSessionId', 'teamInstanceId'];
 
       for (const field of allowedFields) {

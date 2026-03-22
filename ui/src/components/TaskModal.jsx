@@ -1,5 +1,11 @@
 import { useMemo, useState, useRef, useEffect } from 'react';
 import AgentChipSelector from './AgentChipSelector';
+import { AGENT_TEMPLATES } from '../utils/agentTemplates';
+
+const REACTION_EMOJIS = ['\uD83D\uDC4D', '\u2705', '\uD83D\uDC40', '\u2764\uFE0F', '\uD83C\uDF89', '\uD83E\uDD14'];
+
+// Filter spawn-eligible templates (exclude primary, terminal, custom)
+const SPAWN_TEMPLATES = AGENT_TEMPLATES.filter(t => !['primary', 'terminal', 'custom', 'codex-agent'].includes(t.id));
 
 const PRIORITIES = [
   { value: 0, label: 'P0', cssClass: 'p0' },
@@ -40,6 +46,8 @@ function TaskModal({
   const [deleting, setDeleting] = useState(false);
   const [showMentionDropdown, setShowMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(null);
   const commentInputRef = useRef(null);
   const mentionDropdownRef = useRef(null);
 
@@ -63,6 +71,14 @@ function TaskModal({
     const lower = mentionFilter.toLowerCase();
     return availableAgents.filter(a => a.name.toLowerCase().includes(lower));
   }, [availableAgents, mentionFilter]);
+
+  // Show spawn templates when user types @spawn: or @new:
+  const isSpawnQuery = mentionFilter.startsWith('spawn:') || mentionFilter.startsWith('new:');
+  const filteredSpawnTemplates = useMemo(() => {
+    if (!isSpawnQuery) return [];
+    const query = mentionFilter.replace(/^(spawn|new):/, '').toLowerCase();
+    return SPAWN_TEMPLATES.filter(t => !query || t.id.includes(query) || t.name.toLowerCase().includes(query));
+  }, [mentionFilter, isSpawnQuery]);
 
   // Close mention dropdown on outside click
   useEffect(() => {
@@ -106,7 +122,21 @@ function TaskModal({
     if (lastAtIndex >= 0) {
       const before = commentText.slice(0, lastAtIndex);
       const after = commentText.slice(cursorPos);
-      setCommentText(`${before}@${agent.name} ${after}`);
+      setCommentText(`${before}@${agent.name}#${agent.id} ${after}`);
+    }
+    setShowMentionDropdown(false);
+    commentInputRef.current?.focus();
+  };
+
+  const handleSpawnSelect = (template) => {
+    const cursorPos = commentInputRef.current?.selectionStart || commentText.length;
+    const textBeforeCursor = commentText.slice(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+
+    if (lastAtIndex >= 0) {
+      const before = commentText.slice(0, lastAtIndex);
+      const after = commentText.slice(cursorPos);
+      setCommentText(`${before}@spawn:${template.id} ${after}`);
     }
     setShowMentionDropdown(false);
     commentInputRef.current?.focus();
@@ -166,8 +196,9 @@ function TaskModal({
     const text = commentText.trim();
     if (!text) return;
     try {
-      const result = await onAddTaskComment?.(task.id, { text, author: 'user' });
+      const result = await onAddTaskComment?.(task.id, { text, author: 'user', parentId: replyingTo?.id || null });
       setCommentText('');
+      setReplyingTo(null);
       setShowMentionDropdown(false);
       setDeliveryInfo({
         delivered: result?.delivered || [],
@@ -177,6 +208,82 @@ function TaskModal({
     } catch (error) {
       addToast?.(`Failed to add comment: ${error.message}`, 'error');
     }
+  };
+
+  const handleToggleReaction = async (commentId, emoji) => {
+    try {
+      await fetch(`/api/tasks/${task.id}/comments/${commentId}/reactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emoji, author: 'user' })
+      });
+      setShowEmojiPicker(null);
+    } catch (error) {
+      console.error('Error toggling reaction:', error);
+    }
+  };
+
+  const renderThreadedTaskComments = (comments) => {
+    const topLevel = comments.filter(c => !c.parentId);
+    const replyMap = {};
+    comments.filter(c => c.parentId).forEach(r => {
+      if (!replyMap[r.parentId]) replyMap[r.parentId] = [];
+      replyMap[r.parentId].push(r);
+    });
+
+    const renderOneComment = (comment, isReply = false) => (
+      <div key={comment.id} className={`task-modal-comment ${isReply ? 'comment-reply' : ''}`}>
+        <div className="task-modal-comment-header">
+          <span className={`task-modal-comment-author ${comment.author === 'user' ? 'user' : 'agent'}`}>
+            {comment.author}
+          </span>
+          <span className="task-modal-comment-time">
+            {formatTime(comment.createdAt || comment.timestamp)}
+          </span>
+        </div>
+        <div className="task-modal-comment-text">{comment.text}</div>
+        <div className="comment-actions-row">
+          {(comment.reactions || []).length > 0 && (
+            <div className="comment-reactions">
+              {groupReactions(comment.reactions).map(({ emoji, count, hasUser }) => (
+                <button
+                  key={emoji}
+                  className={`comment-reaction ${hasUser ? 'active' : ''}`}
+                  onClick={() => handleToggleReaction(comment.id, emoji)}
+                >
+                  {emoji} {count}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="comment-action-btns">
+            <button className="comment-reply-btn" onClick={() => { setReplyingTo(comment); commentInputRef.current?.focus(); }}>
+              Reply
+            </button>
+            <div className="emoji-picker-wrapper">
+              <button
+                className="comment-react-btn"
+                onClick={() => setShowEmojiPicker(showEmojiPicker === comment.id ? null : comment.id)}
+              >
+                +
+              </button>
+              {showEmojiPicker === comment.id && (
+                <div className="emoji-picker">
+                  {REACTION_EMOJIS.map(emoji => (
+                    <button key={emoji} className="emoji-picker-btn" onClick={() => handleToggleReaction(comment.id, emoji)}>
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        {replyMap[comment.id]?.map(reply => renderOneComment(reply, true))}
+      </div>
+    );
+
+    return topLevel.slice(-30).map(c => renderOneComment(c));
   };
 
   const activeRuns = (task.runHistory || []).filter(run => !run.endedAt);
@@ -263,7 +370,7 @@ function TaskModal({
                 />
               </div>
 
-              {/* Comments section - merged into Details tab */}
+              {/* Comments section - threaded with reactions */}
               <div className="task-modal-field task-modal-comments-section">
                 <span className="task-modal-label">
                   Comments {(task.comments || []).length > 0 && `(${(task.comments || []).length})`}
@@ -272,22 +379,16 @@ function TaskModal({
                   {(task.comments || []).length === 0 ? (
                     <div className="task-modal-empty">No comments yet</div>
                   ) : (
-                    (task.comments || []).slice(-30).map(comment => (
-                      <div key={comment.id} className="task-modal-comment">
-                        <div className="task-modal-comment-header">
-                          <span className={`task-modal-comment-author ${comment.author === 'user' ? 'user' : 'agent'}`}>
-                            {comment.author}
-                          </span>
-                          {comment.timestamp && (
-                            <span className="task-modal-comment-time">{formatTime(comment.timestamp)}</span>
-                          )}
-                        </div>
-                        <div className="task-modal-comment-text">{comment.text}</div>
-                      </div>
-                    ))
+                    renderThreadedTaskComments(task.comments || [])
                   )}
                 </div>
                 <div className="task-modal-comment-input-wrap">
+                  {replyingTo && (
+                    <div className="replying-to-banner">
+                      Replying to <strong>{replyingTo.author}</strong>
+                      <button className="replying-to-cancel" onClick={() => setReplyingTo(null)}>&times;</button>
+                    </div>
+                  )}
                   <div className="task-modal-comment-input">
                     <input
                       ref={commentInputRef}
@@ -296,6 +397,7 @@ function TaskModal({
                       onKeyDown={e => {
                         if (e.key === 'Escape') {
                           setShowMentionDropdown(false);
+                          setReplyingTo(null);
                           return;
                         }
                         if (e.key === 'Enter' && !e.shiftKey && !showMentionDropdown) {
@@ -303,31 +405,75 @@ function TaskModal({
                           handleComment();
                         }
                       }}
-                      placeholder="Type @ to mention an agent..."
+                      placeholder={replyingTo ? 'Write a reply...' : 'Type @ to mention an agent...'}
                     />
                     <button className="btn btn-small btn-primary" onClick={handleComment}>Send</button>
                   </div>
-                  {showMentionDropdown && filteredMentionAgents.length > 0 && (
+                  {showMentionDropdown && (filteredMentionAgents.length > 0 || filteredSpawnTemplates.length > 0) && (
                     <div className="task-modal-mention-dropdown" ref={mentionDropdownRef}>
-                      {filteredMentionAgents.map(agent => (
-                        <div
-                          key={agent.id}
-                          className="task-modal-mention-item"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            handleMentionSelect(agent);
-                          }}
-                        >
-                          <span className="task-modal-mention-name">{agent.name}</span>
-                          {agent.role && <span className="task-modal-mention-role">{agent.role.slice(0, 40)}</span>}
-                        </div>
-                      ))}
+                      {filteredMentionAgents.length > 0 && !isSpawnQuery && (
+                        <>
+                          <div className="mention-dropdown-section">Agents</div>
+                          {filteredMentionAgents.map(agent => (
+                            <div
+                              key={agent.id}
+                              className="task-modal-mention-item"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleMentionSelect(agent);
+                              }}
+                            >
+                              <span className="task-modal-mention-name">{agent.name}</span>
+                              {agent.role && <span className="task-modal-mention-role">{agent.role.slice(0, 40)}</span>}
+                            </div>
+                          ))}
+                        </>
+                      )}
+                      {filteredSpawnTemplates.length > 0 && (
+                        <>
+                          <div className="mention-dropdown-section">Spawn New Agent</div>
+                          {filteredSpawnTemplates.map(template => (
+                            <div
+                              key={template.id}
+                              className="task-modal-mention-item spawn-item"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleSpawnSelect(template);
+                              }}
+                            >
+                              <span className="task-modal-mention-name">@spawn:{template.id}</span>
+                              <span className="task-modal-mention-role">{template.name}</span>
+                            </div>
+                          ))}
+                        </>
+                      )}
+                      {!isSpawnQuery && filteredMentionAgents.length > 0 && (
+                        <>
+                          <div className="mention-dropdown-section">Spawn New Agent</div>
+                          {SPAWN_TEMPLATES.slice(0, 3).map(template => (
+                            <div
+                              key={template.id}
+                              className="task-modal-mention-item spawn-item"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleSpawnSelect(template);
+                              }}
+                            >
+                              <span className="task-modal-mention-name">@spawn:{template.id}</span>
+                              <span className="task-modal-mention-role">{template.name}</span>
+                            </div>
+                          ))}
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
                 {deliveryInfo && (
                   <div className="task-modal-delivery-info">
-                    Delivered: {deliveryInfo.delivered.length} | Skipped: {deliveryInfo.skipped.length}
+                    Delivered: {deliveryInfo.delivered.length}
+                    {deliveryInfo.delivered.some(d => d.queued) && ' (some queued)'}
+                    {deliveryInfo.delivered.some(d => d.autoStarted) && ' (auto-started)'}
+                    {deliveryInfo.skipped.length > 0 && ` | Skipped: ${deliveryInfo.skipped.length}`}
                   </div>
                 )}
               </div>
@@ -411,6 +557,16 @@ function TaskModal({
       </div>
     </div>
   );
+}
+
+function groupReactions(reactions) {
+  const map = {};
+  (reactions || []).forEach(r => {
+    if (!map[r.emoji]) map[r.emoji] = { emoji: r.emoji, count: 0, hasUser: false };
+    map[r.emoji].count++;
+    if (r.author === 'user') map[r.emoji].hasUser = true;
+  });
+  return Object.values(map);
 }
 
 export default TaskModal;

@@ -148,6 +148,7 @@ function SessionCard({
               {session.isOrchestrator && <span className="orchestrator-icon" title="Orchestrator">&#9733;</span>}
               {session.name}
               {childCount > 0 && <span className="child-count-badge">({childCount})</span>}
+              {session.queuedMessages > 0 && <span className="queue-count-badge" title={`${session.queuedMessages} queued message${session.queuedMessages > 1 ? 's' : ''}`}>Q:{session.queuedMessages}</span>}
               {(!session.cliType || session.cliType === 'claude-code') && (
                 <span className="cli-type-badge claude-code">CC</span>
               )}

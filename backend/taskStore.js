@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { createComment, addReactionToComment } = require('./commentUtils');
 
 class TaskStore {
   constructor(dataDir = path.join(__dirname, '..', 'data')) {
@@ -92,18 +93,31 @@ class TaskStore {
     return tasks[id];
   }
 
-  addComment(taskId, { author = 'user', text = '', mentions = [] } = {}) {
+  addComment(taskId, { author = 'user', text = '', mentions = [], parentId = null } = {}) {
     const tasks = this.load();
     const task = tasks[taskId];
     if (!task) return null;
-    const comment = {
-      id: uuidv4().slice(0, 8),
-      author,
-      text,
-      mentions: Array.isArray(mentions) ? mentions : [],
-      timestamp: new Date().toISOString()
-    };
+    const comment = createComment({ text, author, parentId, mentions });
     task.comments.push(comment);
+    task.updatedAt = new Date().toISOString();
+    tasks[taskId] = task;
+    this.saveAll(tasks);
+    return comment;
+  }
+
+  /**
+   * Toggle a reaction on a task comment.
+   * @returns {object|null} Updated comment or null
+   */
+  addReaction(taskId, commentId, emoji, author = 'user') {
+    const tasks = this.load();
+    const task = tasks[taskId];
+    if (!task) return null;
+
+    const comment = (task.comments || []).find(c => c.id === commentId);
+    if (!comment) return null;
+
+    addReactionToComment(comment, emoji, author);
     task.updatedAt = new Date().toISOString();
     tasks[taskId] = task;
     this.saveAll(tasks);
