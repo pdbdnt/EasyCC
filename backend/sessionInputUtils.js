@@ -56,6 +56,11 @@ function shouldCountOutputAsActivity({
     return false;
   }
 
+  // "Baked for Xs" is Claude Code's idle redraw — not real activity.
+  if (/Baked for \d+/i.test(stripped)) {
+    return false;
+  }
+
   const echoLike = isLikelyLocalEchoOutput(data);
 
   // Suppress local echo when user is still drafting (no Enter submitted yet).

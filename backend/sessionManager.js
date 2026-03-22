@@ -1571,6 +1571,13 @@ class SessionManager extends EventEmitter {
       return currentStatus;
     }
 
+    // Claude Code "Baked for Xs" is an idle indicator, not thinking.
+    // Must be checked before thinking patterns because the line contains
+    // dingbat chars (e.g. ✱) that would otherwise match thinking spinners.
+    if (/Baked for \d+/i.test(stripped)) {
+      return 'idle';
+    }
+
     // Detect thinking/processing indicators
     const thinkingPatterns = [
       // Claude Code patterns
