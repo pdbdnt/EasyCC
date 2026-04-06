@@ -115,8 +115,8 @@ test('canTransitionToIdle: codex false, non-codex true', () => {
 });
 
 test('getOutputBufferSize: terminal/codex larger than claude', () => {
-  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'terminal'), 3000);
-  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex'), 3000);
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'terminal'), 12000);
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'claude'), 750);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);
 });

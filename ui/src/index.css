@@ -1161,6 +1161,17 @@ body {
 .terminal-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.terminal-history-badge {
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: var(--bg-secondary);
 }
 
 /* Terminal wrapper container for overlay */

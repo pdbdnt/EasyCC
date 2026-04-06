@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle, startTransition } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -70,6 +70,9 @@ function sanitizeSearchTerm(text) {
     .substring(0, 60);
 }
 
+const DEFAULT_HISTORY_PAGE_BYTES = 256 * 1024;
+const HISTORY_BOUNDARY_MARKER = '\r\n\x1b[36m--- Older session history loaded ---\x1b[0m\r\n';
+
 const TerminalView = forwardRef(function TerminalView({
   session,
   sessions,
@@ -111,6 +114,16 @@ const TerminalView = forwardRef(function TerminalView({
   const easyccNotificationTimerRef = useRef(null);
   const promptNavIndexRef = useRef(null);
   const promptHistoryRef = useRef([]);
+  const renderedOutputRef = useRef('');
+  const historyPrefixRef = useRef('');
+  const [historyState, setHistoryState] = useState({
+    loading: false,
+    hasOlderContent: false,
+    hasMore: false,
+    beforeByte: 0,
+    loadedBytes: 0,
+    olderBytesAvailable: 0
+  });
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -118,6 +131,97 @@ const TerminalView = forwardRef(function TerminalView({
       xtermRef.current?.focus();
     }
   }), []);
+
+  const rebuildTerminal = useCallback(({ scrollToTop = false } = {}) => {
+    const term = xtermRef.current;
+    if (!term) return;
+
+    term.reset();
+    const combined = `${historyPrefixRef.current}${renderedOutputRef.current}`;
+    if (combined) {
+      term.write(combined);
+    }
+
+    requestAnimationFrame(() => {
+      if (scrollToTop) {
+        term.scrollToTop();
+      } else {
+        term.scrollToBottom();
+      }
+    });
+  }, []);
+
+  const refreshHistoryMeta = useCallback(async (sessionId) => {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/transcript?limitBytes=1`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const transcript = data.transcript || {};
+      startTransition(() => {
+        setHistoryState(prev => ({
+          ...prev,
+          hasOlderContent: (transcript.olderBytesAvailable || 0) > 0,
+          hasMore: !!transcript.hasMore,
+          beforeByte: transcript.startByte ?? 0,
+          olderBytesAvailable: transcript.olderBytesAvailable || 0
+        }));
+      });
+    } catch (error) {
+      console.error('Failed to load transcript metadata:', error);
+    }
+  }, []);
+
+  const loadOlderHistory = useCallback(async () => {
+    if (!session?.id || historyState.loading || !historyState.hasOlderContent) {
+      return;
+    }
+
+    startTransition(() => {
+      setHistoryState(prev => ({ ...prev, loading: true }));
+    });
+
+    try {
+      const params = new URLSearchParams({
+        limitBytes: String(DEFAULT_HISTORY_PAGE_BYTES)
+      });
+      if (historyPrefixRef.current) {
+        params.set('before', String(historyState.beforeByte));
+      }
+
+      const res = await fetch(`/api/sessions/${session.id}/transcript?${params.toString()}`);
+      if (!res.ok) {
+        throw new Error(`Transcript request failed with ${res.status}`);
+      }
+
+      const data = await res.json();
+      const transcript = data.transcript || {};
+      const olderData = transcript.data || '';
+
+      if (olderData) {
+        historyPrefixRef.current = historyPrefixRef.current
+          ? `${olderData}${historyPrefixRef.current}`
+          : `${olderData}${HISTORY_BOUNDARY_MARKER}`;
+        rebuildTerminal({ scrollToTop: true });
+      }
+
+      startTransition(() => {
+        setHistoryState(prev => ({
+          ...prev,
+          loading: false,
+          hasOlderContent: (transcript.startByte || 0) > 0 || !!transcript.hasMore,
+          hasMore: !!transcript.hasMore,
+          beforeByte: transcript.startByte ?? prev.beforeByte,
+          loadedBytes: prev.loadedBytes + (transcript.endByte || 0) - (transcript.startByte || 0),
+          olderBytesAvailable: transcript.olderBytesAvailable || prev.olderBytesAvailable
+        }));
+      });
+    } catch (error) {
+      console.error('Failed to load older terminal history:', error);
+      startTransition(() => {
+        setHistoryState(prev => ({ ...prev, loading: false }));
+      });
+    }
+  }, [historyState.beforeByte, historyState.hasOlderContent, historyState.loading, rebuildTerminal, session?.id]);
 
   const connect = useCallback((sessionId) => {
     if (wsRef.current) {
@@ -147,6 +251,7 @@ const TerminalView = forwardRef(function TerminalView({
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'output' && xtermRef.current) {
+          renderedOutputRef.current += data.data || '';
           xtermRef.current.write(data.data);
         } else if (data.type === 'status') {
           setSessionStatus(data.status);
@@ -171,6 +276,7 @@ const TerminalView = forwardRef(function TerminalView({
       } catch (error) {
         // Handle non-JSON messages (raw terminal output)
         if (xtermRef.current && typeof event.data === 'string') {
+          renderedOutputRef.current += event.data;
           xtermRef.current.write(event.data);
         }
       }
@@ -192,7 +298,7 @@ const TerminalView = forwardRef(function TerminalView({
     fontFamily: "Consolas, Monaco, 'Courier New', monospace",
     cursorStyle: 'block',
     cursorBlink: true,
-    scrollback: 5000
+    scrollback: 20000
   };
 
   const keyboardSettings = settings?.keyboard || {
@@ -695,17 +801,28 @@ const TerminalView = forwardRef(function TerminalView({
     // Only reconnect if session changed
     if (currentSessionId.current !== session.id) {
       currentSessionId.current = session.id;
+      renderedOutputRef.current = '';
+      historyPrefixRef.current = '';
+      setHistoryState({
+        loading: false,
+        hasOlderContent: false,
+        hasMore: false,
+        beforeByte: 0,
+        loadedBytes: 0,
+        olderBytesAvailable: 0
+      });
 
       // Clear terminal and prompt tracking for new session
       promptNavIndexRef.current = null;
       searchAddonRef.current?.clearDecorations();
       if (xtermRef.current) {
-        xtermRef.current.clear();
+        xtermRef.current.reset();
       }
 
       connect(session.id);
+      refreshHistoryMeta(session.id);
     }
-  }, [session?.id, connect]);
+  }, [session?.id, connect, refreshHistoryMeta]);
 
   // Update terminal settings when they change
   useEffect(() => {
@@ -818,7 +935,21 @@ const TerminalView = forwardRef(function TerminalView({
       // Check for clear shortcut
       if (matchKeyCombo(event, keyboardSettings.clearKey)) {
         event.preventDefault();
-        xtermRef.current?.clear();
+        renderedOutputRef.current = '';
+        historyPrefixRef.current = '';
+        startTransition(() => {
+          setHistoryState(prev => ({
+            ...prev,
+            loadedBytes: 0,
+            hasOlderContent: prev.olderBytesAvailable > 0,
+            hasMore: prev.olderBytesAvailable > 0,
+            beforeByte: prev.olderBytesAvailable
+          }));
+        });
+        xtermRef.current?.reset();
+        if (session?.id) {
+          refreshHistoryMeta(session.id);
+        }
         return;
       }
 
@@ -831,7 +962,7 @@ const TerminalView = forwardRef(function TerminalView({
     return () => {
       terminalElement.removeEventListener('keydown', handleKeyDown);
     };
-  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.clearKey, scrollToLastPrompt, onUpdateSettings, terminalSettings.fontSize]);
+  }, [keyboardSettings.copyKey, keyboardSettings.pasteKey, keyboardSettings.clearKey, scrollToLastPrompt, onUpdateSettings, terminalSettings.fontSize, refreshHistoryMeta, session?.id]);
 
   // Focus terminal when clicking
   const handleTerminalClick = () => {
@@ -984,6 +1115,19 @@ const TerminalView = forwardRef(function TerminalView({
           )}
         </div>
         <div className="terminal-actions">
+          <button
+            className="btn btn-secondary btn-small"
+            onClick={loadOlderHistory}
+            disabled={historyState.loading || !historyState.hasOlderContent}
+            title={historyState.hasOlderContent ? 'Load older terminal history from disk' : 'No older terminal history available'}
+          >
+            {historyState.loading ? 'Loading…' : 'Older'}
+          </button>
+          {historyState.loadedBytes > 0 && (
+            <span className="terminal-history-badge" title="Older transcript loaded into the terminal">
+              +{Math.round(historyState.loadedBytes / 1024)} KB
+            </span>
+          )}
           <button
             className={`btn btn-small ${overrideKeys ? 'btn-primary' : 'btn-secondary'}`}
             onClick={() => setOverrideKeys(v => !v)}

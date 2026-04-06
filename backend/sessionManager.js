@@ -9,10 +9,12 @@ const PlanManager = require('./planManager');
 const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStatusToStage } = require('./stagesConfig');
 const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInputUtils');
 const { createComment, addReactionToComment } = require('./commentUtils');
+const { readTranscriptWindow } = require('./terminalTranscriptUtils');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
-const MEDIUM_OUTPUT_BUFFER_CHUNKS = 3000;
+const MEDIUM_OUTPUT_BUFFER_CHUNKS = 12000;
+const SESSION_TRANSCRIPTS_DIR = path.join(__dirname, '..', 'data', 'transcripts');
 
 // Message queue constants
 const MAX_MESSAGE_QUEUE_SIZE = 20;
@@ -77,6 +79,47 @@ class SessionManager extends EventEmitter {
     this.setupPlanWatcher();
   }
 
+  ensureTranscriptDir() {
+    if (!fs.existsSync(SESSION_TRANSCRIPTS_DIR)) {
+      fs.mkdirSync(SESSION_TRANSCRIPTS_DIR, { recursive: true });
+    }
+  }
+
+  getTranscriptPath(sessionId) {
+    this.ensureTranscriptDir();
+    return path.join(SESSION_TRANSCRIPTS_DIR, `${sessionId}.log`);
+  }
+
+  resetSessionTranscript(sessionId) {
+    const transcriptPath = this.getTranscriptPath(sessionId);
+    fs.writeFileSync(transcriptPath, '', 'utf8');
+  }
+
+  appendToTranscript(sessionId, data) {
+    if (typeof data !== 'string' || data.length === 0) {
+      return;
+    }
+
+    try {
+      fs.appendFileSync(this.getTranscriptPath(sessionId), data, 'utf8');
+    } catch (error) {
+      console.error(`Error appending transcript for session ${sessionId}:`, error.message);
+    }
+  }
+
+  deleteSessionTranscript(sessionId) {
+    const transcriptPath = this.getTranscriptPath(sessionId);
+    if (!fs.existsSync(transcriptPath)) {
+      return;
+    }
+
+    try {
+      fs.unlinkSync(transcriptPath);
+    } catch (error) {
+      console.error(`Error deleting transcript for session ${sessionId}:`, error.message);
+    }
+  }
+
   /**
    * Load persisted sessions from disk
    * - Restores any session with a claudeSessionId (can be resumed)
@@ -89,6 +132,7 @@ class SessionManager extends EventEmitter {
       // Clean up completed sessions
       if (sessionData.status === 'completed' || sessionData.status === 'killed') {
         this.dataStore.deleteSession(id);
+        this.deleteSessionTranscript(id);
         console.log(`Cleaned up completed session: ${sessionData.name} (${id})`);
         continue;
       }
@@ -160,6 +204,7 @@ class SessionManager extends EventEmitter {
       } else {
         // No claudeSessionId for Claude session = can't resume, clean up
         this.dataStore.deleteSession(id);
+        this.deleteSessionTranscript(id);
         console.log(`Cleaned up orphaned session (no claudeSessionId): ${sessionData.name} (${id})`);
       }
     }
@@ -485,9 +530,14 @@ class SessionManager extends EventEmitter {
     });
   }
 
-  spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '', easyccSessionId = '', meta = {} } = {}) {
+  spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '', easyccSessionId = '', meta = {}, startupPrompt = '', planMode = false } = {}) {
     const env = this.getEasyccEnv(easyccSessionId, meta);
-    const args = ['--dangerously-skip-permissions'];
+    const args = ['--allow-dangerously-skip-permissions'];
+    if (planMode) {
+      args.push('--permission-mode', 'plan');
+    } else {
+      args.push('--permission-mode', 'bypassPermissions');
+    }
     if (resumeId) {
       args.push('--resume', resumeId);
     } else if (sessionId) {
@@ -497,6 +547,7 @@ class SessionManager extends EventEmitter {
     if (sanitizedRole) {
       args.push('--append-system-prompt', sanitizedRole);
     }
+    // startupPrompt delivered via startupSequence (PTY stdin after idle), not CLI arg
 
     const isWindows = process.platform === 'win32';
     if (isWindows) {
@@ -783,7 +834,14 @@ class SessionManager extends EventEmitter {
       } else if (cliType === 'codex') {
         ptyProcess = this.spawnCodexProcess(workingDir, { resume: false, easyccSessionId: id, meta: sessionMeta });
       } else {
-        ptyProcess = this.spawnClaudeProcess(workingDir, { sessionId: claudeSessionId, role: sanitizedRole, easyccSessionId: id, meta: sessionMeta });
+        ptyProcess = this.spawnClaudeProcess(workingDir, {
+          sessionId: claudeSessionId,
+          role: sanitizedRole,
+          easyccSessionId: id,
+          meta: sessionMeta,
+          startupPrompt: sessionMeta.startupPrompt || '',
+          planMode: sessionMeta.planMode || false
+        });
       }
     } catch (error) {
       const cliName = cliType === 'codex' ? 'Codex' : cliType === 'terminal' ? 'Terminal' : 'Claude';
@@ -840,9 +898,24 @@ class SessionManager extends EventEmitter {
       messageQueue: []
     };
 
+    this.resetSessionTranscript(id);
+
+    // Queue startupPrompt via startupSequence (delivers via PTY stdin after idle)
+    if (sessionMeta.startupPrompt) {
+      session.startupSequence = {
+        active: true,
+        queue: [sessionMeta.startupPrompt],
+        waitingForIdle: true,
+        sentCount: 0,
+        lastSentAt: Date.now(),
+        completedAt: null
+      };
+    }
+
     // Handle PTY output
     ptyProcess.onData((data) => {
       session.outputBuffer.push(data);
+      this.appendToTranscript(id, data);
       if (shouldCountOutputAsActivity({
         data,
         isComposingPrompt: !!session.isComposingPrompt,
@@ -930,6 +1003,7 @@ class SessionManager extends EventEmitter {
       session.status = 'completed';
       const endedSnapshot = this.getSessionSnapshot(session);
       this.dataStore.deleteSession(id);
+      this.deleteSessionTranscript(id);
       this.emit('statusChange', {
         sessionId: id,
         status: 'completed',
@@ -1262,6 +1336,7 @@ class SessionManager extends EventEmitter {
 
       processRef.onData((data) => {
         session.outputBuffer.push(data);
+        this.appendToTranscript(id, data);
         if (shouldCountOutputAsActivity({
           data,
           isComposingPrompt: !!session.isComposingPrompt,
@@ -1351,6 +1426,7 @@ class SessionManager extends EventEmitter {
         session.status = 'completed';
         const endedSnapshot = this.getSessionSnapshot(session);
         this.dataStore.deleteSession(id);
+        this.deleteSessionTranscript(id);
         this.emit('statusChange', {
           sessionId: id,
           status: 'completed',
@@ -1864,6 +1940,7 @@ class SessionManager extends EventEmitter {
 
     // Remove from persistent storage
     this.dataStore.deleteSession(id);
+    this.deleteSessionTranscript(id);
 
     const endedSnapshot = this.getSessionSnapshot(session);
     this.sessions.delete(id);
@@ -2386,6 +2463,22 @@ class SessionManager extends EventEmitter {
     return session.outputBuffer.getAll();
   }
 
+  getSessionTranscript(id, options = {}) {
+    const session = this.sessions.get(id);
+    if (!session) {
+      return null;
+    }
+
+    const output = session.outputBuffer.getAll();
+    const liveReplayBytes = Buffer.byteLength(output.join(''), 'utf8');
+
+    return readTranscriptWindow(this.getTranscriptPath(id), {
+      beforeBytes: options.beforeBytes,
+      limitBytes: options.limitBytes,
+      liveReplayBytes
+    });
+  }
+
   /**
    * Create a safe serializable snapshot of a session
    * @param {object} session - Session object
@@ -2902,8 +2995,10 @@ class SessionManager extends EventEmitter {
   }
 
   /**
-   * Drain the next queued message if session is ready.
-   * Only one drain runs per session at a time (concurrency guard).
+   * Drain queued messages while session is ready.
+   * Loops to deliver consecutive messages (e.g. text + Enter) atomically.
+   * Once a message with \r is sent, sendInput transitions status to 'active'
+   * on the next event loop tick, so canAcceptOrchestratorInput breaks the loop.
    */
   drainMessageQueue(session) {
     if (!session || session._queueDraining) return;
@@ -2913,28 +3008,25 @@ class SessionManager extends EventEmitter {
     session._queueDraining = true;
 
     try {
-      // Expire old messages first
       this._sweepExpiredQueueMessages(session);
 
-      // Find the next queued message
-      const idx = session.messageQueue.findIndex(m => m.status === 'queued');
-      if (idx === -1) {
-        session._queueDraining = false;
-        return;
-      }
+      while (true) {
+        const idx = session.messageQueue.findIndex(m => m.status === 'queued');
+        if (idx === -1) break;
+        if (!this.canAcceptOrchestratorInput(session)) break;
 
-      const msg = session.messageQueue[idx];
-      const result = this.sendInput(session.id, msg.text);
+        const msg = session.messageQueue[idx];
+        const result = this.sendInput(session.id, msg.text);
 
-      if (result) {
-        msg.status = 'delivered';
-        msg.deliveredAt = new Date().toISOString();
-        // Remove delivered message from queue
-        session.messageQueue.splice(idx, 1);
-        debugLog(`Delivered queued message ${msg.id} to session ${session.id}`);
-      } else {
-        // PTY write failed — leave message in queue, stop draining
-        debugLog(`Failed to deliver queued message ${msg.id} to session ${session.id} — re-queued`);
+        if (result) {
+          msg.status = 'delivered';
+          msg.deliveredAt = new Date().toISOString();
+          session.messageQueue.splice(idx, 1);
+          debugLog(`Delivered queued message ${msg.id} to session ${session.id}`);
+        } else {
+          debugLog(`Failed to deliver queued message ${msg.id} to session ${session.id} — re-queued`);
+          break;
+        }
       }
 
       session.updatedAt = new Date().toISOString();

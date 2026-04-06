@@ -1605,6 +1605,29 @@ async function start() {
     return { session };
   });
 
+  app.get('/api/sessions/:id/transcript', async (request, reply) => {
+    const { id } = request.params;
+    const session = sessionManager.getSession(id);
+
+    if (!session) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+
+    const beforeBytes = request.query.before !== undefined
+      ? parseInt(request.query.before, 10)
+      : null;
+    const limitBytes = request.query.limitBytes !== undefined
+      ? parseInt(request.query.limitBytes, 10)
+      : undefined;
+
+    const transcript = sessionManager.getSessionTranscript(id, {
+      beforeBytes: Number.isFinite(beforeBytes) ? beforeBytes : null,
+      limitBytes: Number.isFinite(limitBytes) ? limitBytes : undefined
+    });
+
+    return { transcript };
+  });
+
   // Update session metadata
   app.patch('/api/sessions/:id', async (request, reply) => {
     const { id } = request.params;
@@ -1729,6 +1752,7 @@ async function start() {
       // Session not in memory — try cleaning from dataStore (orphaned entry)
       const cleaned = sessionManager.dataStore.deleteSession(id);
       if (cleaned) {
+        sessionManager.deleteSessionTranscript(id);
         sessionManager.emit('sessionKilled', { sessionId: id, session: { id } });
         return { success: true };
       }
@@ -2090,7 +2114,16 @@ async function start() {
       if (result.sent) {
         setTimeout(() => sessionManager.sendInput(id, '\r'), 50);
       } else if (result.queued) {
-        sessionManager.enqueueMessage(id, '\r', fromSessionId);
+        // Append Enter to the queued text message atomically instead of
+        // enqueuing a separate \r. A separate \r would never drain because
+        // text without \r doesn't trigger a status change to re-fire drainMessageQueue.
+        const sess = sessionManager.sessions.get(id);
+        if (sess?.messageQueue?.length) {
+          const lastMsg = sess.messageQueue[sess.messageQueue.length - 1];
+          if (lastMsg.id === result.messageId && lastMsg.status === 'queued') {
+            lastMsg.text += '\r';
+          }
+        }
       }
     }
 
@@ -2103,7 +2136,7 @@ async function start() {
 
   // 1.4 SPAWN — Create and start a new child session
   app.post('/api/orchestrator/sessions/spawn', async (request, reply) => {
-    const { name, workingDir, cliType, role, startupPrompt, parentSessionId } = request.body || {};
+    const { name, workingDir, cliType, role, startupPrompt, parentSessionId, planMode } = request.body || {};
 
     if (!parentSessionId) {
       return reply.status(400).send({ error: 'parentSessionId is required' });
@@ -2139,7 +2172,9 @@ async function start() {
         enrichedRole,
         {
           parentSessionId,
-          teamInstanceId: inheritedTeamInstanceId
+          teamInstanceId: inheritedTeamInstanceId,
+          startupPrompt: startupPrompt || '',
+          planMode: planMode !== undefined ? planMode : (sessionCliType === 'claude')
         }
       );
 
@@ -2170,14 +2205,6 @@ async function start() {
             } catch {}
           }
         }
-      }
-
-      // Send startup prompt if provided
-      if (startupPrompt) {
-        // Wait a bit for the session to initialize, then send
-        setTimeout(() => {
-          sessionManager.sendInput(session.id, startupPrompt + '\r');
-        }, 2000);
       }
 
       const snapshot = sessionManager.getSession(session.id);

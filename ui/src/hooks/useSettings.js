@@ -51,7 +51,7 @@ const defaultSettings = {
     fontFamily: "Consolas, Monaco, 'Courier New', monospace",
     cursorStyle: 'block',
     cursorBlink: true,
-    scrollback: 5000
+    scrollback: 20000
   },
   ui: {
     defaultView: 'list',

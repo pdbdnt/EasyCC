@@ -355,10 +355,10 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                 <label>Scrollback Lines</label>
                 <input
                   type="number"
-                  min="500"
-                  max="20000"
-                  value={localSettings.terminal.scrollback ?? 5000}
-                  onChange={e => updateSetting('terminal', 'scrollback', Math.max(500, Math.min(20000, parseInt(e.target.value, 10) || 5000)))}
+                  min="1000"
+                  max="100000"
+                  value={localSettings.terminal.scrollback ?? 20000}
+                  onChange={e => updateSetting('terminal', 'scrollback', Math.max(1000, Math.min(100000, parseInt(e.target.value, 10) || 20000)))}
                 />
               </div>
 

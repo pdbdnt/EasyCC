@@ -1,4 +1,4 @@
-const DEFAULT_TERMINAL_REPLAY_MAX_BYTES = 3 * 1024 * 1024;
+const DEFAULT_TERMINAL_REPLAY_MAX_BYTES = 12 * 1024 * 1024;
 
 function tailByBytes(text, maxBytes) {
   if (typeof text !== 'string' || text.length === 0) {
