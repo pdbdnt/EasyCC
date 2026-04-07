@@ -528,7 +528,7 @@ class SessionManager extends EventEmitter {
       const wslPath = this.convertToWslPath(workingDir);
       const quotedWslPath = this.quoteForPosixShell(wslPath);
       const codexArgs = resume
-        ? `-C ${quotedWslPath} resume --last`
+        ? `--dangerously-bypass-approvals-and-sandbox -C ${quotedWslPath} resume --last`
         : `--dangerously-bypass-approvals-and-sandbox -C ${quotedWslPath}`;
       const bootstrapScript = [
         'unset NPM_CONFIG_PREFIX npm_config_prefix PREFIX prefix;',
@@ -547,7 +547,7 @@ class SessionManager extends EventEmitter {
     }
 
     const args = resume
-      ? ['-C', workingDir, 'resume', '--last']
+      ? ['--dangerously-bypass-approvals-and-sandbox', '-C', workingDir, 'resume', '--last']
       : ['--dangerously-bypass-approvals-and-sandbox', '-C', workingDir];
     return pty.spawn('codex', args, {
       name: 'xterm-color',
