@@ -142,7 +142,7 @@ class SessionManager extends EventEmitter {
       // - Codex sessions (which use 'resume --last' and don't need a session ID)
       // - Terminal sessions (just re-launch a fresh shell)
       const cliType = sessionData.cliType || 'claude';
-      const canResume = cliType === 'codex' || cliType === 'terminal' || sessionData.claudeSessionId;
+      const canResume = cliType === 'codex' || cliType === 'terminal' || cliType === 'wsl' || sessionData.claudeSessionId;
 
       if (canResume) {
         const outputBufferSize = this.getOutputBufferSize(cliType);
@@ -217,7 +217,7 @@ class SessionManager extends EventEmitter {
    * @returns {number}
    */
   getOutputBufferSize(cliType) {
-    if (cliType === 'terminal' || cliType === 'codex') {
+    if (cliType === 'terminal' || cliType === 'codex' || cliType === 'wsl') {
       return MEDIUM_OUTPUT_BUFFER_CHUNKS;
     }
     return DEFAULT_OUTPUT_BUFFER_CHUNKS;
@@ -479,6 +479,10 @@ class SessionManager extends EventEmitter {
     return env;
   }
 
+  quoteForPosixShell(value = '') {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+  }
+
   spawnTerminalProcess(workingDir, { easyccSessionId = '', meta = {} } = {}) {
     const env = this.getEasyccEnv(easyccSessionId, meta);
     const isWindows = process.platform === 'win32';
@@ -502,15 +506,39 @@ class SessionManager extends EventEmitter {
     });
   }
 
+  spawnWslProcess(workingDir, { easyccSessionId = '', meta = {} } = {}) {
+    if (process.platform !== 'win32') {
+      throw new Error('WSL sessions are only supported on Windows');
+    }
+
+    const env = this.getEasyccEnv(easyccSessionId, meta);
+    const wslPath = this.convertToWslPath(workingDir);
+    return pty.spawn('wsl.exe', ['--cd', wslPath], {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 30,
+      env
+    });
+  }
+
   spawnCodexProcess(workingDir, { resume = false, easyccSessionId = '', meta = {} } = {}) {
     const env = this.getEasyccEnv(easyccSessionId, meta);
     const isWindows = process.platform === 'win32';
     if (isWindows) {
-      const wslPath = this.convertToWslPath(workingDir).replace(/'/g, "'\\''").replace(/"/g, '\\"');
-      const codexCommand = resume
-        ? `wsl bash -ic 'codex -C \"${wslPath}\" resume --last'`
-        : `wsl bash -ic 'codex --dangerously-bypass-approvals-and-sandbox -C \"${wslPath}\"'`;
-      return pty.spawn('cmd.exe', ['/c', codexCommand], {
+      const wslPath = this.convertToWslPath(workingDir);
+      const quotedWslPath = this.quoteForPosixShell(wslPath);
+      const codexArgs = resume
+        ? `-C ${quotedWslPath} resume --last`
+        : `--dangerously-bypass-approvals-and-sandbox -C ${quotedWslPath}`;
+      const bootstrapScript = [
+        'unset NPM_CONFIG_PREFIX npm_config_prefix PREFIX prefix;',
+        'if ! command -v codex >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then',
+        '  . "$HOME/.nvm/nvm.sh" --no-use >/dev/null 2>&1;',
+        '  nvm use --delete-prefix default >/dev/null 2>&1 || nvm use --delete-prefix >/dev/null 2>&1 || true;',
+        'fi;',
+        `exec codex ${codexArgs}`
+      ].join(' ');
+      return pty.spawn('wsl.exe', ['--cd', wslPath, 'bash', '-lc', bootstrapScript], {
         name: 'xterm-color',
         cols: 120,
         rows: 30,
@@ -831,6 +859,8 @@ class SessionManager extends EventEmitter {
     try {
       if (cliType === 'terminal') {
         ptyProcess = this.spawnTerminalProcess(workingDir, { easyccSessionId: id, meta: sessionMeta });
+      } else if (cliType === 'wsl') {
+        ptyProcess = this.spawnWslProcess(workingDir, { easyccSessionId: id, meta: sessionMeta });
       } else if (cliType === 'codex') {
         ptyProcess = this.spawnCodexProcess(workingDir, { resume: false, easyccSessionId: id, meta: sessionMeta });
       } else {
@@ -844,7 +874,13 @@ class SessionManager extends EventEmitter {
         });
       }
     } catch (error) {
-      const cliName = cliType === 'codex' ? 'Codex' : cliType === 'terminal' ? 'Terminal' : 'Claude';
+      const cliName = cliType === 'codex'
+        ? 'Codex'
+        : cliType === 'terminal'
+          ? 'Terminal'
+          : cliType === 'wsl'
+            ? 'WSL'
+            : 'Claude';
       throw new Error(`Failed to spawn ${cliName} CLI: ${error.message}`);
     }
 
@@ -1472,6 +1508,8 @@ class SessionManager extends EventEmitter {
     try {
       if (cliType === 'terminal') {
         ptyProcess = this.spawnTerminalProcess(session.workingDir, { easyccSessionId: session.id });
+      } else if (cliType === 'wsl') {
+        ptyProcess = this.spawnWslProcess(session.workingDir, { easyccSessionId: session.id });
       } else if (cliType === 'codex') {
         // Resume Codex in the same working directory to avoid cross-project jumps.
         ptyProcess = this.spawnCodexProcess(session.workingDir, { resume: !fresh, easyccSessionId: session.id });
@@ -1550,7 +1588,7 @@ class SessionManager extends EventEmitter {
     if (meta.role !== undefined) session.role = this.sanitizeRole(meta.role);
     if (meta.tags !== undefined) session.tags = meta.tags;
     if (meta.taskId !== undefined) session.taskId = meta.taskId || null;
-    if (meta.cliType !== undefined && ['claude', 'codex', 'terminal'].includes(meta.cliType)) {
+    if (meta.cliType !== undefined && ['claude', 'codex', 'terminal', 'wsl'].includes(meta.cliType)) {
       session.cliType = meta.cliType;
     }
     if (meta.priority !== undefined) session.priority = meta.priority;

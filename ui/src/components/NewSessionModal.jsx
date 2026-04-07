@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AGENT_TEMPLATES } from '../utils/agentTemplates';
 import DirectoryBrowser, { normalizeWindowsPath } from './DirectoryBrowser';
 
@@ -11,12 +11,15 @@ function generateDefaultSessionName() {
 
 function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = '', sessions = [], defaultParentSessionId = null, starredFolders = [], onToggleStar }) {
   const normalizedDefaultWorkingDir = normalizeWindowsPath(defaultWorkingDir);
+  const cliTypeSelectRef = useRef(null);
+  const createButtonRef = useRef(null);
   const [activeTab, setActiveTab] = useState('session');
   const [name, setName] = useState(() => generateDefaultSessionName());
   const [cliType, setCliType] = useState('claude');
   const [selectedTemplate, setSelectedTemplate] = useState('custom');
   const [role, setRole] = useState('');
   const [selectedPath, setSelectedPath] = useState(() => normalizedDefaultWorkingDir);
+  const [sessionCount, setSessionCount] = useState(1);
   const [loading, setLoading] = useState(false);
 
   // Team selector: 'none' | 'new' | '<teamInstanceId>'
@@ -88,6 +91,26 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
     loadPresets();
     return () => { cancelled = true; };
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'session' || loading) return;
+
+    const frameId = requestAnimationFrame(() => {
+      const cliSelect = cliTypeSelectRef.current;
+      if (!cliSelect) return;
+
+      cliSelect.focus();
+      if (typeof cliSelect.showPicker === 'function') {
+        try {
+          cliSelect.showPicker();
+        } catch {
+          // Some browsers reject programmatic picker opening without user activation.
+        }
+      }
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [activeTab, loading]);
 
   // Fetch team templates for the teams tab
   useEffect(() => {
@@ -193,11 +216,13 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
     e.preventDefault();
 
     const workingDir = normalizeWindowsPath(selectedPath) || undefined;
+    const count = Math.max(1, Math.min(20, Number(sessionCount) || 1));
 
     setLoading(true);
     try {
       const finalName = name.trim() || generateDefaultSessionName();
       await onCreate(finalName, workingDir, cliType, role, {
+        count,
         teamAction,
         teamName: teamAction === 'new' ? (teamName.trim() || undefined) : undefined
       });
@@ -318,7 +343,6 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Auto-generated"
-                    autoFocus
                     disabled={loading}
                   />
                 </div>
@@ -353,13 +377,34 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                   </div>
 
                   <div className="form-group form-group-flex">
+                    <label htmlFor="sessionCount">Count</label>
+                    <input
+                      type="number"
+                      id="sessionCount"
+                      min="1"
+                      max="20"
+                      step="1"
+                      value={sessionCount}
+                      onChange={(e) => setSessionCount(e.target.value)}
+                      disabled={loading || teamAction !== 'none'}
+                    />
+                  </div>
+
+                  <div className="form-group form-group-flex">
                     <label htmlFor="cliType">CLI Type</label>
                     <select
                       id="cliType"
+                      ref={cliTypeSelectRef}
                       value={cliType}
                       onChange={(e) => {
                         setCliType(e.target.value);
                         setSelectedTemplate('custom');
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        requestAnimationFrame(() => {
+                          createButtonRef.current?.focus();
+                        });
                       }}
                       disabled={loading}
                       className="cli-select"
@@ -367,9 +412,16 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                       <option value="claude">Claude</option>
                       <option value="codex">Codex (WSL)</option>
                       <option value="terminal">Terminal (PowerShell)</option>
+                      <option value="wsl">WSL Shell</option>
                     </select>
                   </div>
                 </div>
+
+                {teamAction !== 'none' && (
+                  <div className="form-group">
+                    <small>Bulk create is available for standalone sessions only.</small>
+                  </div>
+                )}
 
                 <div className="form-group">
                   <label>Working Directory</label>
@@ -396,6 +448,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                 <button
                   type="submit"
                   className="btn btn-primary"
+                  ref={createButtonRef}
                   disabled={loading}
                 >
                   {loading ? 'Creating...' : 'Create Session'}
@@ -587,6 +640,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                             <option value="claude">Claude</option>
                             <option value="codex">Codex</option>
                             <option value="terminal">Terminal</option>
+                            <option value="wsl">WSL Shell</option>
                           </select>
                           <button
                             type="button"

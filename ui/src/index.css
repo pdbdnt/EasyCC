@@ -510,6 +510,12 @@ body {
   border: 1px solid #4dff7c;
 }
 
+.cli-type-badge.wsl {
+  background: #3a2b12;
+  color: #ffd48a;
+  border: 1px solid #ffb84d;
+}
+
 .group-badge {
   font-size: 9px;
   padding: 1px 5px;
@@ -664,6 +670,12 @@ body {
   background: #1b3a2d;
   color: #a8ffc5;
   border-color: #4dff7c;
+}
+
+.cli-type-btn.wsl.active {
+  background: #3a2b12;
+  color: #ffd48a;
+  border-color: #ffb84d;
 }
 
 .session-status {
@@ -6551,6 +6563,11 @@ textarea::placeholder {
 .new-agent-template-chip.terminal.active {
   border-color: var(--accent-yellow);
   background: rgba(255, 193, 7, 0.1);
+}
+
+.new-agent-template-chip.wsl.active {
+  border-color: #ffb84d;
+  background: rgba(255, 184, 77, 0.12);
 }
 
 .new-agent-template-chip-name {

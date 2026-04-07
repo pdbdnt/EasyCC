@@ -62,7 +62,7 @@ function NewAgentModal({ onClose, onCreate }) {
               <button
                 key={template.id}
                 type="button"
-                className={`new-agent-template-chip ${selectedTemplate === template.id ? 'active' : ''} ${template.cliType === 'codex' ? 'codex' : template.cliType === 'terminal' ? 'terminal' : ''}`}
+                className={`new-agent-template-chip ${selectedTemplate === template.id ? 'active' : ''} ${template.cliType === 'codex' ? 'codex' : template.cliType === 'terminal' ? 'terminal' : template.cliType === 'wsl' ? 'wsl' : ''}`}
                 onClick={() => handleTemplateSelect(template.id)}
               >
                 <span className="new-agent-template-chip-name">{template.name}</span>
@@ -102,7 +102,7 @@ function NewAgentModal({ onClose, onCreate }) {
             <div className="new-agent-field">
               <label>CLI Type</label>
               <div className="new-agent-cli-selector">
-                {['claude', 'codex', 'terminal'].map(type => (
+                {['claude', 'codex', 'terminal', 'wsl'].map(type => (
                   <button
                     key={type}
                     type="button"

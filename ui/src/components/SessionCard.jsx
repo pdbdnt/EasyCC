@@ -158,6 +158,9 @@ function SessionCard({
               {session.cliType === 'terminal' && (
                 <span className="cli-type-badge terminal">TRM</span>
               )}
+              {session.cliType === 'wsl' && (
+                <span className="cli-type-badge wsl">WSL</span>
+              )}
               {groupInfo && (
                 <span className="group-badge" title={`Group: ${groupInfo.name}`}>
                   {groupInfo.name.length > 8 ? groupInfo.name.substring(0, 8) + '..' : groupInfo.name}

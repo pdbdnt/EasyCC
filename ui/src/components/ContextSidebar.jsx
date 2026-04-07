@@ -912,6 +912,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
               { value: 'claude', label: 'CC' },
               { value: 'codex', label: 'CDX' },
               { value: 'terminal', label: 'TRM' },
+              { value: 'wsl', label: 'WSL' },
             ].map(({ value, label }) => (
               <button
                 key={value}
@@ -928,7 +929,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
             <span
               className="context-meta-claude"
               title={session.claudeSessionId || 'Not linked — click to link'}
-              onClick={session.cliType === 'terminal' && !session.claudeSessionId ? handleGenerateClaudeSession : handleOpenSessionPicker}
+              onClick={(session.cliType === 'terminal' || session.cliType === 'wsl') && !session.claudeSessionId ? handleGenerateClaudeSession : handleOpenSessionPicker}
             >
               {session.claudeSessionId ? session.claudeSessionId.slice(0, 8) + '..' : '—'}
             </span>

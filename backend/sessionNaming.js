@@ -12,7 +12,13 @@ function generateSessionName(now = new Date(), cliType = 'claude') {
   const minutes = String(now.getMinutes()).padStart(2, '0');
   const date = `${year}-${month}-${day}`;
   const time = `${hours}${minutes}`;
-  const prefix = cliType === 'terminal' ? 'Terminal' : cliType === 'codex' ? 'Codex' : 'Session';
+  const prefix = cliType === 'wsl'
+    ? 'WSL'
+    : cliType === 'terminal'
+      ? 'Terminal'
+      : cliType === 'codex'
+        ? 'Codex'
+        : 'Session';
   return `${prefix} ${date}-${time}`;
 }
 

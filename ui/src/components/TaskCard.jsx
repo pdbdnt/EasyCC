@@ -130,6 +130,9 @@ const TaskCard = forwardRef(function TaskCard({
         {session.cliType === 'terminal' && (
           <span className="cli-type-badge terminal">TRM</span>
         )}
+        {session.cliType === 'wsl' && (
+          <span className="cli-type-badge wsl">WSL</span>
+        )}
         <button
           className="btn-icon task-card-details-btn"
           onClick={handleDetailsClick}

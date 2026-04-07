@@ -79,6 +79,7 @@ test('ensureUniqueSessionName: adds numeric suffix for collisions', () => {
 test('generateSessionName: uses expected prefix by cli type', () => {
   const fixed = new Date(2026, 1, 11, 21, 45, 0); // local time
   assert.match(generateSessionName(fixed, 'terminal'), /^Terminal 2026-02-11-\d{4}$/);
+  assert.match(generateSessionName(fixed, 'wsl'), /^WSL 2026-02-11-\d{4}$/);
   assert.match(generateSessionName(fixed, 'codex'), /^Codex 2026-02-11-\d{4}$/);
   assert.match(generateSessionName(fixed, 'claude'), /^Session 2026-02-11-\d{4}$/);
 });
@@ -116,6 +117,7 @@ test('canTransitionToIdle: codex false, non-codex true', () => {
 
 test('getOutputBufferSize: terminal/codex larger than claude', () => {
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'terminal'), 12000);
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'wsl'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'claude'), 750);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);

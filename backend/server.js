@@ -1460,7 +1460,7 @@ async function start() {
         );
         launched.push(session.id);
 
-        if (entry.initialPrompt && entry.cliType !== 'terminal') {
+        if (entry.initialPrompt && entry.cliType !== 'terminal' && entry.cliType !== 'wsl') {
           const sid = session.id;
           setTimeout(() => {
             sessionManager.sendInput(sid, entry.initialPrompt + '\r');
@@ -1488,7 +1488,7 @@ async function start() {
     }
 
     // Validate cliType
-    const validCliTypes = ['claude', 'codex', 'terminal'];
+    const validCliTypes = ['claude', 'codex', 'terminal', 'wsl'];
     const normalizedCliType = cliType && validCliTypes.includes(cliType) ? cliType : 'claude';
     const normalizedName = typeof name === 'string' ? name.trim() : '';
     const existingNames = sessionManager.getAllSessions().map(s => s.name);
@@ -2242,7 +2242,7 @@ async function start() {
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     const useProjectPlans = Boolean(
       session &&
-      (session.cliType === 'codex' || session.cliType === 'terminal') &&
+      (session.cliType === 'codex' || session.cliType === 'terminal' || session.cliType === 'wsl') &&
       session.workingDir
     );
     const trimmedName = typeof name === 'string' ? name.trim() : '';
@@ -2300,7 +2300,7 @@ async function start() {
       plansByPath.set(normalizePathKey(plan.path), plan);
     }
 
-    if ((session.cliType === 'codex' || session.cliType === 'terminal') && session.workingDir) {
+    if ((session.cliType === 'codex' || session.cliType === 'terminal' || session.cliType === 'wsl') && session.workingDir) {
       for (const plan of listProjectPlans(session.workingDir)) {
         plansByPath.set(normalizePathKey(plan.path), plan);
       }

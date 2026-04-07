@@ -67,10 +67,15 @@ export const AGENT_TEMPLATES = [
     role: ''
   },
   {
+    id: 'wsl',
+    name: 'WSL Shell',
+    cliType: 'wsl',
+    role: ''
+  },
+  {
     id: 'custom',
     name: 'Custom',
     cliType: 'claude',
     role: ''
   }
 ];
-

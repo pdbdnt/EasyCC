@@ -119,7 +119,7 @@ function App() {
     connectionStatus
   } = useSessions();
   const { isVisible: sidebarVisible, toggle: toggleSidebar, hide: hideSidebar } = useContextSidebar();
-  const { settings, updateSettings, resetSettings } = useSettings();
+  const { settings, loading: settingsLoading, error: settingsError, updateSettings, resetSettings } = useSettings();
   const { toasts, addToast, removeToast } = useToast();
   const {
     sessionGroups,
@@ -172,6 +172,7 @@ function App() {
   const sidebarRectsRef = useRef(null);
   const prevSessionIdsRef = useRef(new Set());
   const hydratedRef = useRef(false);
+  const starredFoldersMigrationRan = useRef(false);
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -201,7 +202,12 @@ function App() {
 
   // One-time migration of starred folders from localStorage to backend settings
   useEffect(() => {
+    if (settingsLoading) return;
+    if (settingsError) return;
+    if (starredFoldersMigrationRan.current) return;
     if (settings?.starredFolders !== undefined) return; // already migrated
+
+    starredFoldersMigrationRan.current = true;
     try {
       const raw = JSON.parse(localStorage.getItem('starredFolders') || 'null');
       if (Array.isArray(raw) && raw.length > 0) {
@@ -211,7 +217,7 @@ function App() {
         updateSettings({ starredFolders: [] });
       }
     } catch { /* ignore */ }
-  }, [settings?.starredFolders, updateSettings]);
+  }, [settings?.starredFolders, settingsLoading, settingsError, updateSettings]);
 
   const selectedSession = sessions.find(s => s.id === selectedId);
   const selectedAgent = selectedSession?.agentId ? agents.find(a => a.id === selectedSession.agentId) : null;
@@ -1203,17 +1209,41 @@ function App() {
   }, [currentView, selectedIds, sessions, setSelectedIds]);
 
   const handleCreateSession = async (name, workingDir, cliType, role = '', opts = {}) => {
-    const createdSession = await createSession(name, workingDir, cliType, {
-      role,
-      isOrchestrator: opts.isOrchestrator || false,
-      parentSessionId: opts.parentSessionId || null,
-      teamAction: opts.teamAction || undefined,
-      teamName: opts.teamName || undefined
-    });
-    if (createdSession) {
-      setShowNewSessionModal(false);
+    const count = Math.max(1, Math.min(20, Number(opts.count) || 1));
+    const createdSessions = [];
+
+    for (let i = 0; i < count; i += 1) {
+      const createdSession = await createSession(name, workingDir, cliType, {
+        select: false,
+        role,
+        isOrchestrator: opts.isOrchestrator || false,
+        parentSessionId: opts.parentSessionId || null,
+        teamAction: opts.teamAction || undefined,
+        teamName: opts.teamName || undefined
+      });
+
+      if (!createdSession) {
+        break;
+      }
+
+      createdSessions.push(createdSession);
     }
-    return !!createdSession;
+
+    if (createdSessions.length === 0) {
+      return false;
+    }
+
+    const createdIds = createdSessions.map((session) => session.id);
+    const activeId = createdIds[createdIds.length - 1];
+    if (createdIds.length === 1) {
+      selectSession(activeId);
+    } else {
+      selectMultiple(createdIds, activeId);
+      setMultiPaneLayout('auto');
+    }
+
+    setShowNewSessionModal(false);
+    return true;
   };
 
   const handleLaunchTeam = useCallback(async (teamId, launchConfig) => {

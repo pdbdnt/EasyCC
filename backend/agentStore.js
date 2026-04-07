@@ -47,7 +47,7 @@ class AgentStore {
       id,
       name: (config.name || 'New Agent').trim(),
       role: typeof config.role === 'string' ? config.role : '',
-      cliType: ['claude', 'codex', 'terminal'].includes(config.cliType) ? config.cliType : 'claude',
+      cliType: ['claude', 'codex', 'terminal', 'wsl'].includes(config.cliType) ? config.cliType : 'claude',
       workingDir: config.workingDir || process.cwd(),
       notes: typeof config.notes === 'string' ? config.notes : '',
       tags: Array.isArray(config.tags) ? config.tags : [],
@@ -99,4 +99,3 @@ class AgentStore {
 }
 
 module.exports = AgentStore;
-
