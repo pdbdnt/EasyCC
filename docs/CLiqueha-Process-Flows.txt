@@ -1,0 +1,45 @@
+1st process flow (Pre sales- RFQs/RFP)
+1. client called/requested for a service
+Sales/mgt to check with finance on the status of customer.  
+Sales/mgt will liaise with tech team. Tech team to decide on the next technical action to take.
+
+4. tech team to coordinate with sales and fill up a BOM (bill of material)
+5. Sales team to liaise with procurement team for supplier price checking and availability.  
+6. Sales team to go to quotations list file and create quotation. (include here how to create quotation no.)
+7. Create a client folder in either Manila or Cebu or Davao and create a pricing template with the quotation no. as the file name, then create a pricing template to word quotation and convert to pdf format
+8. Send pricing template/word doc/pdf to sales mgmt team for approval. 
+9. Sales to send quote/proposal to customer's email or viber or customers' preferred channel.
+10. Sale Log to quotation tracker for follow-up.
+11. Sale to update pipeline reporting.
+
+2nd process flow (Post Sales-Quote/Proposal approved):
+1. Mgt/sales to forward signed quote/proposal to Finance team for customer status verification.
+	Prepare payables template to request for budget:
+	Customer name:
+	Supplier's PO no.:
+	Quote no and name: (ex.Q2026-001-001-641 Manu Siy San Juan Batangas deployment of CCTV Camera)
+	Supplier name:
+	Amt:
+	Bank/s name
+	Bank account no.
+2. Once cleared, finance team to disperse amount as based on terms agreement.
+3. Finance team to advise procurement to start sourcing process.
+4. Procurement will start the sourcing process
+5. Sourcing process: check the existing suppliers/subcontractors for latest pricing and availability. Procurement to advise sales/mgmt if there are changes on the pricing and status of availability. to proceed to 1st process #8.
+7. Procurement will take a screenshot of the payment and post it in Cliqueha Costing
+8. Procurement will send the proof of payment to the supplier to initiate the delivery process.
+
+3rd Process flow (Deployment phase)
+1. Procurement will coordinate and arrange the ordering and delivering of the items with the supplier and inform Sales team on the status.
+2. Procurement and tech team will be in charge of the equipment receipt in the office checking the correct quantity and details as based on order. 
+3. Tech team  to check the items received if they are in good order and record the following in the Procurement client inventory file. 
+4. Tech team to log the equipment details such as serial numbers and such for customer asset tagging.
+5. Tech team to advise procurement team for delivery or deployment status.  
+6. Tech team to advise sales for delivery or deployment completion status.
+7. Sales team to liaise with customer on the delivery or deployment status and to follow up on pending payments.. 
+7. Sales to update finance team regarding the status of the order.
+8. Finance/Sales team to update AR/AP sheet for pending receivable payments and AP to suppliers.
+9. Sales team to update pipelines and sales tracking reports.
+
+
+

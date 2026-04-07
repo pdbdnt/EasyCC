@@ -247,8 +247,12 @@ function Dashboard({
 
   // Top-level sessions (not children) for grouping
   const topLevelSessions = useMemo(() => {
-    return filteredSessions.filter(s => !s.parentSessionId);
+    const existingIds = new Set(filteredSessions.map(s => s.id));
+    return filteredSessions.filter(s => !s.parentSessionId || !existingIds.has(s.parentSessionId));
   }, [filteredSessions]);
+
+  // Set of top-level session IDs (for render filter — includes orphaned children whose parent was deleted)
+  const topLevelSessionIds = useMemo(() => new Set(topLevelSessions.map(s => s.id)), [topLevelSessions]);
 
   // Total sessions per directory (unfiltered) for showing "filtered/total" counts
   const totalsByDir = useMemo(() => {
@@ -816,7 +820,7 @@ function Dashboard({
                   )}
                 </span>
               </button>
-              {!collapsedGroups.has(dirName) && sessionsInGroup.filter(({ session }) => !session.parentSessionId).map(({ session, globalIndex, hintCode }) => {
+              {!collapsedGroups.has(dirName) && sessionsInGroup.filter(({ session }) => topLevelSessionIds.has(session.id)).map(({ session, globalIndex, hintCode }) => {
                 const recentlyEntered = kanbanColumnFilter && session.stageEnteredAt &&
                   (Date.now() - new Date(session.stageEnteredAt).getTime()) < 10 * 60 * 1000;
                 const children = childSessionsMap.get(session.id) || [];
