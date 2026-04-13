@@ -483,6 +483,27 @@ class SessionManager extends EventEmitter {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
   }
 
+  buildCodexBootstrapScript(workingDir, { resume = false } = {}) {
+    const quotedWorkingDir = this.quoteForPosixShell(workingDir);
+    const codexArgs = resume
+      ? `--dangerously-bypass-approvals-and-sandbox -C ${quotedWorkingDir} resume --last`
+      : `--dangerously-bypass-approvals-and-sandbox -C ${quotedWorkingDir}`;
+
+    return [
+      'unset NPM_CONFIG_PREFIX npm_config_prefix PREFIX prefix;',
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1; fi;',
+      'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1; fi;',
+      'if ! command -v codex >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then',
+      '  . "$HOME/.nvm/nvm.sh" --no-use >/dev/null 2>&1;',
+      '  nvm use --delete-prefix default >/dev/null 2>&1 || nvm use --delete-prefix >/dev/null 2>&1 || true;',
+      'fi;',
+      'if ! command -v codex >/dev/null 2>&1 && [ -x "$HOME/.npm-global/bin/codex" ]; then',
+      '  exec "$HOME/.npm-global/bin/codex" ' + codexArgs,
+      'fi;',
+      `exec codex ${codexArgs}`
+    ].join(' ');
+  }
+
   spawnTerminalProcess(workingDir, { easyccSessionId = '', meta = {} } = {}) {
     const env = this.getEasyccEnv(easyccSessionId, meta);
     const isWindows = process.platform === 'win32';
@@ -526,18 +547,7 @@ class SessionManager extends EventEmitter {
     const isWindows = process.platform === 'win32';
     if (isWindows) {
       const wslPath = this.convertToWslPath(workingDir);
-      const quotedWslPath = this.quoteForPosixShell(wslPath);
-      const codexArgs = resume
-        ? `--dangerously-bypass-approvals-and-sandbox -C ${quotedWslPath} resume --last`
-        : `--dangerously-bypass-approvals-and-sandbox -C ${quotedWslPath}`;
-      const bootstrapScript = [
-        'unset NPM_CONFIG_PREFIX npm_config_prefix PREFIX prefix;',
-        'if ! command -v codex >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then',
-        '  . "$HOME/.nvm/nvm.sh" --no-use >/dev/null 2>&1;',
-        '  nvm use --delete-prefix default >/dev/null 2>&1 || nvm use --delete-prefix >/dev/null 2>&1 || true;',
-        'fi;',
-        `exec codex ${codexArgs}`
-      ].join(' ');
+      const bootstrapScript = this.buildCodexBootstrapScript(wslPath, { resume });
       return pty.spawn('wsl.exe', ['--cd', wslPath, 'bash', '-lc', bootstrapScript], {
         name: 'xterm-color',
         cols: 120,
@@ -546,10 +556,8 @@ class SessionManager extends EventEmitter {
       });
     }
 
-    const args = resume
-      ? ['--dangerously-bypass-approvals-and-sandbox', '-C', workingDir, 'resume', '--last']
-      : ['--dangerously-bypass-approvals-and-sandbox', '-C', workingDir];
-    return pty.spawn('codex', args, {
+    const bootstrapScript = this.buildCodexBootstrapScript(workingDir, { resume });
+    return pty.spawn('/bin/bash', ['-lc', bootstrapScript], {
       name: 'xterm-color',
       cols: 120,
       rows: 30,

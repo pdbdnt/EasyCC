@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const pty = require('../backend/node_modules/node-pty');
 
 const {
   hasSubmittedInput,
@@ -121,4 +122,84 @@ test('getOutputBufferSize: terminal/codex larger than claude', () => {
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'claude'), 750);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);
+});
+
+test('buildCodexBootstrapScript: includes shell profile bootstrap and fallback binary', () => {
+  const script = SessionManager.prototype.buildCodexBootstrapScript.call(
+    { quoteForPosixShell: SessionManager.prototype.quoteForPosixShell },
+    '/mnt/c/Users/denni/apps/EasyCC',
+    { resume: true }
+  );
+
+  assert.match(script, /"\$HOME\/\.profile"/);
+  assert.match(script, /"\$HOME\/\.bashrc"/);
+  assert.match(script, /"\$HOME\/\.npm-global\/bin\/codex"/);
+  assert.match(script, /resume --last/);
+});
+
+test('spawnCodexProcess: on Windows launches WSL bash bootstrap', () => {
+  const originalSpawn = pty.spawn;
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const calls = [];
+
+  pty.spawn = (...args) => {
+    calls.push(args);
+    return { pid: 1 };
+  };
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+
+  try {
+    SessionManager.prototype.spawnCodexProcess.call(
+      {
+        getEasyccEnv: () => ({ TEST_ENV: '1' }),
+        convertToWslPath: SessionManager.prototype.convertToWslPath,
+        quoteForPosixShell: SessionManager.prototype.quoteForPosixShell,
+        buildCodexBootstrapScript: SessionManager.prototype.buildCodexBootstrapScript
+      },
+      'C:\\Users\\denni\\apps\\EasyCC',
+      { resume: false, easyccSessionId: 'session-1', meta: {} }
+    );
+  } finally {
+    pty.spawn = originalSpawn;
+    Object.defineProperty(process, 'platform', originalPlatform);
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'wsl.exe');
+  assert.deepEqual(calls[0][1].slice(0, 3), ['--cd', '/mnt/c/Users/denni/apps/EasyCC', 'bash']);
+  assert.equal(calls[0][1][3], '-lc');
+  assert.match(calls[0][1][4], /exec codex --dangerously-bypass-approvals-and-sandbox -C '\/mnt\/c\/Users\/denni\/apps\/EasyCC'/);
+});
+
+test('spawnCodexProcess: on Linux launches bash bootstrap in cwd', () => {
+  const originalSpawn = pty.spawn;
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const calls = [];
+
+  pty.spawn = (...args) => {
+    calls.push(args);
+    return { pid: 1 };
+  };
+  Object.defineProperty(process, 'platform', { value: 'linux' });
+
+  try {
+    SessionManager.prototype.spawnCodexProcess.call(
+      {
+        getEasyccEnv: () => ({ TEST_ENV: '1' }),
+        quoteForPosixShell: SessionManager.prototype.quoteForPosixShell,
+        buildCodexBootstrapScript: SessionManager.prototype.buildCodexBootstrapScript
+      },
+      '/mnt/c/Users/denni/apps/EasyCC',
+      { resume: false, easyccSessionId: 'session-1', meta: {} }
+    );
+  } finally {
+    pty.spawn = originalSpawn;
+    Object.defineProperty(process, 'platform', originalPlatform);
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], '/bin/bash');
+  assert.deepEqual(calls[0][1].slice(0, 2), ['-lc', calls[0][1][1]]);
+  assert.equal(calls[0][2].cwd, '/mnt/c/Users/denni/apps/EasyCC');
+  assert.match(calls[0][1][1], /"\$HOME\/\.npm-global\/bin\/codex"/);
 });
