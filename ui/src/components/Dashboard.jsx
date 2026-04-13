@@ -60,6 +60,7 @@ function Dashboard({
   typedChars = '',
   hintCodes = {},
   onGroupedSessionsChange,
+  onVisibleSessionsChange,
   kanbanColumnFilter = null,
   onClearKanbanFilter,
   stages = [],
@@ -467,6 +468,10 @@ function Dashboard({
       onGroupedSessionsChange(groupedSessions);
     }
   }, [groupedSessions, onGroupedSessionsChange]);
+
+  useEffect(() => {
+    onVisibleSessionsChange?.(filteredSessions.map((session) => session.id));
+  }, [filteredSessions, onVisibleSessionsChange]);
 
   // Notify parent about collapsed groups for navigation
   useEffect(() => {

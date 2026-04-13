@@ -449,6 +449,17 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                 </label>
               </div>
 
+              <div className="form-group checkbox-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={localSettings.general?.clearTerminalWhenSessionListEmpty ?? false}
+                    onChange={e => updateSetting('general', 'clearTerminalWhenSessionListEmpty', e.target.checked)}
+                  />
+                  Clear terminal area when Sessions list is empty
+                </label>
+              </div>
+
               {(localSettings.ui?.showFlipAnimation ?? true) && (
                 <div className="form-group">
                   <label>Animation Speed</label>

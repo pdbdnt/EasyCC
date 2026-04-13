@@ -65,6 +65,9 @@ class SettingsManager {
         defaultWorkingDir: '',
         autoResumeOnStart: true
       },
+      general: {
+        clearTerminalWhenSessionListEmpty: false
+      },
       projectAliases: {},
       contextWidgetLayout: {
         rows: [

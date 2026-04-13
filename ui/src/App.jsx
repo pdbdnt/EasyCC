@@ -136,6 +136,7 @@ function App() {
   const [contextWidth, setContextWidth] = useState(320);
   const [focusedPanel, setFocusedPanel] = useState(null); // 'terminal' | 'context' | null
   const [groupedSessions, setGroupedSessions] = useState([]);
+  const [visibleSessionIds, setVisibleSessionIds] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [terminalPanes, setTerminalPanes] = useState([]);
   const [activePaneId, setActivePaneId] = useState(null);
@@ -222,6 +223,10 @@ function App() {
   const selectedSession = sessions.find(s => s.id === selectedId);
   const selectedAgent = selectedSession?.agentId ? agents.find(a => a.id === selectedSession.agentId) : null;
   const pendingCloseSession = sessions.find(s => s.id === pendingCloseSessionId);
+  const clearTerminalWhenSessionListEmpty = settings?.general?.clearTerminalWhenSessionListEmpty ?? false;
+  const shouldBlankTerminalForEmptySessionsList = currentView === 'sessions' &&
+    clearTerminalWhenSessionListEmpty &&
+    visibleSessionIds.length === 0;
 
   const focusActiveTerminal = useCallback(() => {
     if (activePaneId) {
@@ -396,6 +401,12 @@ function App() {
   useEffect(() => {
     if (currentView !== 'sessions') return;
     const validSessionIds = new Set(sessions.map(s => s.id));
+    const visibleIdSet = new Set(visibleSessionIds);
+
+    if (shouldBlankTerminalForEmptySessionsList) {
+      setTerminalPanes([]);
+      return;
+    }
 
     if (selectedIds.length > 1) {
       wasMultiSelectRef.current = true;
@@ -420,9 +431,11 @@ function App() {
       // Transitioning from multi to single: collapse to one pane
       if (wasMultiSelectRef.current) {
         wasMultiSelectRef.current = false;
-        const singleId = selectedIds[0] || (sessions.length > 0 ? sessions[0].id : null);
+        const singleId = selectedIds[0] || visibleSessionIds[0] || (sessions.length > 0 ? sessions[0].id : null);
         if (!singleId || !validSessionIds.has(singleId)) {
-          if (sessions.length > 0) {
+          if (visibleSessionIds.length > 0 && validSessionIds.has(visibleSessionIds[0])) {
+            setTerminalPanes([{ id: makePaneId(), sessionId: visibleSessionIds[0] }]);
+          } else if (sessions.length > 0) {
             setTerminalPanes([{ id: makePaneId(), sessionId: sessions[0].id }]);
           } else {
             setTerminalPanes([]);
@@ -438,8 +451,12 @@ function App() {
 
       // Normal single-select mode (preserves split panes)
       // When kanban filter is active with no selection, don't fallback to first session
-      const singleId = selectedIds[0] ||
-        (kanbanColumnFilter ? null : (sessions.length > 0 ? sessions[0].id : null));
+      const requestedSingleId = selectedIds[0];
+      const singleId = (
+        requestedSingleId && visibleIdSet.size > 0 && !visibleIdSet.has(requestedSingleId)
+          ? visibleSessionIds[0]
+          : requestedSingleId
+      ) || (kanbanColumnFilter ? null : (visibleSessionIds[0] || (sessions.length > 0 ? sessions[0].id : null)));
       if (!singleId || !validSessionIds.has(singleId)) {
         // When kanban filter is active, only retain panes matching the filtered stage
         if (kanbanColumnFilter) {
@@ -455,6 +472,9 @@ function App() {
         setTerminalPanes(prev => {
           const next = prev.filter(p => validSessionIds.has(p.sessionId));
           if (next.length > 0) return next;
+          if (visibleSessionIds.length > 0 && validSessionIds.has(visibleSessionIds[0])) {
+            return [{ id: makePaneId(), sessionId: visibleSessionIds[0] }];
+          }
           if (sessions.length > 0) return [{ id: makePaneId(), sessionId: sessions[0].id }];
           return [];
         });
@@ -469,7 +489,22 @@ function App() {
         return valid.map(p => p.id === targetPaneId ? { ...p, sessionId: singleId } : p);
       });
     }
-  }, [selectedIds, sessions, currentView, activePaneId, kanbanColumnFilter]);
+  }, [selectedIds, sessions, currentView, activePaneId, kanbanColumnFilter, visibleSessionIds, shouldBlankTerminalForEmptySessionsList]);
+
+  useEffect(() => {
+    if (currentView !== 'sessions' || !clearTerminalWhenSessionListEmpty) return;
+
+    if (visibleSessionIds.length === 0) {
+      if (selectedId !== null) {
+        selectSession(null);
+      }
+      return;
+    }
+
+    if (selectedId === null) {
+      selectSession(visibleSessionIds[0]);
+    }
+  }, [currentView, clearTerminalWhenSessionListEmpty, visibleSessionIds, selectedId, selectSession]);
 
   useEffect(() => {
     if (terminalPanes.length === 0) {
@@ -1419,6 +1454,7 @@ function App() {
             settings={settings}
             onUpdateSettings={updateSettings}
             onGroupedSessionsChange={setGroupedSessions}
+            onVisibleSessionsChange={setVisibleSessionIds}
             onCollapsedGroupsChange={setCollapsedGroups}
             initialCollapsedGroups={collapsedGroups}
             kanbanColumnFilter={kanbanColumnFilter}

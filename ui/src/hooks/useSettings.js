@@ -65,6 +65,9 @@ const defaultSettings = {
     defaultWorkingDir: '',
     autoResumeOnStart: true
   },
+  general: {
+    clearTerminalWhenSessionListEmpty: false
+  },
   projectAliases: {}
 };
 
