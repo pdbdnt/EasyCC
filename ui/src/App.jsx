@@ -150,6 +150,7 @@ function App() {
   const [focusedColumnId, setFocusedColumnId] = useState(null); // stage ID when empty kanban column focused
   const [multiPaneLayout, setMultiPaneLayout] = useState('auto'); // 'auto' | 'row' | 'column'
   const [multiPaneSizes, setMultiPaneSizes] = useState(null); // null=equal, Array for row/col, {cols:[]} for grid
+  const [manualHiddenTerminalFilter, setManualHiddenTerminalFilter] = useState(null);
   const [viewTransition, setViewTransition] = useState({
     active: false,
     direction: null,
@@ -224,6 +225,9 @@ function App() {
   const selectedAgent = selectedSession?.agentId ? agents.find(a => a.id === selectedSession.agentId) : null;
   const pendingCloseSession = sessions.find(s => s.id === pendingCloseSessionId);
   const clearTerminalWhenSessionListEmpty = settings?.general?.clearTerminalWhenSessionListEmpty ?? false;
+  const isTerminalHiddenForActiveFilter = currentView === 'sessions' &&
+    !!kanbanColumnFilter &&
+    manualHiddenTerminalFilter === kanbanColumnFilter;
   const shouldBlankTerminalForEmptySessionsList = currentView === 'sessions' &&
     clearTerminalWhenSessionListEmpty &&
     visibleSessionIds.length === 0;
@@ -397,11 +401,36 @@ function App() {
     setMultiPaneSizes(null);
   }, []);
 
+  const hideTerminalForActiveFilter = useCallback(() => {
+    if (currentView !== 'sessions' || !kanbanColumnFilter || visibleSessionIds.length !== 0) return;
+    setManualHiddenTerminalFilter(kanbanColumnFilter);
+    setTerminalPanes([]);
+    setActivePaneId(null);
+    selectSession(null);
+  }, [currentView, kanbanColumnFilter, visibleSessionIds.length, selectSession]);
+
+  useEffect(() => {
+    if (!manualHiddenTerminalFilter) return;
+    if (!kanbanColumnFilter || manualHiddenTerminalFilter !== kanbanColumnFilter) {
+      setManualHiddenTerminalFilter(null);
+    }
+  }, [manualHiddenTerminalFilter, kanbanColumnFilter]);
+
+  useEffect(() => {
+    if (!isTerminalHiddenForActiveFilter || visibleSessionIds.length === 0) return;
+    setManualHiddenTerminalFilter(null);
+    selectSession(visibleSessionIds[0]);
+  }, [isTerminalHiddenForActiveFilter, visibleSessionIds, selectSession]);
+
   // Consolidated pane sync: keeps panes in sync with selection and session list.
   useEffect(() => {
     if (currentView !== 'sessions') return;
     const validSessionIds = new Set(sessions.map(s => s.id));
-    const visibleIdSet = new Set(visibleSessionIds);
+
+    if (isTerminalHiddenForActiveFilter) {
+      setTerminalPanes([]);
+      return;
+    }
 
     if (shouldBlankTerminalForEmptySessionsList) {
       setTerminalPanes([]);
@@ -450,28 +479,13 @@ function App() {
       }
 
       // Normal single-select mode (preserves split panes)
-      // When kanban filter is active with no selection, don't fallback to first session
       const requestedSingleId = selectedIds[0];
-      const singleId = (
-        requestedSingleId && visibleIdSet.size > 0 && !visibleIdSet.has(requestedSingleId)
-          ? visibleSessionIds[0]
-          : requestedSingleId
-      ) || (kanbanColumnFilter ? null : (visibleSessionIds[0] || (sessions.length > 0 ? sessions[0].id : null)));
+      const singleId = requestedSingleId || (kanbanColumnFilter ? null : (visibleSessionIds[0] || (sessions.length > 0 ? sessions[0].id : null)));
       if (!singleId || !validSessionIds.has(singleId)) {
-        // When kanban filter is active, only retain panes matching the filtered stage
-        if (kanbanColumnFilter) {
-          const filteredIds = new Set(
-            sessions.filter(s => s.stage === kanbanColumnFilter).map(s => s.id)
-          );
-          setTerminalPanes(prev => {
-            const next = prev.filter(p => filteredIds.has(p.sessionId));
-            return next.length > 0 ? next : [];
-          });
-          return;
-        }
         setTerminalPanes(prev => {
           const next = prev.filter(p => validSessionIds.has(p.sessionId));
           if (next.length > 0) return next;
+          if (kanbanColumnFilter) return [];
           if (visibleSessionIds.length > 0 && validSessionIds.has(visibleSessionIds[0])) {
             return [{ id: makePaneId(), sessionId: visibleSessionIds[0] }];
           }
@@ -489,7 +503,7 @@ function App() {
         return valid.map(p => p.id === targetPaneId ? { ...p, sessionId: singleId } : p);
       });
     }
-  }, [selectedIds, sessions, currentView, activePaneId, kanbanColumnFilter, visibleSessionIds, shouldBlankTerminalForEmptySessionsList]);
+  }, [selectedIds, sessions, currentView, activePaneId, kanbanColumnFilter, visibleSessionIds, shouldBlankTerminalForEmptySessionsList, isTerminalHiddenForActiveFilter]);
 
   useEffect(() => {
     if (currentView !== 'sessions' || !clearTerminalWhenSessionListEmpty) return;
@@ -1696,6 +1710,11 @@ function App() {
                       typedChars={typedChars}
                       hintCodes={settings?.keyboard?.hintMode?.hints || {}}
                       onUpdateSettings={updateSettings}
+                      showHideTerminalControl={currentView === 'sessions' &&
+                        !!kanbanColumnFilter &&
+                        visibleSessionIds.length === 0 &&
+                        activePaneId === pane.id}
+                      onHideTerminal={hideTerminalForActiveFilter}
                       onFocus={() => {
                         setActivePaneId(pane.id);
                         setFocusedPanel('terminal');
@@ -1714,7 +1733,14 @@ function App() {
         ) : (
           <div className="terminal-placeholder">
             <div className="terminal-placeholder-icon">🖥️</div>
-            <p>Select a session or create a new one</p>
+            {isTerminalHiddenForActiveFilter ? (
+              <>
+                <p>Terminal hidden for this filtered view</p>
+                <p>Waiting for a session to enter {kanbanColumnFilter.replace('_', ' ')}</p>
+              </>
+            ) : (
+              <p>Select a session or create a new one</p>
+            )}
           </div>
         )}
       </main>

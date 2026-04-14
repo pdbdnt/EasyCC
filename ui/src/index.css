@@ -792,6 +792,37 @@ body {
   opacity: 0.7;
 }
 
+.terminal-hide-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin-left: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.terminal-hide-button:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-color);
+}
+
+.terminal-hide-button svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .terminal-wrapper {
   flex: 1;
   padding: 8px;

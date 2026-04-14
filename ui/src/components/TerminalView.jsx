@@ -88,7 +88,9 @@ const TerminalView = forwardRef(function TerminalView({
   hintCodes = {},
   onFocus,
   hideHeader = false,
-  onUpdateSettings
+  onUpdateSettings,
+  showHideTerminalControl = false,
+  onHideTerminal
 }, ref) {
   const terminalRef = useRef(null);
   const xtermRef = useRef(null);
@@ -1111,6 +1113,20 @@ const TerminalView = forwardRef(function TerminalView({
               <span className="terminal-last-activity">
                 {formatRelativeTime(session.lastActivity)}
               </span>
+              {showHideTerminalControl && (
+                <button
+                  type="button"
+                  className="terminal-hide-button"
+                  onClick={onHideTerminal}
+                  title="Hide terminal until a matching session appears"
+                  aria-label="Hide terminal until a matching session appears"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h9A1.5 1.5 0 0 1 14 4.5v5A1.5 1.5 0 0 1 12.5 11h-9A1.5 1.5 0 0 1 2 9.5v-5Z" />
+                    <path d="M3 13L13 3" />
+                  </svg>
+                </button>
+              )}
             </>
           )}
         </div>
