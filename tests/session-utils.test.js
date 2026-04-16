@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const pty = require('../backend/node_modules/node-pty');
 
 const {
@@ -134,7 +135,11 @@ test('buildCodexBootstrapScript: includes shell profile bootstrap and fallback b
   assert.match(script, /"\$HOME\/\.profile"/);
   assert.match(script, /"\$HOME\/\.bashrc"/);
   assert.match(script, /"\$HOME\/\.npm-global\/bin\/codex"/);
+  assert.match(script, /"\$HOME\/\.npm-global\/bin\/codex" .*; fi;/);
   assert.match(script, /resume --last/);
+
+  const syntaxCheck = spawnSync('/bin/bash', ['-n', '-c', script], { encoding: 'utf8' });
+  assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
 });
 
 test('spawnCodexProcess: on Windows launches WSL bash bootstrap', () => {

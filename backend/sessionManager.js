@@ -498,7 +498,7 @@ class SessionManager extends EventEmitter {
       '  nvm use --delete-prefix default >/dev/null 2>&1 || nvm use --delete-prefix >/dev/null 2>&1 || true;',
       'fi;',
       'if ! command -v codex >/dev/null 2>&1 && [ -x "$HOME/.npm-global/bin/codex" ]; then',
-      '  exec "$HOME/.npm-global/bin/codex" ' + codexArgs,
+      '  exec "$HOME/.npm-global/bin/codex" ' + codexArgs + ';',
       'fi;',
       `exec codex ${codexArgs}`
     ].join(' ');
