@@ -142,6 +142,7 @@ class SessionManager extends EventEmitter {
       // - Codex sessions (which use 'resume --last' and don't need a session ID)
       // - Terminal sessions (just re-launch a fresh shell)
       const cliType = sessionData.cliType || 'claude';
+      const normalizedWorkingDir = this.normalizeWorkingDirForCli(sessionData.workingDir, cliType);
       const canResume = cliType === 'codex' || cliType === 'terminal' || cliType === 'wsl' || sessionData.claudeSessionId;
 
       if (canResume) {
@@ -156,7 +157,7 @@ class SessionManager extends EventEmitter {
           lastActivity: new Date(sessionData.lastActivity),
           outputBuffer: new RingBuffer(outputBufferSize),
           pty: null,
-          workingDir: sessionData.workingDir,
+          workingDir: normalizedWorkingDir,
           cliType: cliType,
           claudeSessionId: sessionData.claudeSessionId,
           previousClaudeSessionIds: sessionData.previousClaudeSessionIds || [],
@@ -464,6 +465,15 @@ class SessionManager extends EventEmitter {
     return windowsPath;
   }
 
+  normalizeWorkingDirForCli(workingDir, cliType = 'claude') {
+    if (!workingDir || typeof workingDir !== 'string') return workingDir;
+    const trimmed = workingDir.trim();
+    if ((cliType === 'wsl' || cliType === 'codex') && process.platform === 'win32') {
+      return this.convertToWslPath(trimmed);
+    }
+    return trimmed;
+  }
+
   sanitizeRole(role) {
     if (typeof role !== 'string') {
       return '';
@@ -511,6 +521,7 @@ class SessionManager extends EventEmitter {
       'unset NPM_CONFIG_PREFIX npm_config_prefix PREFIX prefix;',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1; fi;',
       'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1; fi;',
+      'export CODEX_HOME="$HOME/.codex";',
       'if ! command -v codex >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then',
       '  . "$HOME/.nvm/nvm.sh" --no-use >/dev/null 2>&1;',
       '  nvm use --delete-prefix default >/dev/null 2>&1 || nvm use --delete-prefix >/dev/null 2>&1 || true;',
@@ -550,9 +561,10 @@ class SessionManager extends EventEmitter {
       throw new Error('WSL sessions are only supported on Windows');
     }
 
-    const env = this.getEasyccEnv(easyccSessionId, meta);
+    const env = this.getWslLaunchEnv(easyccSessionId, meta);
     const wslPath = this.convertToWslPath(workingDir);
-    return pty.spawn('wsl.exe', ['--cd', wslPath], {
+    const shellBootstrap = 'export CODEX_HOME="$HOME/.codex"; exec "${SHELL:-/bin/bash}" -i';
+    return pty.spawn('wsl.exe', ['--cd', wslPath, 'bash', '--noprofile', '--norc', '-lc', shellBootstrap], {
       name: 'xterm-color',
       cols: 120,
       rows: 30,
@@ -914,18 +926,19 @@ class SessionManager extends EventEmitter {
     const claudeSessionId = uuidv4(); // Generate Claude session ID upfront
     const now = new Date();
     const sanitizedRole = this.sanitizeRole(role);
+    const normalizedWorkingDir = this.normalizeWorkingDirForCli(workingDir, cliType);
 
     let ptyProcess;
 
     try {
       if (cliType === 'terminal') {
-        ptyProcess = this.spawnTerminalProcess(workingDir, { easyccSessionId: id, meta: sessionMeta });
+        ptyProcess = this.spawnTerminalProcess(normalizedWorkingDir, { easyccSessionId: id, meta: sessionMeta });
       } else if (cliType === 'wsl') {
-        ptyProcess = this.spawnWslProcess(workingDir, { easyccSessionId: id, meta: sessionMeta });
+        ptyProcess = this.spawnWslProcess(normalizedWorkingDir, { easyccSessionId: id, meta: sessionMeta });
       } else if (cliType === 'codex') {
-        ptyProcess = this.spawnCodexProcess(workingDir, { resume: false, easyccSessionId: id, meta: sessionMeta });
+        ptyProcess = this.spawnCodexProcess(normalizedWorkingDir, { resume: false, easyccSessionId: id, meta: sessionMeta });
       } else {
-        ptyProcess = this.spawnClaudeProcess(workingDir, {
+        ptyProcess = this.spawnClaudeProcess(normalizedWorkingDir, {
           sessionId: claudeSessionId,
           role: sanitizedRole,
           easyccSessionId: id,
@@ -954,7 +967,7 @@ class SessionManager extends EventEmitter {
       lastActivity: now,
       outputBuffer: new RingBuffer(this.getOutputBufferSize(cliType)),
       pty: ptyProcess,
-      workingDir,
+      workingDir: normalizedWorkingDir,
       cliType,  // 'claude' or 'codex'
       claudeSessionId: cliType === 'claude' ? claudeSessionId : null, // Only for Claude sessions
       previousClaudeSessionIds: [],
