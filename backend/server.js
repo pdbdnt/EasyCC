@@ -97,9 +97,19 @@ const AGENT_TEMPLATES = {
 
 function normalizeWindowsPath(input) {
   if (!input || typeof input !== 'string') return '';
-  const normalized = path.win32.normalize(input.trim().replace(/\//g, '\\'));
+  if (process.platform !== 'win32' && input.trim().startsWith('/')) {
+    const normalizedPosix = path.posix.normalize(input.trim());
+    return normalizedPosix === '/' ? normalizedPosix : normalizedPosix.replace(/\/+$/, '');
+  }
+  let normalized = input.trim().replace(/\//g, '\\');
+  const isUnc = normalized.startsWith('\\\\');
+  normalized = normalized.replace(/\\+/g, '\\');
+  if (isUnc) normalized = `\\${normalized}`;
   if (/^[A-Za-z]:\\?$/.test(normalized)) {
     return `${normalized[0].toUpperCase()}:\\`;
+  }
+  if (/^\\\\[^\\]+\\[^\\]+\\?$/.test(normalized)) {
+    return normalized.replace(/\\?$/, '');
   }
   return normalized.replace(/\\+$/, '');
 }
@@ -107,7 +117,64 @@ function normalizeWindowsPath(input) {
 function isPathWithinRoot(targetPath, rootPath) {
   const normalizedTarget = normalizeWindowsPath(targetPath).toLowerCase();
   const normalizedRoot = normalizeWindowsPath(rootPath).toLowerCase();
-  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}\\`);
+  if (normalizedTarget === normalizedRoot) return true;
+  const separator = normalizedRoot.includes('\\') ? '\\' : '/';
+  const rootPrefix = normalizedRoot.endsWith(separator) ? normalizedRoot : `${normalizedRoot}${separator}`;
+  return normalizedTarget.startsWith(rootPrefix);
+}
+
+function defaultWslBrowseRoot() {
+  if (process.env.WSL_FOLDERS_BROWSE_ROOT) return process.env.WSL_FOLDERS_BROWSE_ROOT;
+  if (process.platform === 'win32') return '\\\\wsl$\\Ubuntu\\home\\denni\\apps';
+  return '/home/denni/apps';
+}
+
+function getBrowseRoots() {
+  const roots = [];
+  const windowsRoot = normalizeWindowsPath(process.env.FOLDERS_BROWSE_ROOT || DEFAULT_FOLDERS_ROOT);
+  if (windowsRoot && fs.existsSync(windowsRoot) && fs.statSync(windowsRoot).isDirectory()) {
+    roots.push({ id: 'windows', label: 'Windows', path: windowsRoot });
+  }
+
+  const wslRoot = normalizeWindowsPath(defaultWslBrowseRoot());
+  if (wslRoot && fs.existsSync(wslRoot) && fs.statSync(wslRoot).isDirectory()) {
+    const duplicate = roots.some(root => normalizeWindowsPath(root.path).toLowerCase() === wslRoot.toLowerCase());
+    if (!duplicate) roots.push({ id: 'wsl', label: 'WSL', path: wslRoot });
+  }
+
+  return roots;
+}
+
+function getRootForPath(targetPath, roots) {
+  const normalizedTarget = normalizeWindowsPath(targetPath).toLowerCase();
+  return roots.find(root => {
+    const normalizedRoot = normalizeWindowsPath(root.path).toLowerCase();
+    if (normalizedTarget === normalizedRoot) return true;
+    const separator = normalizedRoot.includes('\\') ? '\\' : '/';
+    const rootPrefix = normalizedRoot.endsWith(separator) ? normalizedRoot : `${normalizedRoot}${separator}`;
+    return normalizedTarget.startsWith(rootPrefix);
+  });
+}
+
+function joinBrowsePath(basePath, childName) {
+  const normalizedBase = normalizeWindowsPath(basePath);
+  if (normalizedBase.startsWith('/') && !normalizedBase.includes('\\')) {
+    return path.posix.join(normalizedBase, childName);
+  }
+  if (/^[A-Za-z]:\\$/.test(normalizedBase)) {
+    return `${normalizedBase}${childName}`;
+  }
+  return `${normalizedBase}\\${childName}`;
+}
+
+function validateFolderName(name) {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed) return { valid: false, error: 'Folder name is required' };
+  if (trimmed === '.' || trimmed === '..') return { valid: false, error: 'Folder name cannot be . or ..' };
+  if (/[<>:"/\\|?*\x00-\x1F]/.test(trimmed)) return { valid: false, error: 'Folder name contains invalid characters' };
+  if (/[. ]$/.test(trimmed)) return { valid: false, error: 'Folder name cannot end with a period or space' };
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(trimmed)) return { valid: false, error: 'Folder name is reserved on Windows' };
+  return { valid: true, name: trimmed };
 }
 
 function normalizePathKey(filePath) {
@@ -1574,12 +1641,16 @@ async function start() {
 
   // List folders in a directory (for folder picker)
   app.get('/api/folders', async (request, reply) => {
-    const root = normalizeWindowsPath(process.env.FOLDERS_BROWSE_ROOT || DEFAULT_FOLDERS_ROOT);
-    const requestedBase = normalizeWindowsPath(request.query.base || root) || root;
+    const roots = getBrowseRoots();
+    const defaultRoot = roots[0] || { id: 'windows', label: 'Windows', path: normalizeWindowsPath(DEFAULT_FOLDERS_ROOT) };
+    const requestedRoot = roots.find(root => root.id === request.query.rootId) || defaultRoot;
+    const requestedBase = normalizeWindowsPath(request.query.base || requestedRoot.path) || requestedRoot.path;
+    const activeRoot = getRootForPath(requestedBase, roots) || requestedRoot;
+    const root = normalizeWindowsPath(activeRoot.path);
 
     try {
       if (!fs.existsSync(requestedBase) || !fs.statSync(requestedBase).isDirectory()) {
-        return reply.status(400).send({ error: 'Requested path is not a directory' });
+        return reply.status(400).send({ error: 'Requested path is not a directory', roots, root, defaultRoot: defaultRoot.path });
       }
 
       const entries = fs.readdirSync(requestedBase, { withFileTypes: true });
@@ -1587,7 +1658,55 @@ async function start() {
         .filter(e => e.isDirectory())
         .map(e => e.name)
         .sort();
-      return { folders, base: requestedBase, root, defaultRoot: root };
+      return {
+        folders,
+        base: requestedBase,
+        root,
+        rootId: activeRoot.id,
+        roots,
+        defaultRoot: defaultRoot.path
+      };
+    } catch (error) {
+      return reply.status(500).send({ error: error.message, roots, root, defaultRoot: defaultRoot.path });
+    }
+  });
+
+  // Create a child folder in the current folder picker directory
+  app.post('/api/folders', async (request, reply) => {
+    const roots = getBrowseRoots();
+    const defaultRoot = roots[0] || { id: 'windows', label: 'Windows', path: normalizeWindowsPath(DEFAULT_FOLDERS_ROOT) };
+    const requestedRoot = roots.find(root => root.id === request.body?.rootId) || defaultRoot;
+    const requestedBase = normalizeWindowsPath(request.body?.base || requestedRoot.path) || requestedRoot.path;
+    const activeRoot = getRootForPath(requestedBase, roots) || requestedRoot;
+    const root = normalizeWindowsPath(activeRoot.path);
+    const validation = validateFolderName(request.body?.name);
+
+    if (!validation.valid) {
+      return reply.status(400).send({ error: validation.error });
+    }
+
+    if (!isPathWithinRoot(requestedBase, root)) {
+      return reply.status(400).send({ error: 'Requested path is outside the selected browse root' });
+    }
+
+    try {
+      if (!fs.existsSync(requestedBase) || !fs.statSync(requestedBase).isDirectory()) {
+        return reply.status(400).send({ error: 'Requested path is not a directory' });
+      }
+
+      const folderPath = joinBrowsePath(requestedBase, validation.name);
+      if (fs.existsSync(folderPath)) {
+        return reply.status(409).send({ error: 'Folder already exists' });
+      }
+
+      fs.mkdirSync(folderPath);
+      return reply.status(201).send({
+        folder: validation.name,
+        path: folderPath,
+        base: requestedBase,
+        root,
+        rootId: activeRoot.id
+      });
     } catch (error) {
       return reply.status(500).send({ error: error.message });
     }

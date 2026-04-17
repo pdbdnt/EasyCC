@@ -125,7 +125,28 @@ test('getOutputBufferSize: terminal/codex larger than claude', () => {
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);
 });
 
-test('buildCodexBootstrapScript: includes shell profile bootstrap and fallback binary', () => {
+test('convertToWslPath: converts Windows drive paths', () => {
+  assert.equal(
+    SessionManager.prototype.convertToWslPath('C:\\Users\\denni\\apps\\EasyCC'),
+    '/mnt/c/Users/denni/apps/EasyCC'
+  );
+});
+
+test('convertToWslPath: converts WSL UNC paths', () => {
+  assert.equal(
+    SessionManager.prototype.convertToWslPath('\\\\wsl$\\Ubuntu\\home\\denni\\apps\\EasyCC'),
+    '/home/denni/apps/EasyCC'
+  );
+});
+
+test('convertToWslPath: passes through non-Windows paths', () => {
+  assert.equal(
+    SessionManager.prototype.convertToWslPath('/home/denni/apps/EasyCC'),
+    '/home/denni/apps/EasyCC'
+  );
+});
+
+test('buildCodexBootstrapScript: prefers native WSL npm-global Codex before PATH lookup', () => {
   const script = SessionManager.prototype.buildCodexBootstrapScript.call(
     { quoteForPosixShell: SessionManager.prototype.quoteForPosixShell },
     '/mnt/c/Users/denni/apps/EasyCC',
@@ -135,7 +156,12 @@ test('buildCodexBootstrapScript: includes shell profile bootstrap and fallback b
   assert.match(script, /"\$HOME\/\.profile"/);
   assert.match(script, /"\$HOME\/\.bashrc"/);
   assert.match(script, /"\$HOME\/\.npm-global\/bin\/codex"/);
-  assert.match(script, /"\$HOME\/\.npm-global\/bin\/codex" .*; fi;/);
+  assert.match(script, /if \[ -x "\$HOME\/\.npm-global\/bin\/codex" \]; then/);
+  assert.ok(
+    script.indexOf('if [ -x "$HOME/.npm-global/bin/codex" ]; then') <
+      script.indexOf('exec codex '),
+    'native WSL Codex should be checked before generic PATH lookup'
+  );
   assert.match(script, /resume --last/);
 
   const syntaxCheck = spawnSync('/bin/bash', ['-n', '-c', script], { encoding: 'utf8' });
@@ -156,7 +182,14 @@ test('spawnCodexProcess: on Windows launches WSL bash bootstrap', () => {
   try {
     SessionManager.prototype.spawnCodexProcess.call(
       {
-        getEasyccEnv: () => ({ TEST_ENV: '1' }),
+        getEasyccEnv: () => ({
+          TEST_ENV: '1',
+          BASH_ENV: '/tmp/bad-bash-env',
+          ENV: '/tmp/bad-env',
+          SHELLOPTS: 'braceexpand',
+          PROMPT_COMMAND: 'bad-prompt'
+        }),
+        getWslLaunchEnv: SessionManager.prototype.getWslLaunchEnv,
         convertToWslPath: SessionManager.prototype.convertToWslPath,
         quoteForPosixShell: SessionManager.prototype.quoteForPosixShell,
         buildCodexBootstrapScript: SessionManager.prototype.buildCodexBootstrapScript
@@ -172,8 +205,13 @@ test('spawnCodexProcess: on Windows launches WSL bash bootstrap', () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'wsl.exe');
   assert.deepEqual(calls[0][1].slice(0, 3), ['--cd', '/mnt/c/Users/denni/apps/EasyCC', 'bash']);
-  assert.equal(calls[0][1][3], '-lc');
-  assert.match(calls[0][1][4], /exec codex --dangerously-bypass-approvals-and-sandbox -C '\/mnt\/c\/Users\/denni\/apps\/EasyCC'/);
+  assert.deepEqual(calls[0][1].slice(3, 6), ['--noprofile', '--norc', '-c']);
+  assert.match(calls[0][1][6], /exec codex --dangerously-bypass-approvals-and-sandbox -C '\/mnt\/c\/Users\/denni\/apps\/EasyCC'/);
+  assert.equal(calls[0][2].env.TEST_ENV, '1');
+  assert.equal(calls[0][2].env.BASH_ENV, undefined);
+  assert.equal(calls[0][2].env.ENV, undefined);
+  assert.equal(calls[0][2].env.SHELLOPTS, undefined);
+  assert.equal(calls[0][2].env.PROMPT_COMMAND, undefined);
 });
 
 test('spawnCodexProcess: on Linux launches bash bootstrap in cwd', () => {

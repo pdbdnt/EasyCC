@@ -446,15 +446,20 @@ class SessionManager extends EventEmitter {
   }
 
   /**
-   * Convert Windows path to WSL path
-   * @param {string} windowsPath - Windows path (e.g., C:\Users\foo)
-   * @returns {string} WSL path (e.g., /mnt/c/Users/foo)
+   * Convert Windows or WSL UNC path to WSL path.
+   * @param {string} windowsPath - Windows path (e.g., C:\Users\foo) or WSL UNC path
+   * @returns {string} WSL path (e.g., /mnt/c/Users/foo or /home/foo)
    */
   convertToWslPath(windowsPath) {
-    const normalized = windowsPath.replace(/\\/g, '/');
-    const match = normalized.match(/^([A-Za-z]):(.*)/);
-    if (match) {
-      return `/mnt/${match[1].toLowerCase()}${match[2]}`;
+    if (!windowsPath || typeof windowsPath !== 'string') return windowsPath;
+    const normalized = windowsPath.trim().replace(/\\/g, '/');
+    const uncMatch = normalized.match(/^\/\/wsl(?:\$|\.localhost)?\/[^/]+(\/.*)?$/i);
+    if (uncMatch) {
+      return uncMatch[1] || '/';
+    }
+    const driveMatch = normalized.match(/^([A-Za-z]):(.*)/);
+    if (driveMatch) {
+      return `/mnt/${driveMatch[1].toLowerCase()}${driveMatch[2]}`;
     }
     return windowsPath;
   }
@@ -479,6 +484,19 @@ class SessionManager extends EventEmitter {
     return env;
   }
 
+  getWslLaunchEnv(easyccSessionId = '', meta = {}) {
+    const env = this.getEasyccEnv(easyccSessionId, meta);
+
+    // Keep Windows-side shell startup hooks from being imported into WSL before
+    // our bootstrap script has a chance to set up a predictable environment.
+    delete env.BASH_ENV;
+    delete env.ENV;
+    delete env.SHELLOPTS;
+    delete env.PROMPT_COMMAND;
+
+    return env;
+  }
+
   quoteForPosixShell(value = '') {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
   }
@@ -497,7 +515,7 @@ class SessionManager extends EventEmitter {
       '  . "$HOME/.nvm/nvm.sh" --no-use >/dev/null 2>&1;',
       '  nvm use --delete-prefix default >/dev/null 2>&1 || nvm use --delete-prefix >/dev/null 2>&1 || true;',
       'fi;',
-      'if ! command -v codex >/dev/null 2>&1 && [ -x "$HOME/.npm-global/bin/codex" ]; then',
+      'if [ -x "$HOME/.npm-global/bin/codex" ]; then',
       '  exec "$HOME/.npm-global/bin/codex" ' + codexArgs + ';',
       'fi;',
       `exec codex ${codexArgs}`
@@ -543,12 +561,14 @@ class SessionManager extends EventEmitter {
   }
 
   spawnCodexProcess(workingDir, { resume = false, easyccSessionId = '', meta = {} } = {}) {
-    const env = this.getEasyccEnv(easyccSessionId, meta);
     const isWindows = process.platform === 'win32';
+    const env = isWindows
+      ? this.getWslLaunchEnv(easyccSessionId, meta)
+      : this.getEasyccEnv(easyccSessionId, meta);
     if (isWindows) {
       const wslPath = this.convertToWslPath(workingDir);
       const bootstrapScript = this.buildCodexBootstrapScript(wslPath, { resume });
-      return pty.spawn('wsl.exe', ['--cd', wslPath, 'bash', '-lc', bootstrapScript], {
+      return pty.spawn('wsl.exe', ['--cd', wslPath, 'bash', '--noprofile', '--norc', '-c', bootstrapScript], {
         name: 'xterm-color',
         cols: 120,
         rows: 30,

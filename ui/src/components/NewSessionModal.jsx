@@ -252,6 +252,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
   };
 
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) || null;
+  const preferredBrowseRootId = cliType === 'codex' || cliType === 'wsl' ? 'wsl' : 'windows';
 
   return (
     <div className="modal-overlay" onClick={handleOverlayClick}>
@@ -429,6 +430,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                     selectedPath={selectedPath}
                     onSelectPath={setSelectedPath}
                     defaultBase={normalizedDefaultWorkingDir || undefined}
+                    preferredRootId={preferredBrowseRootId}
                     disabled={loading}
                     starredFolders={starredFolders}
                     onToggleStar={onToggleStar}
@@ -467,6 +469,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                   selectedPath={selectedPath}
                   onSelectPath={setSelectedPath}
                   defaultBase={normalizedDefaultWorkingDir || undefined}
+                  preferredRootId={preferredBrowseRootId}
                   disabled={loading}
                   starredFolders={starredFolders}
                   onToggleStar={onToggleStar}
@@ -618,6 +621,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                         {presetBrowseRowIndex === i && (
                           <DirectoryBrowser
                             selectedPath={entry.workingDir}
+                            preferredRootId={entry.cliType === 'codex' || entry.cliType === 'wsl' ? 'wsl' : 'windows'}
                             onSelectPath={(path) => {
                               const sessions = [...editingPreset.sessions];
                               sessions[i] = { ...sessions[i], workingDir: path };

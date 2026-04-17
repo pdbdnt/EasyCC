@@ -87,6 +87,7 @@ function NewAgentModal({ onClose, onCreate }) {
               <DirectoryBrowser
                 selectedPath={workingDir}
                 onSelectPath={setWorkingDir}
+                preferredRootId={cliType === 'codex' || cliType === 'wsl' ? 'wsl' : 'windows'}
                 disabled={false}
               />
             </div>
