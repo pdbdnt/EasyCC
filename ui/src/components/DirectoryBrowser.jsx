@@ -265,7 +265,7 @@ function DirectoryBrowser({
   };
 
   const handleCreateFolder = async (e) => {
-    e.preventDefault();
+    e?.preventDefault();
     const trimmedName = newFolderName.trim();
     if (!trimmedName || creatingFolder) return;
 
@@ -403,19 +403,25 @@ function DirectoryBrowser({
       </div>
 
       {showCreateFolder && (
-        <form className="folder-create-row" onSubmit={handleCreateFolder}>
+        <div className="folder-create-row">
           <input
             type="text"
             className="folder-create-input"
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleCreateFolder(e);
+              }
+            }}
             placeholder="New folder name"
             disabled={disabled || creatingFolder}
             autoFocus
           />
           <button
-            type="submit"
+            type="button"
             className="btn btn-primary btn-small"
+            onClick={handleCreateFolder}
             disabled={disabled || creatingFolder || !newFolderName.trim()}
           >
             {creatingFolder ? 'Creating...' : 'Create'}
@@ -434,7 +440,7 @@ function DirectoryBrowser({
           >
             x
           </button>
-        </form>
+        </div>
       )}
 
       {loadingFolders ? (

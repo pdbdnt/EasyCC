@@ -2,11 +2,32 @@ import { useState, useEffect, useRef } from 'react';
 import { AGENT_TEMPLATES } from '../utils/agentTemplates';
 import DirectoryBrowser, { normalizeWindowsPath } from './DirectoryBrowser';
 
+const LAST_CLI_TYPE_KEY = 'easycc:lastCliType';
+const VALID_CLI_TYPES = new Set(['claude', 'codex', 'terminal', 'wsl']);
+
 function generateDefaultSessionName() {
   const now = new Date();
   const date = now.toISOString().slice(0, 10);
   const time = now.toTimeString().slice(0, 5).replace(':', '');
   return `Session ${date}-${time}`;
+}
+
+function getStoredCliType() {
+  try {
+    const stored = window.localStorage.getItem(LAST_CLI_TYPE_KEY);
+    return VALID_CLI_TYPES.has(stored) ? stored : 'claude';
+  } catch {
+    return 'claude';
+  }
+}
+
+function storeCliType(value) {
+  if (!VALID_CLI_TYPES.has(value)) return;
+  try {
+    window.localStorage.setItem(LAST_CLI_TYPE_KEY, value);
+  } catch {
+    // Ignore storage failures; the select still updates for this modal.
+  }
 }
 
 function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = '', sessions = [], defaultParentSessionId = null, starredFolders = [], onToggleStar }) {
@@ -15,7 +36,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
   const createButtonRef = useRef(null);
   const [activeTab, setActiveTab] = useState('session');
   const [name, setName] = useState(() => generateDefaultSessionName());
-  const [cliType, setCliType] = useState('claude');
+  const [cliType, setCliType] = useState(() => getStoredCliType());
   const [selectedTemplate, setSelectedTemplate] = useState('custom');
   const [role, setRole] = useState('');
   const [selectedPath, setSelectedPath] = useState(() => normalizedDefaultWorkingDir);
@@ -41,6 +62,11 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [editingPreset, setEditingPreset] = useState(null);
   const [presetBrowseRowIndex, setPresetBrowseRowIndex] = useState(-1);
+
+  const updateCliType = (value) => {
+    setCliType(value);
+    storeCliType(value);
+  };
 
   // Close on ESC key
   useEffect(() => {
@@ -359,7 +385,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                         setSelectedTemplate(templateId);
                         const template = AGENT_TEMPLATES.find((item) => item.id === templateId);
                         if (!template) return;
-                        setCliType(template.cliType);
+                        updateCliType(template.cliType);
                         setRole(template.role || '');
                         if (template.isOrchestrator) {
                           setTeamAction('new');
@@ -398,7 +424,7 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                       ref={cliTypeSelectRef}
                       value={cliType}
                       onChange={(e) => {
-                        setCliType(e.target.value);
+                        updateCliType(e.target.value);
                         setSelectedTemplate('custom');
                       }}
                       onKeyDown={(e) => {

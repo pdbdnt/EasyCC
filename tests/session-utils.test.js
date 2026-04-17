@@ -125,6 +125,34 @@ test('getOutputBufferSize: terminal/codex larger than claude', () => {
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);
 });
 
+test('extractSessionRename: detects Claude rename output', () => {
+  const manager = {
+    cleanTerminalText: SessionManager.prototype.cleanTerminalText,
+    extractSessionRename: SessionManager.prototype.extractSessionRename
+  };
+
+  assert.equal(
+    SessionManager.prototype.extractSessionRename.call(manager, '\x1b[32mSession renamed to: "Billing polish"\x1b[0m\r\n'),
+    'Billing polish'
+  );
+});
+
+test('extractSessionRename: detects Codex conversation rename output', () => {
+  const manager = {
+    cleanTerminalText: SessionManager.prototype.cleanTerminalText,
+    extractSessionRename: SessionManager.prototype.extractSessionRename
+  };
+
+  assert.equal(
+    SessionManager.prototype.extractSessionRename.call(manager, 'Renamed conversation to "Fix WSL folder create"\r\n'),
+    'Fix WSL folder create'
+  );
+  assert.equal(
+    SessionManager.prototype.extractSessionRename.call(manager, 'Codex conversation renamed to: Session sync\r\n'),
+    'Session sync'
+  );
+});
+
 test('convertToWslPath: converts Windows drive paths', () => {
   assert.equal(
     SessionManager.prototype.convertToWslPath('C:\\Users\\denni\\apps\\EasyCC'),

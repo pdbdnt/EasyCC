@@ -869,6 +869,39 @@ class SessionManager extends EventEmitter {
     return true;
   }
 
+  cleanTerminalText(data) {
+    return String(data || '')
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\r/g, '\n');
+  }
+
+  extractSessionRename(data) {
+    const cleanData = this.cleanTerminalText(data);
+    const patterns = [
+      /Session\s+renamed\s+to:?\s*"([^"\n]+)"/i,
+      /Session\s+renamed\s+to:?\s*([^\n]+)/i,
+      /(?:Codex\s+)?conversation\s+renamed\s+to:?\s*"([^"\n]+)"/i,
+      /(?:Codex\s+)?conversation\s+renamed\s+to:?\s*([^\n]+)/i,
+      /Renamed\s+(?:session|conversation)\s+to:?\s*"([^"\n]+)"/i,
+      /Renamed\s+(?:session|conversation)\s+to:?\s*([^\n]+)/i,
+      /Renamed\s+to:?\s*"([^"\n]+)"/i,
+      /Renamed\s+to:?\s*([^\n]+)/i
+    ];
+
+    for (const line of cleanData.split('\n')) {
+      if (!/renamed/i.test(line)) continue;
+      for (const pattern of patterns) {
+        const match = line.match(pattern);
+        if (!match || !match[1]) continue;
+        const name = match[1].trim().replace(/^["']|["']$/g, '');
+        if (name) return name;
+      }
+    }
+
+    return '';
+  }
+
   /**
    * Create a new Claude CLI session
    * @param {string} name - Session name
@@ -1014,16 +1047,12 @@ class SessionManager extends EventEmitter {
         });
       }
 
-      // Detect Claude Code /rename command output (strip ANSI sequences first)
-      const cleanData = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-      const renameMatch = cleanData.match(/Session renamed to:?\s*"?([^"\r\n]+)"?/);
-      if (renameMatch && renameMatch[1]) {
-        const newName = renameMatch[1].trim();
-        if (newName && newName !== session.name) {
-          session.name = newName;
-          this.dataStore.saveSession(session);
-          this.emit('sessionUpdated', this.getSessionSnapshot(session));
-        }
+      // Detect Claude Code and Codex /rename command output.
+      const newName = this.extractSessionRename(data);
+      if (newName && newName !== session.name) {
+        session.name = newName;
+        this.dataStore.saveSession(session);
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
       }
 
       // Detect plan updates from terminal output
