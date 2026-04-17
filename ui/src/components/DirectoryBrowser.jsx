@@ -339,7 +339,14 @@ function DirectoryBrowser({
           title="Refresh folders"
           aria-label="Refresh folders"
         >
-          ↻
+          <svg
+            className="folder-toolbar-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.45 10.93.75.75 0 1 0-1.39-.56A6.5 6.5 0 1 1 16.6 7.4H14.5a.75.75 0 0 0 0 1.5h4a.75.75 0 0 0 .75-.75v-4a.75.75 0 0 0-1.5 0v2.2h-.1Z" />
+          </svg>
         </button>
         <button
           type="button"
