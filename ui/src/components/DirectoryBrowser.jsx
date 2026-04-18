@@ -5,7 +5,12 @@ export const BASE_DIR = null;
 
 export function normalizeWindowsPath(input) {
   if (!input || typeof input !== 'string') return '';
-  let normalized = input.trim().replace(/\//g, '\\');
+  const trimmed = input.trim();
+  if (trimmed.startsWith('/')) {
+    const normalizedPosix = trimmed.replace(/\/+/g, '/');
+    return normalizedPosix === '/' ? normalizedPosix : normalizedPosix.replace(/\/+$/, '');
+  }
+  let normalized = trimmed.replace(/\//g, '\\');
   const isUnc = normalized.startsWith('\\\\');
   normalized = normalized.replace(/\\+/g, '\\');
   if (isUnc) normalized = `\\${normalized}`;
@@ -20,6 +25,9 @@ export function normalizeWindowsPath(input) {
 
 export function joinWindowsPath(base, child) {
   const normalizedBase = normalizeWindowsPath(base);
+  if (normalizedBase.startsWith('/')) {
+    return normalizedBase === '/' ? `/${child}` : `${normalizedBase}/${child}`;
+  }
   if (/^[A-Za-z]:\\$/.test(normalizedBase)) {
     return `${normalizedBase}${child}`;
   }
@@ -29,6 +37,12 @@ export function joinWindowsPath(base, child) {
 export function getParentWindowsPath(path) {
   const normalized = normalizeWindowsPath(path);
   if (!normalized) return '';
+  if (normalized.startsWith('/')) {
+    if (normalized === '/') return normalized;
+    const trimmed = normalized.replace(/\/+$/, '');
+    const lastSeparator = trimmed.lastIndexOf('/');
+    return lastSeparator <= 0 ? '/' : trimmed.slice(0, lastSeparator);
+  }
   if (/^[A-Za-z]:\\$/.test(normalized)) return normalized;
   if (/^\\\\[^\\]+\\[^\\]+$/.test(normalized)) return normalized;
 
@@ -45,6 +59,7 @@ export function getParentWindowsPath(path) {
 
 function getPathRoot(path) {
   const normalized = normalizeWindowsPath(path);
+  if (normalized.startsWith('/')) return '/';
   if (/^[A-Za-z]:\\/.test(normalized)) return `${normalized[0].toUpperCase()}:\\`;
   const uncMatch = normalized.match(/^\\\\[^\\]+\\[^\\]+/);
   return uncMatch ? uncMatch[0] : '';
@@ -53,6 +68,18 @@ function getPathRoot(path) {
 function getBreadcrumbSegments(path) {
   const normalized = normalizeWindowsPath(path);
   if (!normalized) return [];
+
+  if (normalized.startsWith('/')) {
+    if (normalized === '/') return [{ label: '/', path: '/' }];
+    const parts = normalized.replace(/^\/+/, '').split('/').filter(Boolean);
+    const segments = [{ label: '/', path: '/' }];
+    let current = '';
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : `/${part}`;
+      segments.push({ label: part, path: current });
+    }
+    return segments;
+  }
 
   if (normalized.startsWith('\\\\')) {
     const root = getPathRoot(normalized);
@@ -88,7 +115,9 @@ function getRootIdForPath(path, roots) {
   if (!normalizedPath) return '';
   const match = roots.find(root => {
     const normalizedRoot = normalizeWindowsPath(root.path).toLowerCase();
-    return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}\\`);
+    if (normalizedPath === normalizedRoot) return true;
+    const separator = normalizedRoot.includes('\\') ? '\\' : '/';
+    return normalizedPath.startsWith(`${normalizedRoot}${separator}`);
   });
   return match?.id || '';
 }
@@ -97,11 +126,12 @@ function getStarredMeta(path, roots) {
   const normalized = normalizeWindowsPath(path);
   const rootId = getRootIdForPath(normalized, roots);
   const root = roots.find(item => item.id === rootId);
-  const source = root?.label || (normalized.startsWith('\\\\') ? 'WSL' : 'Windows');
+  const separator = normalized.includes('\\') ? '\\' : '/';
+  const source = root?.label || (normalized.startsWith('\\\\') || normalized.startsWith('/') ? 'WSL' : 'Windows');
   const rootPath = root ? normalizeWindowsPath(root.path) : '';
   const relative = rootPath && normalized.toLowerCase().startsWith(rootPath.toLowerCase())
-    ? normalized.slice(rootPath.length).replace(/^\\/, '')
-    : normalized.split('\\').filter(Boolean).slice(-2).join('\\');
+    ? normalized.slice(rootPath.length).replace(/^[/\\]/, '')
+    : normalized.split(/[/\\]/).filter(Boolean).slice(-2).join(separator);
   return { source, label: relative || normalized };
 }
 
