@@ -893,6 +893,8 @@ class SessionManager extends EventEmitter {
     const patterns = [
       /Session\s+renamed\s+to:?\s*"([^"\n]+)"/i,
       /Session\s+renamed\s+to:?\s*([^\n]+)/i,
+      /Thread\s+renamed\s+to:?\s*"([^"\n]+)"/i,
+      /Thread\s+renamed\s+to:?\s*([^\n]+)/i,
       /(?:Codex\s+)?conversation\s+renamed\s+to:?\s*"([^"\n]+)"/i,
       /(?:Codex\s+)?conversation\s+renamed\s+to:?\s*([^\n]+)/i,
       /Renamed\s+(?:session|conversation)\s+to:?\s*"([^"\n]+)"/i,
@@ -906,7 +908,11 @@ class SessionManager extends EventEmitter {
       for (const pattern of patterns) {
         const match = line.match(pattern);
         if (!match || !match[1]) continue;
-        const name = match[1].trim().replace(/^["']|["']$/g, '');
+        const name = match[1]
+          .trim()
+          .replace(/^["']|["']$/g, '')
+          .replace(/\s*,\s*to\s+resume\s+this\s+thread\s+run\s+codex\s+resume(?:\s+.+)?$/i, '')
+          .trim();
         if (name) return name;
       }
     }

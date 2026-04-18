@@ -151,6 +151,13 @@ test('extractSessionRename: detects Codex conversation rename output', () => {
     SessionManager.prototype.extractSessionRename.call(manager, 'Codex conversation renamed to: Session sync\r\n'),
     'Session sync'
   );
+  assert.equal(
+    SessionManager.prototype.extractSessionRename.call(
+      manager,
+      '\u2022 Thread renamed to https, to resume this thread run codex resume https\r\n'
+    ),
+    'https'
+  );
 });
 
 test('convertToWslPath: converts Windows drive paths', () => {
