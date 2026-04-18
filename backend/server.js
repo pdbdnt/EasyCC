@@ -29,7 +29,7 @@ const agentStore = new AgentStore();
 const taskStore = new TaskStore();
 const presetStore = new PresetStore();
 const teamStore = new TeamStore();
-const { sessionStatusToStage } = require('./stagesConfig');
+const { sessionStatusToStage, isCodexMidWorkApprovalPrompt } = require('./stagesConfig');
 
 const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || os.homedir();
 
@@ -3931,9 +3931,19 @@ async function start() {
   sessionManager.on('statusChange', ({ sessionId, status, source }) => {
     const existing = kanbanSyncTimers.get(sessionId);
 
-    // Codex mid-work approvals: don't auto-move to in_review
+    // Codex mid-work approvals: don't auto-move to in_review.
+    // Final prompts like "Implement this plan?" should still land in review.
     const session = sessionManager.getSession(sessionId);
     if (session?.cliType === 'codex' && status === 'waiting') {
+      const recentOutput = (sessionManager.getSessionOutput(sessionId) || []).join('\n');
+      if (isCodexMidWorkApprovalPrompt(recentOutput)) {
+        if (existing) clearTimeout(existing.timer);
+        kanbanSyncTimers.delete(sessionId);
+        return;
+      }
+    }
+
+    if (!session) {
       if (existing) clearTimeout(existing.timer);
       kanbanSyncTimers.delete(sessionId);
       return;

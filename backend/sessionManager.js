@@ -649,6 +649,7 @@ class SessionManager extends EventEmitter {
 
   isCodexReadyForInput(data) {
     return /Ask Codex to do anything/i.test(data) ||
+      /^\s*›(?:\s|$)/m.test(data) ||
       /\?\s*for shortcuts/i.test(data) ||
       /Would you like to run/i.test(data) ||
       /Implement this plan\?/i.test(data);
@@ -1825,6 +1826,7 @@ class SessionManager extends EventEmitter {
     if (cliType === 'codex') {
       const codexPromptReadyPatterns = [
         /Ask Codex to do anything/i,
+        /^\s*›(?:\s|$)/m,
         /\?\s*for shortcuts/i
       ];
       for (const pattern of codexPromptReadyPatterns) {

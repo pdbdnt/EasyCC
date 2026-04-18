@@ -9,7 +9,7 @@ const {
   shouldCountOutputAsActivity
 } = require('../backend/sessionInputUtils');
 const { generateSessionName, ensureUniqueSessionName } = require('../backend/sessionNaming');
-const { sessionStatusToStage } = require('../backend/stagesConfig');
+const { sessionStatusToStage, isCodexMidWorkApprovalPrompt } = require('../backend/stagesConfig');
 const SessionManager = require('../backend/sessionManager');
 
 test('hasSubmittedInput: typing without Enter is not submitted input', () => {
@@ -101,6 +101,16 @@ test('detectStatus: codex footer prompt is treated as idle', () => {
   assert.equal(status, 'idle');
 });
 
+test('detectStatus: codex input prompt line is treated as idle', () => {
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    '› Summarize recent commits',
+    'thinking',
+    'codex'
+  );
+  assert.equal(status, 'idle');
+});
+
 test('detectStatus: codex approval prompt is treated as waiting', () => {
   const status = SessionManager.prototype.detectStatus.call(
     {},
@@ -109,6 +119,14 @@ test('detectStatus: codex approval prompt is treated as waiting', () => {
     'codex'
   );
   assert.equal(status, 'waiting');
+});
+
+test('isCodexMidWorkApprovalPrompt: only matches mid-run approvals', () => {
+  assert.equal(isCodexMidWorkApprovalPrompt('Would you like to run this command?'), true);
+  assert.equal(
+    isCodexMidWorkApprovalPrompt('Implement this plan?\n1. Yes, implement this plan'),
+    false
+  );
 });
 
 test('canTransitionToIdle: codex false, non-codex true', () => {

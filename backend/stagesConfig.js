@@ -229,6 +229,20 @@ function sessionStatusToStage(sessionStatus) {
   }
 }
 
+/**
+ * Whether a Codex waiting prompt is a mid-run approval that should not move
+ * the kanban card into review yet.
+ * @param {string} terminalOutput - Recent terminal output
+ * @returns {boolean}
+ */
+function isCodexMidWorkApprovalPrompt(terminalOutput) {
+  if (typeof terminalOutput !== 'string' || terminalOutput.trim().length === 0) {
+    return false;
+  }
+
+  return /Would you like to run/i.test(terminalOutput);
+}
+
 module.exports = {
   POOL_TYPES,
   DEFAULT_STAGES,
@@ -240,5 +254,6 @@ module.exports = {
   getPreviousStage,
   isHumanStage,
   hasAgentPool,
-  sessionStatusToStage
+  sessionStatusToStage,
+  isCodexMidWorkApprovalPrompt
 };
