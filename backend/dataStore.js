@@ -53,6 +53,10 @@ class DataStore {
         id: session.id,
         name: session.name,
         workingDir: session.workingDir,
+        repoRoot: session.repoRoot || null,
+        repoName: session.repoName || null,
+        gitBranch: session.gitBranch || null,
+        groupKey: session.groupKey || session.workingDir,
         cliType: session.cliType || 'claude',
         createdAt: session.createdAt instanceof Date
           ? session.createdAt.toISOString()
@@ -138,6 +142,7 @@ class DataStore {
 
       // Update allowed metadata fields
       const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'status', 'lastActivity',
+        'repoRoot', 'repoName', 'gitBranch', 'groupKey',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt', 'placementLocked',
         'rejectionHistory', 'completedAt', 'updatedAt', 'comments', 'messageQueue',
         'isOrchestrator', 'parentSessionId', 'teamInstanceId'];

@@ -3,7 +3,7 @@ import KanbanColumn from './KanbanColumn';
 import KanbanSessionColumn from './KanbanSessionColumn';
 import TaskModal from './TaskModal';
 import TaskViewModal from './TaskViewModal';
-import { getProjectDisplayName } from '../utils/projectUtils';
+import { getProjectDisplayName, getSessionGroupKey } from '../utils/projectUtils';
 
 function KanbanBoard({
   sessions,
@@ -168,17 +168,21 @@ function KanbanBoard({
   }, [activeTasks]);
 
   const projects = useMemo(() => {
-    // Normalize path separators to avoid duplicates (C:\ vs C:/)
-    const projectSet = new Set((sessions || []).map(s => s.workingDir?.replace(/\//g, '\\') || '').filter(Boolean));
-    return Array.from(projectSet).sort();
-  }, [sessions]);
+    const projectMap = new Map();
+    for (const session of sessions || []) {
+      const groupKey = getSessionGroupKey(session);
+      if (!groupKey || projectMap.has(groupKey)) continue;
+      projectMap.set(groupKey, getProjectDisplayName(session, settings?.projectAliases));
+    }
+    return Array.from(projectMap.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [sessions, settings?.projectAliases]);
 
   const filteredSessionsByStage = useMemo(() => {
     if (selectedProjects.size === 0) return sessionsByStage;
     const filtered = {};
     for (const stage of stages || []) {
       filtered[stage.id] = (sessionsByStage[stage.id] || [])
-        .filter(s => selectedProjects.has(s.workingDir?.replace(/\//g, '\\')));
+        .filter(s => selectedProjects.has(getSessionGroupKey(s)));
     }
     return filtered;
   }, [sessionsByStage, selectedProjects, stages]);
@@ -336,12 +340,12 @@ function KanbanBoard({
               className={`project-chip project-chip-all ${selectedProjects.size === 0 ? 'selected' : ''}`}
               onClick={clearProjectFilter}
             >All</button>
-            {projects.map(project => (
+            {projects.map(([projectKey, projectName]) => (
               <button
-                key={project}
-                className={`project-chip ${selectedProjects.has(project) ? 'selected' : ''}`}
-                onClick={() => toggleProject(project)}
-              >{getProjectDisplayName(project, settings?.projectAliases)}</button>
+                key={projectKey}
+                className={`project-chip ${selectedProjects.has(projectKey) ? 'selected' : ''}`}
+                onClick={() => toggleProject(projectKey)}
+              >{projectName}</button>
             ))}
           </div>
         )}

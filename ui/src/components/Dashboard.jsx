@@ -2,7 +2,7 @@ import { useMemo, useEffect, useLayoutEffect, useRef, useState, useCallback } fr
 import SessionCard from './SessionCard';
 import HintBadge from './HintBadge';
 import SavedPlansModal from './SavedPlansModal';
-import { getDirectoryName, getProjectDisplayName } from '../utils/projectUtils';
+import { getDirectoryName, getProjectDisplayName, getSessionGroupKey } from '../utils/projectUtils';
 
 
 /**
@@ -111,19 +111,19 @@ function Dashboard({
 
   const projectAliases = settings?.projectAliases || {};
 
-  const handleAliasDoubleClick = useCallback((e, workingDir, currentDisplayName) => {
+  const handleAliasDoubleClick = useCallback((e, aliasKey) => {
     e.stopPropagation();
-    setEditingAlias(workingDir);
-    setAliasInput(projectAliases[workingDir] || '');
+    setEditingAlias(aliasKey);
+    setAliasInput(projectAliases[aliasKey] || '');
   }, [projectAliases]);
 
-  const handleAliasSave = useCallback(async (workingDir) => {
+  const handleAliasSave = useCallback(async (aliasKey) => {
     const trimmed = aliasInput.trim();
     const newAliases = { ...projectAliases };
     if (trimmed) {
-      newAliases[workingDir] = trimmed;
+      newAliases[aliasKey] = trimmed;
     } else {
-      delete newAliases[workingDir];
+      delete newAliases[aliasKey];
     }
     if (onUpdateSettings) {
       await onUpdateSettings({ projectAliases: newAliases });
@@ -131,10 +131,10 @@ function Dashboard({
     setEditingAlias(null);
   }, [aliasInput, projectAliases, onUpdateSettings]);
 
-  const handleAliasKeyDown = useCallback((e, workingDir) => {
+  const handleAliasKeyDown = useCallback((e, aliasKey) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      handleAliasSave(workingDir);
+      handleAliasSave(aliasKey);
     } else if (e.key === 'Escape') {
       setEditingAlias(null);
     }
@@ -148,11 +148,11 @@ function Dashboard({
   }, [editingAlias]);
 
   // Toggle a project in the multi-select filter
-  const toggleProjectFilter = useCallback((path) => {
+  const toggleProjectFilter = useCallback((groupKey) => {
     setProjectFilters(prev => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
       onProjectFilterChange?.(next);
       return next;
     });
@@ -162,14 +162,18 @@ function Dashboard({
   const uniqueProjects = useMemo(() => {
     const map = new Map();
     sessions.forEach(s => {
-      if (!s.workingDir) return;
-      // Normalize path separators to avoid duplicates (C:\ vs C:/)
-      const normalized = s.workingDir.replace(/\//g, '\\');
-      if (!map.has(normalized)) {
-        map.set(normalized, getProjectDisplayName(normalized, settings?.projectAliases));
+      const groupKey = getSessionGroupKey(s);
+      if (!groupKey) return;
+      if (!map.has(groupKey)) {
+        map.set(groupKey, {
+          name: getProjectDisplayName(s, settings?.projectAliases),
+          session: s
+        });
       }
     });
-    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    return [...map.entries()]
+      .map(([groupKey, value]) => [groupKey, value.name, value.session])
+      .sort((a, b) => a[1].localeCompare(b[1]));
   }, [sessions, settings?.projectAliases]);
 
   // Close project dropdown on outside click or Escape
@@ -225,11 +229,11 @@ function Dashboard({
     // External kanban filters (from kanban view navigation)
     if (kanbanColumnFilter) result = result.filter(s => s.stage === kanbanColumnFilter);
     if (kanbanProjectFilter && kanbanProjectFilter.size > 0) {
-      result = result.filter(s => kanbanProjectFilter.has(s.workingDir?.replace(/\//g, '\\')));
+      result = result.filter(s => kanbanProjectFilter.has(getSessionGroupKey(s)));
     }
     // Local sidebar filters
     if (stageFilter) result = result.filter(s => s.stage === stageFilter);
-    if (projectFilters.size > 0) result = result.filter(s => projectFilters.has(s.workingDir?.replace(/\//g, '\\')));
+    if (projectFilters.size > 0) result = result.filter(s => projectFilters.has(getSessionGroupKey(s)));
     if (hidePaused) result = result.filter(s => s.status !== 'paused');
     return result;
   }, [sessions, kanbanColumnFilter, kanbanProjectFilter, stageFilter, projectFilters, hidePaused]);
@@ -255,23 +259,23 @@ function Dashboard({
   // Set of top-level session IDs (for render filter — includes orphaned children whose parent was deleted)
   const topLevelSessionIds = useMemo(() => new Set(topLevelSessions.map(s => s.id)), [topLevelSessions]);
 
-  // Total sessions per directory (unfiltered) for showing "filtered/total" counts
-  const totalsByDir = useMemo(() => {
+  // Total sessions per group (unfiltered) for showing "filtered/total" counts
+  const totalsByGroup = useMemo(() => {
     const totals = new Map();
     sessions.forEach(session => {
-      const dirName = getDirectoryName(session.workingDir);
-      totals.set(dirName, (totals.get(dirName) || 0) + 1);
+      const groupKey = getSessionGroupKey(session);
+      totals.set(groupKey, (totals.get(groupKey) || 0) + 1);
     });
     return totals;
   }, [sessions]);
 
-  // Count in-progress sessions per directory (unfiltered)
-  const inProgressByDir = useMemo(() => {
+  // Count in-progress sessions per group (unfiltered)
+  const inProgressByGroup = useMemo(() => {
     const counts = new Map();
     sessions.forEach(s => {
       if (s.stage === 'in_progress') {
-        const dirName = getDirectoryName(s.workingDir);
-        counts.set(dirName, (counts.get(dirName) || 0) + 1);
+        const groupKey = getSessionGroupKey(s);
+        counts.set(groupKey, (counts.get(groupKey) || 0) + 1);
       }
     });
     return counts;
@@ -287,21 +291,21 @@ function Dashboard({
     return { inProgress, inReview };
   }, [sessions]);
 
-  // Group sessions by their working directory with directory-based hint codes
+  // Group sessions by repo root when available, otherwise working directory.
   const groupedSessions = useMemo(() => {
     const groups = new Map();
 
     topLevelSessions.forEach((session, index) => {
-      const dirName = getDirectoryName(session.workingDir);
-      if (!groups.has(dirName)) {
-        groups.set(dirName, []);
+      const groupKey = getSessionGroupKey(session);
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, { labelSession: session, sessions: [] });
       }
-      groups.get(dirName).push({ session, globalIndex: index });
+      groups.get(groupKey).sessions.push({ session, globalIndex: index });
       // Include child sessions immediately after their parent for keyboard nav
       const children = childSessionsMap.get(session.id);
       if (children) {
         children.forEach((child) => {
-          groups.get(dirName).push({ session: child, globalIndex: index + 0.5 });
+          groups.get(groupKey).sessions.push({ session: child, globalIndex: index + 0.5 });
         });
       }
     });
@@ -309,8 +313,8 @@ function Dashboard({
     // Within each group, sort sessions.
     // When kanban filter is active, sort by stageEnteredAt (most recent first).
     // Otherwise, show Claude sessions first, Codex last, then by insertion order.
-    for (const [, sessionsInGroup] of groups) {
-      sessionsInGroup.sort((a, b) => {
+    for (const [, group] of groups) {
+      group.sessions.sort((a, b) => {
         if (kanbanColumnFilter) {
           // Most recently entered stage first
           const aTime = a.session.stageEnteredAt ? new Date(a.session.stageEnteredAt).getTime() : 0;
@@ -327,22 +331,25 @@ function Dashboard({
     }
 
     // Sort groups alphabetically (first gets priority for letter)
-    const sortedGroups = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
+      const aName = getProjectDisplayName(a[1].labelSession, projectAliases);
+      const bName = getProjectDisplayName(b[1].labelSession, projectAliases);
+      return aName.localeCompare(bName);
+    });
 
     // Assign unique hint letters to each group (use display name for hint derivation)
     const usedLetters = new Set();
-    const groupsWithHints = sortedGroups.map(([dirName, sessionsInGroup]) => {
-      const displayName = getProjectDisplayName(sessionsInGroup[0]?.session?.workingDir, projectAliases) || dirName;
+    return sortedGroups.map(([groupKey, group]) => {
+      const sessionsInGroup = group.sessions;
+      const labelSession = group.labelSession;
+      const displayName = getProjectDisplayName(labelSession, projectAliases) || getDirectoryName(labelSession?.workingDir);
       const hintLetter = getHintLetter(displayName, usedLetters);
-      // Assign hint codes to sessions within group
       const sessionsWithHints = sessionsInGroup.map((item, indexInGroup) => ({
         ...item,
         hintCode: `${hintLetter}${indexInGroup + 1}`
       }));
-      return [dirName, sessionsWithHints, hintLetter];
+      return [groupKey, sessionsWithHints, hintLetter, { displayName, labelSession }];
     });
-
-    return groupsWithHints;
   }, [filteredSessions, childSessionsMap, kanbanColumnFilter, projectAliases]);
 
   useLayoutEffect(() => {
@@ -483,11 +490,11 @@ function Dashboard({
   // Keep collapse state in sync with active groups
   useEffect(() => {
     setCollapsedGroups((prev) => {
-      const activeGroupNames = new Set(groupedSessions.map(([dirName]) => dirName));
+      const activeGroupNames = new Set(groupedSessions.map(([groupKey]) => groupKey));
       const next = new Set();
-      for (const dirName of prev) {
-        if (activeGroupNames.has(dirName)) {
-          next.add(dirName);
+      for (const groupKey of prev) {
+        if (activeGroupNames.has(groupKey)) {
+          next.add(groupKey);
         }
       }
       return next.size === prev.size ? prev : next;
@@ -501,22 +508,22 @@ function Dashboard({
       sessionsInGroup.some(({ session }) => session.id === selectedId)
     );
     if (!selectedGroup) return;
-    const [dirName] = selectedGroup;
+    const [groupKey] = selectedGroup;
     setCollapsedGroups((prev) => {
-      if (!prev.has(dirName)) return prev;
+      if (!prev.has(groupKey)) return prev;
       const next = new Set(prev);
-      next.delete(dirName);
+      next.delete(groupKey);
       return next;
     });
   }, [groupedSessions, selectedId]);
 
-  const toggleGroupCollapsed = (dirName) => {
+  const toggleGroupCollapsed = (groupKey) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
-      if (next.has(dirName)) {
-        next.delete(dirName);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
       } else {
-        next.add(dirName);
+        next.add(groupKey);
       }
       return next;
     });
@@ -567,7 +574,7 @@ function Dashboard({
       {kanbanProjectFilter && kanbanProjectFilter.size > 0 && (
         <div className="kanban-filter-chip">
           <span>Project: {kanbanProjectFilter.size === 1
-            ? getProjectDisplayName([...kanbanProjectFilter][0], settings?.projectAliases)
+            ? uniqueProjects.find(([groupKey]) => groupKey === [...kanbanProjectFilter][0])?.[1] || 'Unknown'
             : `${kanbanProjectFilter.size} projects`}</span>
           <button onClick={onClearKanbanProjectFilter} title="Clear project filter">&times;</button>
         </div>
@@ -598,12 +605,12 @@ function Dashboard({
                 <input type="checkbox" checked={projectFilters.size === 0} readOnly />
                 All Projects
               </label>
-              {uniqueProjects.map(([path, name]) => (
-                <label key={path} className="project-filter-item">
+              {uniqueProjects.map(([groupKey, name]) => (
+                <label key={groupKey} className="project-filter-item">
                   <input
                     type="checkbox"
-                    checked={projectFilters.has(path)}
-                    onChange={() => toggleProjectFilter(path)}
+                    checked={projectFilters.has(groupKey)}
+                    onChange={() => toggleProjectFilter(groupKey)}
                   />
                   {name}
                 </label>
@@ -711,20 +718,35 @@ function Dashboard({
             <p>{kanbanColumnFilter ? 'Will auto-show when a session enters this stage' : 'Create one to get started'}</p>
           </div>
         ) : (
-          groupedSessions.map(([dirName, sessionsInGroup, hintLetter]) => {
-            const groupWorkingDir = sessionsInGroup[0]?.session?.workingDir;
-            const displayName = getProjectDisplayName(groupWorkingDir, projectAliases);
-            const isEditingThis = editingAlias === groupWorkingDir;
+          groupedSessions.map(([groupKey, sessionsInGroup, hintLetter, groupMeta]) => {
+            const groupSession = groupMeta?.labelSession || sessionsInGroup[0]?.session;
+            const groupWorkingDir = groupSession?.workingDir;
+            const displayName = groupMeta?.displayName || getProjectDisplayName(groupSession, projectAliases);
+            const aliasKey = groupSession?.repoRoot || groupKey;
+            const isEditingThis = editingAlias === aliasKey;
+            const branchCounts = new Map();
+            sessionsInGroup.forEach(({ session }) => {
+              const branchKey = `${session.repoRoot || ''}::${session.gitBranch || ''}`;
+              branchCounts.set(branchKey, (branchCounts.get(branchKey) || 0) + 1);
+            });
+            const getBranchLabel = (session) => {
+              if (!session?.repoRoot || !session?.gitBranch) return '';
+              const branchKey = `${session.repoRoot}::${session.gitBranch}`;
+              if ((branchCounts.get(branchKey) || 0) <= 1) {
+                return session.gitBranch;
+              }
+              return `${session.gitBranch} (${getDirectoryName(session.workingDir)})`;
+            };
             return (
-            <div key={dirName} className="session-group">
+            <div key={groupKey} className="session-group">
               <button
                 type="button"
                 className="session-group-header"
-                onClick={() => toggleGroupCollapsed(dirName)}
-                aria-expanded={!collapsedGroups.has(dirName)}
-                aria-label={`${collapsedGroups.has(dirName) ? 'Expand' : 'Collapse'} ${displayName} (${sessionsInGroup.length} sessions)`}
+                onClick={() => toggleGroupCollapsed(groupKey)}
+                aria-expanded={!collapsedGroups.has(groupKey)}
+                aria-label={`${collapsedGroups.has(groupKey) ? 'Expand' : 'Collapse'} ${displayName} (${sessionsInGroup.length} sessions)`}
               >
-                <span className={`session-group-chevron ${collapsedGroups.has(dirName) ? 'collapsed' : ''}`}>▾</span>
+                <span className={`session-group-chevron ${collapsedGroups.has(groupKey) ? 'collapsed' : ''}`}>▾</span>
                 <span className="session-group-icon">📁</span>
                 {isEditingThis ? (
                   <input
@@ -732,29 +754,29 @@ function Dashboard({
                     className="session-group-alias-input"
                     value={aliasInput}
                     onChange={e => setAliasInput(e.target.value)}
-                    onBlur={() => handleAliasSave(groupWorkingDir)}
-                    onKeyDown={e => handleAliasKeyDown(e, groupWorkingDir)}
+                    onBlur={() => handleAliasSave(aliasKey)}
+                    onKeyDown={e => handleAliasKeyDown(e, aliasKey)}
                     onClick={e => e.stopPropagation()}
-                    placeholder={dirName}
+                    placeholder={displayName}
                   />
                 ) : (
                   <span
                     className="session-group-name"
-                    title={groupWorkingDir}
-                    onDoubleClick={e => handleAliasDoubleClick(e, groupWorkingDir, displayName)}
+                    title={groupSession?.repoRoot || groupWorkingDir}
+                    onDoubleClick={e => handleAliasDoubleClick(e, aliasKey)}
                   >
                     {displayName}
                   </span>
                 )}
                 <span className="session-group-count">
                   {kanbanColumnFilter
-                    ? `${sessionsInGroup.length}/${totalsByDir.get(dirName) || 0}`
+                    ? `${sessionsInGroup.length}/${totalsByGroup.get(groupKey) || 0}`
                     : sessionsInGroup.length}
                 </span>
-                {(inProgressByDir.get(dirName) || 0) > 0 && (
+                {(inProgressByGroup.get(groupKey) || 0) > 0 && (
                   <span className="session-group-stage-count in-progress" title="In Progress">
                     <span className="stage-dot"></span>
-                    {inProgressByDir.get(dirName)}
+                    {inProgressByGroup.get(groupKey)}
                   </span>
                 )}
                 {hintModeActive && (
@@ -768,7 +790,7 @@ function Dashboard({
                       e.stopPropagation();
                       const workingDir = sessionsInGroup[0]?.session?.workingDir;
                       if (workingDir) {
-                        setSavedPlansTarget({ dirName, workingDir });
+                        setSavedPlansTarget({ dirName: displayName, workingDir });
                       }
                     }}
                   >
@@ -815,7 +837,7 @@ function Dashboard({
                       onClick={(e) => {
                         e.stopPropagation();
                         setKillGroupTarget({
-                          dirName,
+                          dirName: displayName,
                           sessionIds: sessionsInGroup.map(s => s.session.id)
                         });
                       }}
@@ -825,7 +847,7 @@ function Dashboard({
                   )}
                 </span>
               </button>
-              {!collapsedGroups.has(dirName) && sessionsInGroup.filter(({ session }) => topLevelSessionIds.has(session.id)).map(({ session, globalIndex, hintCode }) => {
+              {!collapsedGroups.has(groupKey) && sessionsInGroup.filter(({ session }) => topLevelSessionIds.has(session.id)).map(({ session, globalIndex, hintCode }) => {
                 const recentlyEntered = kanbanColumnFilter && session.stageEnteredAt &&
                   (Date.now() - new Date(session.stageEnteredAt).getTime()) < 10 * 60 * 1000;
                 const children = childSessionsMap.get(session.id) || [];
@@ -855,6 +877,7 @@ function Dashboard({
                         groupInfo={sessionIdToGroup?.get(session.id) || null}
                         isGroupFocused={activeGroupId && selectedIds.includes(session.id) && session.id === selectedId}
                         childCount={children.length}
+                        branchLabel={getBranchLabel(session)}
                         onViewOrchestratorGroup={onViewOrchestratorGroup}
                       />
                     </div>
@@ -886,6 +909,7 @@ function Dashboard({
                               groupInfo={null}
                               isGroupFocused={false}
                               isChildSession={true}
+                              branchLabel={getBranchLabel(child)}
                             />
                           </div>
                         ))}

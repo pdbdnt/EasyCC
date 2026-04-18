@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const pty = require('../backend/node_modules/node-pty');
 
 const {
@@ -11,6 +14,12 @@ const {
 const { generateSessionName, ensureUniqueSessionName } = require('../backend/sessionNaming');
 const { sessionStatusToStage, isCodexMidWorkApprovalPrompt } = require('../backend/stagesConfig');
 const SessionManager = require('../backend/sessionManager');
+
+function git(args, cwd) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
+}
 
 test('hasSubmittedInput: typing without Enter is not submitted input', () => {
   assert.equal(hasSubmittedInput('hello world'), false);
@@ -219,6 +228,118 @@ test('buildCodexBootstrapScript: prefers native WSL npm-global Codex before PATH
 
   const syntaxCheck = spawnSync('/bin/bash', ['-n', '-c', script], { encoding: 'utf8' });
   assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
+});
+
+test('deriveRepoContext: git worktree uses repo root as group key', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'easycc-git-'));
+  const repoDir = path.join(tempRoot, 'repo');
+  fs.mkdirSync(repoDir, { recursive: true });
+
+  try {
+    git(['init', '-b', 'main'], repoDir);
+    git(['config', 'user.name', 'EasyCC Test'], repoDir);
+    git(['config', 'user.email', 'easycc@example.com'], repoDir);
+    fs.writeFileSync(path.join(repoDir, 'README.md'), 'hello\n', 'utf8');
+    git(['add', 'README.md'], repoDir);
+    git(['commit', '-m', 'init'], repoDir);
+
+    const nestedDir = path.join(repoDir, 'packages', 'ui');
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    const context = SessionManager.prototype.deriveRepoContext.call(
+      { normalizeGroupPath: SessionManager.prototype.normalizeGroupPath },
+      nestedDir
+    );
+
+    assert.equal(context.repoRoot, repoDir.replace(/\\/g, '/'));
+    assert.equal(context.repoName, 'repo');
+    assert.equal(context.gitBranch, 'main');
+    assert.equal(context.groupKey, repoDir.replace(/\\/g, '/'));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('deriveRepoContext: non-git folder falls back to workingDir group key', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'easycc-nongit-'));
+
+  try {
+    const workingDir = path.join(tempRoot, 'plain-folder');
+    fs.mkdirSync(workingDir, { recursive: true });
+
+    const context = SessionManager.prototype.deriveRepoContext.call(
+      { normalizeGroupPath: SessionManager.prototype.normalizeGroupPath },
+      workingDir
+    );
+
+    assert.equal(context.repoRoot, null);
+    assert.equal(context.repoName, null);
+    assert.equal(context.gitBranch, null);
+    assert.equal(context.groupKey, workingDir.replace(/\\/g, '/'));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('deriveRepoContext: failed git lookup clears stale repo metadata', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'easycc-stale-'));
+
+  try {
+    const workingDir = path.join(tempRoot, 'plain-folder');
+    fs.mkdirSync(workingDir, { recursive: true });
+
+    const context = SessionManager.prototype.deriveRepoContext.call(
+      { normalizeGroupPath: SessionManager.prototype.normalizeGroupPath },
+      workingDir,
+      {
+        repoRoot: '/tmp/old-repo',
+        repoName: 'old-repo',
+        gitBranch: 'feature/old',
+        groupKey: '/tmp/old-repo'
+      }
+    );
+
+    assert.equal(context.repoRoot, null);
+    assert.equal(context.repoName, null);
+    assert.equal(context.gitBranch, null);
+    assert.equal(context.groupKey, workingDir.replace(/\\/g, '/'));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('getSessionSnapshot: includes repo metadata fields', () => {
+  const snapshot = SessionManager.prototype.getSessionSnapshot.call(
+    { normalizeGroupPath: SessionManager.prototype.normalizeGroupPath },
+    {
+      id: 'session-1',
+      name: 'Repo Session',
+      status: 'active',
+      currentTask: '',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastActivity: '2026-01-01T00:01:00.000Z',
+      workingDir: '/tmp/repo/worktree',
+      repoRoot: '/tmp/repo',
+      repoName: 'repo',
+      gitBranch: 'feature/test',
+      groupKey: '/tmp/repo',
+      cliType: 'codex',
+      previousClaudeSessionIds: [],
+      tags: [],
+      plans: [],
+      promptHistory: [],
+      blockedBy: [],
+      blocks: [],
+      rejectionHistory: [],
+      comments: [],
+      messageQueue: []
+    }
+  );
+
+  assert.equal(snapshot.repoRoot, '/tmp/repo');
+  assert.equal(snapshot.repoName, 'repo');
+  assert.equal(snapshot.gitBranch, 'feature/test');
+  assert.equal(snapshot.groupKey, '/tmp/repo');
 });
 
 test('spawnCodexProcess: on Windows launches WSL bash bootstrap', () => {

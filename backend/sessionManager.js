@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 const DataStore = require('./dataStore');
 const PlanManager = require('./planManager');
 const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStatusToStage } = require('./stagesConfig');
@@ -147,6 +148,7 @@ class SessionManager extends EventEmitter {
 
       if (canResume) {
         const outputBufferSize = this.getOutputBufferSize(cliType);
+        const repoContext = this.deriveRepoContext(normalizedWorkingDir, sessionData);
         const session = {
           id: sessionData.id,
           name: sessionData.name,
@@ -158,6 +160,10 @@ class SessionManager extends EventEmitter {
           outputBuffer: new RingBuffer(outputBufferSize),
           pty: null,
           workingDir: normalizedWorkingDir,
+          repoRoot: repoContext.repoRoot,
+          repoName: repoContext.repoName,
+          gitBranch: repoContext.gitBranch,
+          groupKey: repoContext.groupKey,
           cliType: cliType,
           claudeSessionId: sessionData.claudeSessionId,
           previousClaudeSessionIds: sessionData.previousClaudeSessionIds || [],
@@ -472,6 +478,74 @@ class SessionManager extends EventEmitter {
       return this.convertToWslPath(trimmed);
     }
     return trimmed;
+  }
+
+  normalizeGroupPath(value) {
+    if (!value || typeof value !== 'string') return '';
+    return value.trim().replace(/\\/g, '/').replace(/\/$/, '');
+  }
+
+  deriveRepoContext(workingDir, fallback = null) {
+    const normalizedWorkingDir = this.normalizeGroupPath(workingDir);
+    const fallbackWorkingDir = this.normalizeGroupPath(fallback?.workingDir);
+    const nonGitGroupKey = normalizedWorkingDir || fallbackWorkingDir || '';
+
+    if (!workingDir || typeof workingDir !== 'string') {
+      return {
+        repoRoot: fallback?.repoRoot || null,
+        repoName: fallback?.repoName || null,
+        gitBranch: fallback?.gitBranch || null,
+        groupKey: fallback?.groupKey || nonGitGroupKey
+      };
+    }
+
+    try {
+      const repoRoot = this.normalizeGroupPath(execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd: workingDir,
+        timeout: 5000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim());
+
+      if (!repoRoot) {
+        throw new Error('Missing repo root');
+      }
+
+      let gitBranch = execFileSync('git', ['branch', '--show-current'], {
+        cwd: workingDir,
+        timeout: 5000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim();
+
+      if (!gitBranch) {
+        gitBranch = 'detached';
+      }
+
+      return {
+        repoRoot,
+        repoName: path.basename(repoRoot) || repoRoot,
+        gitBranch,
+        groupKey: repoRoot
+      };
+    } catch {
+      return {
+        repoRoot: null,
+        repoName: null,
+        gitBranch: null,
+        groupKey: nonGitGroupKey
+      };
+    }
+  }
+
+  applyRepoContext(session, fallback = null) {
+    if (!session) return session;
+    const repoContext = this.deriveRepoContext(session.workingDir, fallback);
+    session.repoRoot = repoContext.repoRoot;
+    session.repoName = repoContext.repoName;
+    session.gitBranch = repoContext.gitBranch;
+    session.groupKey = repoContext.groupKey || this.normalizeGroupPath(session.workingDir);
+    return session;
   }
 
   sanitizeRole(role) {
@@ -934,6 +1008,7 @@ class SessionManager extends EventEmitter {
     const now = new Date();
     const sanitizedRole = this.sanitizeRole(role);
     const normalizedWorkingDir = this.normalizeWorkingDirForCli(workingDir, cliType);
+    const repoContext = this.deriveRepoContext(normalizedWorkingDir);
 
     let ptyProcess;
 
@@ -975,6 +1050,10 @@ class SessionManager extends EventEmitter {
       outputBuffer: new RingBuffer(this.getOutputBufferSize(cliType)),
       pty: ptyProcess,
       workingDir: normalizedWorkingDir,
+      repoRoot: repoContext.repoRoot,
+      repoName: repoContext.repoName,
+      gitBranch: repoContext.gitBranch,
+      groupKey: repoContext.groupKey,
       cliType,  // 'claude' or 'codex'
       claudeSessionId: cliType === 'claude' ? claudeSessionId : null, // Only for Claude sessions
       previousClaudeSessionIds: [],
@@ -1362,6 +1441,8 @@ class SessionManager extends EventEmitter {
       return false;
     }
 
+    this.applyRepoContext(session);
+
     const cliType = session.cliType || 'claude';
     let ptyProcess;
     let claudeFallbackAttempted = false;
@@ -1667,6 +1748,7 @@ class SessionManager extends EventEmitter {
     if (meta.taskId !== undefined) session.taskId = meta.taskId || null;
     if (meta.cliType !== undefined && ['claude', 'codex', 'terminal', 'wsl'].includes(meta.cliType)) {
       session.cliType = meta.cliType;
+      this.applyRepoContext(session);
     }
     if (meta.priority !== undefined) session.priority = meta.priority;
     if (meta.description !== undefined) session.description = meta.description;
@@ -2613,6 +2695,10 @@ class SessionManager extends EventEmitter {
         ? session.lastActivity.toISOString()
         : session.lastActivity,
       workingDir: session.workingDir,
+      repoRoot: session.repoRoot || null,
+      repoName: session.repoName || null,
+      gitBranch: session.gitBranch || null,
+      groupKey: session.groupKey || this.normalizeGroupPath(session.workingDir),
       cliType: session.cliType || 'claude',
       claudeSessionId: session.claudeSessionId || null,
       previousClaudeSessionIds: session.previousClaudeSessionIds || [],

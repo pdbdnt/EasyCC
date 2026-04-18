@@ -35,6 +35,7 @@ function SessionCard({
   isGroupFocused = false,
   childCount = 0,
   isChildSession = false,
+  branchLabel = '',
   onViewOrchestratorGroup
 }) {
   const [isEditing, setIsEditing] = useState(false);
@@ -160,6 +161,11 @@ function SessionCard({
               )}
               {session.cliType === 'wsl' && (
                 <span className="cli-type-badge wsl">WSL</span>
+              )}
+              {branchLabel && (
+                <span className="group-badge" title={`Branch: ${branchLabel}`}>
+                  {branchLabel}
+                </span>
               )}
               {groupInfo && (
                 <span className="group-badge" title={`Group: ${groupInfo.name}`}>
