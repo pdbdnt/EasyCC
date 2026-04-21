@@ -29,7 +29,7 @@ const agentStore = new AgentStore();
 const taskStore = new TaskStore();
 const presetStore = new PresetStore();
 const teamStore = new TeamStore();
-const { sessionStatusToStage, isCodexMidWorkApprovalPrompt } = require('./stagesConfig');
+const { decideKanbanAutoSync } = require('./stagesConfig');
 
 const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || os.homedir();
 
@@ -3930,60 +3930,24 @@ async function start() {
   // Hook-sourced events use a shorter debounce since they're authoritative signals.
   sessionManager.on('statusChange', ({ sessionId, status, source }) => {
     const existing = kanbanSyncTimers.get(sessionId);
-
-    // Codex mid-work approvals: don't auto-move to in_review.
-    // Final prompts like "Implement this plan?" should still land in review.
     const session = sessionManager.getSession(sessionId);
-    if (session?.cliType === 'codex' && status === 'waiting') {
-      const recentOutput = (sessionManager.getSessionOutput(sessionId) || []).join('\n');
-      if (isCodexMidWorkApprovalPrompt(recentOutput)) {
-        if (existing) clearTimeout(existing.timer);
-        kanbanSyncTimers.delete(sessionId);
-        return;
-      }
-    }
+    const recentOutput = session
+      ? (sessionManager.getSessionOutput(sessionId) || []).join('\n')
+      : '';
+    const decision = decideKanbanAutoSync({
+      session,
+      status,
+      existingTargetStage: existing?.targetStage || null,
+      recentOutput
+    });
 
-    if (!session) {
+    if (decision.action === 'clear') {
       if (existing) clearTimeout(existing.timer);
       kanbanSyncTimers.delete(sessionId);
       return;
     }
 
-    // Don't auto-move sessions out of 'todo' until user has submitted input
-    if (session?.stage === 'todo' && !session?.lastSubmittedInputAtMs) {
-      if (existing) clearTimeout(existing.timer);
-      kanbanSyncTimers.delete(sessionId);
-      return;
-    }
-
-    const targetStage = sessionStatusToStage(status);
-    if (!targetStage) {
-      if (existing) clearTimeout(existing.timer);
-      kanbanSyncTimers.delete(sessionId);
-      return;
-    }
-
-    // Don't auto-move on 'active' when already in_progress (prevents jitter from redraws).
-    // But DO allow 'active' to move back to in_progress from other stages (e.g. in_review).
-    if (status === 'active' && targetStage === 'in_progress') {
-      const sess = sessionManager.getSession(sessionId);
-      if (sess?.stage === 'in_progress') {
-        return;
-      }
-    }
-
-    // KEY FIX: If a timer is already pending for the SAME target stage,
-    // let it fire — don't restart the debounce window. This prevents
-    // continuous streaming output from indefinitely resetting the timer.
-    if (existing && existing.targetStage === targetStage) {
-      return;
-    }
-
-    // Don't let brief thinking flickers cancel a pending in_review timer.
-    // When a session is waiting for user input (plan approval), transient
-    // "thinking" status from cursor animation should not reset the move.
-    // Sustained real work will create a new in_progress timer after in_review fires.
-    if (existing && existing.targetStage === 'in_review' && targetStage === 'in_progress') {
+    if (decision.action === 'keep' || decision.action === 'noop') {
       return;
     }
 
@@ -3996,13 +3960,13 @@ async function start() {
     const timer = setTimeout(() => {
       kanbanSyncTimers.delete(sessionId);
       try {
-        sessionManager.moveSession(sessionId, targetStage, { source: 'auto' });
+        sessionManager.moveSession(sessionId, decision.targetStage, { source: 'auto' });
       } catch (err) {
         console.error(`Auto-sync stage failed for session ${sessionId}:`, err.message);
       }
     }, delay);
 
-    kanbanSyncTimers.set(sessionId, { timer, targetStage });
+    kanbanSyncTimers.set(sessionId, { timer, targetStage: decision.targetStage });
   });
 
   // ============================================

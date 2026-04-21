@@ -12,7 +12,12 @@ const {
   shouldCountOutputAsActivity
 } = require('../backend/sessionInputUtils');
 const { generateSessionName, ensureUniqueSessionName } = require('../backend/sessionNaming');
-const { sessionStatusToStage, isCodexMidWorkApprovalPrompt } = require('../backend/stagesConfig');
+const {
+  DEFAULT_STAGES,
+  sessionStatusToStage,
+  isCodexMidWorkApprovalPrompt,
+  decideKanbanAutoSync
+} = require('../backend/stagesConfig');
 const SessionManager = require('../backend/sessionManager');
 
 function git(args, cwd) {
@@ -120,6 +125,47 @@ test('detectStatus: codex input prompt line is treated as idle', () => {
   assert.equal(status, 'idle');
 });
 
+test('detectStatus: ansi-wrapped codex prompt line is treated as idle', () => {
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    '\x1b[1m\n›\x1b[22m \x1b[2mImplement {feature}\x1b[22m\r\n\x1b[2m\n  gpt-5.4 high · ~/apps/specsket · Context 37% used\x1b[22m',
+    'thinking',
+    'codex'
+  );
+  assert.equal(status, 'idle');
+});
+
+test('detectStatus: single codex prompt marker is treated as idle', () => {
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    '›',
+    'thinking',
+    'codex'
+  );
+  assert.equal(status, 'idle');
+});
+
+test('detectStatus: codex prompt beats hidden title-spinner noise', () => {
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    '\x1b]0;⠙ specsket\x07\x1b[1m\n›\x1b[22m \x1b[2mImplement {feature}\x1b[22m',
+    'thinking',
+    'codex'
+  );
+  assert.equal(status, 'idle');
+});
+
+test('detectStatus: codex menu redraw uses context to stay waiting', () => {
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    '› 1. Yes, implement this plan\n  2. No, keep researching',
+    'thinking',
+    'codex',
+    'Would you like to run this command?\n› 1. Yes, implement this plan\n  2. No, keep researching'
+  );
+  assert.equal(status, 'waiting');
+});
+
 test('detectStatus: codex approval prompt is treated as waiting', () => {
   const status = SessionManager.prototype.detectStatus.call(
     {},
@@ -136,6 +182,97 @@ test('isCodexMidWorkApprovalPrompt: only matches mid-run approvals', () => {
     isCodexMidWorkApprovalPrompt('Implement this plan?\n1. Yes, implement this plan'),
     false
   );
+});
+
+test('decideKanbanAutoSync: keeps pending review for transient thinking redraw', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_review',
+      lastSubmittedInputAtMs: 1
+    },
+    status: 'thinking',
+    existingTargetStage: 'in_review'
+  });
+
+  assert.deepEqual(decision, { action: 'keep', targetStage: 'in_review' });
+});
+
+test('decideKanbanAutoSync: schedules in_progress when real work resumes from review', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_review',
+      lastSubmittedInputAtMs: 1
+    },
+    status: 'active',
+    existingTargetStage: 'in_review'
+  });
+
+  assert.deepEqual(decision, { action: 'schedule', targetStage: 'in_progress' });
+});
+
+test('decideKanbanAutoSync: clears stale pending review when stage is already in progress', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_progress',
+      lastSubmittedInputAtMs: 1
+    },
+    status: 'active',
+    existingTargetStage: 'in_review'
+  });
+
+  assert.deepEqual(decision, { action: 'clear' });
+});
+
+test('decideKanbanAutoSync: mid-work codex approval clears review scheduling', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_progress',
+      lastSubmittedInputAtMs: 1
+    },
+    status: 'waiting',
+    recentOutput: 'Would you like to run this command?'
+  });
+
+  assert.deepEqual(decision, { action: 'clear' });
+});
+
+test('moveSession: auto-sync does not override manually placed sessions', () => {
+  let saved = false;
+  const session = {
+    id: 'session-1',
+    name: 'Manual card',
+    stage: 'in_review',
+    manuallyPlaced: true,
+    placementLocked: false
+  };
+  const manager = {
+    sessions: new Map([[session.id, session]]),
+    stages: DEFAULT_STAGES,
+    dataStore: {
+      saveSession() {
+        saved = true;
+      }
+    },
+    emit() {},
+    getSessionSnapshot(current) {
+      return { ...current };
+    }
+  };
+
+  const snapshot = SessionManager.prototype.moveSession.call(
+    manager,
+    session.id,
+    'in_progress',
+    { source: 'auto' }
+  );
+
+  assert.equal(snapshot.stage, 'in_review');
+  assert.equal(session.stage, 'in_review');
+  assert.equal(saved, false);
 });
 
 test('canTransitionToIdle: codex false, non-codex true', () => {

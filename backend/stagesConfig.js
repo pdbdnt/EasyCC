@@ -230,6 +230,66 @@ function sessionStatusToStage(sessionStatus) {
 }
 
 /**
+ * Decide how kanban auto-sync should react to a status change.
+ * Returns one of:
+ * - clear: cancel any pending timer and do not schedule a move
+ * - keep: keep the existing pending timer
+ * - noop: leave state as-is with no timer changes
+ * - schedule: schedule a move to targetStage
+ * @param {Object} params
+ * @param {Object|null} params.session
+ * @param {string} params.status
+ * @param {string|null} [params.existingTargetStage]
+ * @param {string} [params.recentOutput]
+ * @returns {{ action: string, targetStage?: string }}
+ */
+function decideKanbanAutoSync({
+  session,
+  status,
+  existingTargetStage = null,
+  recentOutput = ''
+}) {
+  if (!session) {
+    return { action: 'clear' };
+  }
+
+  if (session.cliType === 'codex' && status === 'waiting' && isCodexMidWorkApprovalPrompt(recentOutput)) {
+    return { action: 'clear' };
+  }
+
+  if (session.stage === 'todo' && !session.lastSubmittedInputAtMs) {
+    return { action: 'clear' };
+  }
+
+  const targetStage = sessionStatusToStage(status);
+  if (!targetStage) {
+    return { action: 'clear' };
+  }
+
+  if (existingTargetStage === targetStage) {
+    return { action: 'keep', targetStage };
+  }
+
+  if (existingTargetStage === 'in_review' && targetStage === 'in_progress') {
+    if (status === 'thinking') {
+      return { action: 'keep', targetStage: existingTargetStage };
+    }
+
+    if (session.stage === 'in_progress') {
+      return { action: 'clear' };
+    }
+
+    return { action: 'schedule', targetStage };
+  }
+
+  if (targetStage === 'in_progress' && session.stage === 'in_progress') {
+    return { action: 'noop', targetStage };
+  }
+
+  return { action: 'schedule', targetStage };
+}
+
+/**
  * Whether a Codex waiting prompt is a mid-run approval that should not move
  * the kanban card into review yet.
  * @param {string} terminalOutput - Recent terminal output
@@ -255,5 +315,6 @@ module.exports = {
   isHumanStage,
   hasAgentPool,
   sessionStatusToStage,
-  isCodexMidWorkApprovalPrompt
+  isCodexMidWorkApprovalPrompt,
+  decideKanbanAutoSync
 };

@@ -175,6 +175,7 @@ class SessionManager extends EventEmitter {
           tags: sessionData.tags || [],
           plans: sessionData.plans || [],
           promptBuffer: '',
+          statusDetectionContext: '',
           promptHistory: sessionData.promptHistory || [],
           promptFlushTimer: null,
           inEscapeSeq: false,
@@ -722,11 +723,16 @@ class SessionManager extends EventEmitter {
   }
 
   isCodexReadyForInput(data) {
-    return /Ask Codex to do anything/i.test(data) ||
-      /^\s*›(?:\s|$)/m.test(data) ||
-      /\?\s*for shortcuts/i.test(data) ||
-      /Would you like to run/i.test(data) ||
-      /Implement this plan\?/i.test(data);
+    const cleanData = String(data || '')
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\r/g, '\n');
+
+    return /Ask Codex to do anything/i.test(cleanData) ||
+      /^\s*›(?:\s|$)/m.test(cleanData) ||
+      /\?\s*for shortcuts/i.test(cleanData) ||
+      /Would you like to run/i.test(cleanData) ||
+      /Implement this plan\?/i.test(cleanData);
   }
 
   injectCodexRole(session, reason = 'ready') {
@@ -963,6 +969,13 @@ class SessionManager extends EventEmitter {
       .replace(/\r/g, '\n');
   }
 
+  updateStatusDetectionContext(session, data) {
+    const cleanData = this.cleanTerminalText(data);
+    const next = `${session?.statusDetectionContext || ''}${cleanData}`;
+    session.statusDetectionContext = next.length > 4000 ? next.slice(-4000) : next;
+    return session.statusDetectionContext;
+  }
+
   extractSessionRename(data) {
     const cleanData = this.cleanTerminalText(data);
     const patterns = [
@@ -1067,6 +1080,7 @@ class SessionManager extends EventEmitter {
       tags: [],
       plans: [],
       promptBuffer: '',      // Characters accumulated until Enter
+      statusDetectionContext: '',
       promptHistory: [],     // Recent prompts [{text, timestamp}]
       promptFlushTimer: null,
       inEscapeSeq: false,    // Track if we're inside an escape sequence
@@ -1128,7 +1142,8 @@ class SessionManager extends EventEmitter {
 
       // Detect status from output (skip during resize — PTY redraws old content)
       if (!session.resizingUntil || Date.now() > session.resizingUntil) {
-        const newStatus = this.detectStatus(data, session.status, session.cliType);
+        const statusContext = this.updateStatusDetectionContext(session, data);
+        const newStatus = this.detectStatus(data, session.status, session.cliType, statusContext);
         if (newStatus !== session.status) {
           this.updateSessionStatus(session, newStatus);
         }
@@ -1552,7 +1567,8 @@ class SessionManager extends EventEmitter {
 
         // Detect status from output (skip during resize — PTY redraws old content)
         if (!session.resizingUntil || Date.now() > session.resizingUntil) {
-          const newStatus = this.detectStatus(data, session.status, session.cliType);
+          const statusContext = this.updateStatusDetectionContext(session, data);
+          const newStatus = this.detectStatus(data, session.status, session.cliType, statusContext);
           if (newStatus !== session.status && newStatus !== 'paused') {
             this.updateSessionStatus(session, newStatus);
           }
@@ -1690,6 +1706,7 @@ class SessionManager extends EventEmitter {
 
     session.status = 'active';
     session.lastActivity = new Date();
+    session.statusDetectionContext = '';
 
     // Re-setup PTY handlers
     wirePtyHandlers(ptyProcess);
@@ -1816,14 +1833,59 @@ class SessionManager extends EventEmitter {
    * @param {string} cliType - CLI type ('claude', 'codex', 'terminal')
    * @returns {string} Detected status
    */
-  detectStatus(data, currentStatus, cliType = 'claude') {
+  detectStatus(data, currentStatus, cliType = 'claude', contextData = null) {
     // Don't change status if paused
     if (currentStatus === 'paused') {
       return 'paused';
     }
 
     // Strip ANSI escape sequences for pattern matching
-    const stripped = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').trim();
+    const cleanText = (value) => String(value || '')
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\r/g, '\n');
+    const cleanData = cleanText(data);
+    const contextText = typeof contextData === 'string' && contextData.length > 0
+      ? cleanText(contextData)
+      : cleanData;
+    const stripped = cleanData.trim();
+
+    const codexPromptReadyPatterns = [
+      /Ask Codex to do anything/i,
+      /^\s*›(?:\s*$|\s+(?!\d+\.)\S.*$)/m,
+      /\?\s*for shortcuts/i
+    ];
+
+    const waitingPatterns = [
+      /^\s*>\s*$/m,
+      /\?\s*$/,
+      /Enter.*:/i,
+      /Press.*to continue/i,
+      /\[Y\/n\]/i,
+      /\[y\/N\]/i,
+      // Codex CLI patterns
+      /Would you like to run/i,
+      /Implement this plan\?/i,
+      /^\s*›\s*\d+\./m,
+      // Claude multi-choice prompts
+      /^\s*>\s*\d+\./m,
+      /Would you like to proceed/i,
+      /Type .* to (change|tell)/i
+    ];
+
+    if (cliType === 'codex') {
+      for (const pattern of codexPromptReadyPatterns) {
+        if (pattern.test(cleanData)) {
+          return 'idle';
+        }
+      }
+
+      for (const pattern of waitingPatterns) {
+        if (pattern.test(cleanData)) {
+          return 'waiting';
+        }
+      }
+    }
 
     // Sticky waiting: don't let single-char spinner output override waiting status.
     // Once a prompt like "Would you like to proceed?" is detected, only substantive
@@ -1878,7 +1940,7 @@ class SessionManager extends EventEmitter {
     ];
 
     for (const pattern of thinkingPatterns) {
-      if (pattern.test(data)) {
+      if (pattern.test(cleanData)) {
         return 'thinking';
       }
     }
@@ -1898,45 +1960,15 @@ class SessionManager extends EventEmitter {
     ];
 
     for (const pattern of editingPatterns) {
-      if (pattern.test(data)) {
+      if (pattern.test(cleanData)) {
         return 'editing';
       }
     }
 
-    // Codex-specific prompt footer means work is done and user input is expected.
-    // This is a stronger signal than inactivity for Codex runs.
-    if (cliType === 'codex') {
-      const codexPromptReadyPatterns = [
-        /Ask Codex to do anything/i,
-        /^\s*›(?:\s|$)/m,
-        /\?\s*for shortcuts/i
-      ];
-      for (const pattern of codexPromptReadyPatterns) {
-        if (pattern.test(data)) {
-          return 'idle';
-        }
-      }
-    }
-
-    // Detect waiting for input
-    const waitingPatterns = [
-      /^\s*>\s*$/m,
-      /\?\s*$/,
-      /Enter.*:/i,
-      /Press.*to continue/i,
-      /\[Y\/n\]/i,
-      /\[y\/N\]/i,
-      // Codex CLI patterns
-      /Would you like to run/i,       // Codex approval prompt
-      /Implement this plan\?/i,       // Codex plan mode prompt
-      // Claude multi-choice prompts
-      /^\s*>\s*\d+\./m,               // "> 1." — cursor on numbered option line
-      /Would you like to proceed/i,   // Claude plan approval prompt
-      /Type .* to (change|tell)/i     // "Type here to tell Claude what to change"
-    ];
-
+    // Detect waiting for input. Use the short rolling context window so Codex
+    // menu redraws split across PTY chunks still count as waiting.
     for (const pattern of waitingPatterns) {
-      if (pattern.test(data)) {
+      if (pattern.test(contextText)) {
         return 'waiting';
       }
     }
