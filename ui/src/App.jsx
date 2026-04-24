@@ -96,6 +96,7 @@ function App() {
     killSession,
     pauseSession,
     resumeSession,
+    restartSession,
     updateSession,
     moveSession,
     advanceSession,
@@ -627,6 +628,15 @@ function App() {
     setShowCloseSessionModal(false);
     setPendingCloseSessionId(null);
   }, [killSession, pendingCloseSessionId]);
+
+  const handleRestartCurrentSession = useCallback(async () => {
+    if (!pendingCloseSessionId) return;
+    const success = await restartSession(pendingCloseSessionId);
+    if (!success) return;
+    closingSessionRef.current = false;
+    setShowCloseSessionModal(false);
+    setPendingCloseSessionId(null);
+  }, [pendingCloseSessionId, restartSession]);
 
   const handleCancelCloseCurrentSession = useCallback(() => {
     closingSessionRef.current = false;
@@ -1702,6 +1712,7 @@ function App() {
                       onKillSession={() => killSession(paneSession.id)}
                       onPauseSession={pauseSession}
                       onResumeSession={resumeSession}
+                      onRestartSession={restartSession}
                       onToggleSidebar={toggleSidebar}
                       sidebarVisible={sidebarVisible}
                       settings={settings}
@@ -1794,10 +1805,20 @@ function App() {
             <p className="settings-description">
               This will kill session <strong>{pendingCloseSession.name}</strong> and keep this browser tab open.
             </p>
+            {pendingCloseSession.cliType === 'codex' && pendingCloseSession.status !== 'completed' && (
+              <p className="settings-description">
+                You can also restart this Codex terminal in place and keep the same EasyCC session card.
+              </p>
+            )}
             <div className="modal-actions">
               <button className="btn btn-secondary" onClick={handleCancelCloseCurrentSession} autoFocus>
                 Cancel
               </button>
+              {pendingCloseSession.cliType === 'codex' && pendingCloseSession.status !== 'completed' && (
+                <button className="btn btn-secondary" onClick={handleRestartCurrentSession}>
+                  Restart Session
+                </button>
+              )}
               <button className="btn btn-danger" onClick={handleConfirmCloseCurrentSession}>
                 Kill Session
               </button>

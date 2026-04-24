@@ -68,6 +68,9 @@ class DataStore {
         claudeSessionId: session.claudeSessionId || null,
         previousClaudeSessionIds: session.previousClaudeSessionIds || [],
         claudeSessionName: session.claudeSessionName || null,
+        codexSessionId: session.codexSessionId || null,
+        codexThreadName: session.codexThreadName || null,
+        codexLaunchStartedAt: session.codexLaunchStartedAt || null,
         notes: session.notes || '',
         role: session.role || '',
         agentId: session.agentId || null,
@@ -141,7 +144,7 @@ class DataStore {
       }
 
       // Update allowed metadata fields
-      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'status', 'lastActivity',
+      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'codexSessionId', 'codexThreadName', 'codexLaunchStartedAt', 'status', 'lastActivity',
         'repoRoot', 'repoName', 'gitBranch', 'groupKey',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt', 'placementLocked',
         'rejectionHistory', 'completedAt', 'updatedAt', 'comments', 'messageQueue',

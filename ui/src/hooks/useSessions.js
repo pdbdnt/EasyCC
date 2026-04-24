@@ -311,6 +311,22 @@ export function useSessions() {
     }
   }, []);
 
+  const restartSession = useCallback(async (id) => {
+    const session = sessions.find(item => item.id === id);
+    if (!session || session.status === 'completed') {
+      return false;
+    }
+
+    if (session.status !== 'paused') {
+      const paused = await pauseSession(id);
+      if (!paused) {
+        return false;
+      }
+    }
+
+    return resumeSession(id, { fresh: true });
+  }, [pauseSession, resumeSession, sessions]);
+
   const updateSession = useCallback(async (id, updates) => {
     try {
       const response = await fetch(`/api/sessions/${id}`, {
@@ -649,6 +665,7 @@ export function useSessions() {
     killSession,
     pauseSession,
     resumeSession,
+    restartSession,
     updateSession,
     moveSession,
     advanceSession,
@@ -671,7 +688,7 @@ export function useSessions() {
     deleteAgent,
     connectionStatus,
     isConnected
-  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, setSelectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
+  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, setSelectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, restartSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
 }
 
 export default useSessions;

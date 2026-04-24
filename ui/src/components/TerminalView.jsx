@@ -79,6 +79,7 @@ const TerminalView = forwardRef(function TerminalView({
   onKillSession,
   onPauseSession,
   onResumeSession,
+  onRestartSession,
   onToggleSidebar,
   sidebarVisible,
   settings,
@@ -986,6 +987,10 @@ const TerminalView = forwardRef(function TerminalView({
     onResumeSession?.(session.id, { fresh: true });
   };
 
+  const handleRestart = () => {
+    onRestartSession?.(session.id);
+  };
+
   const handleNameDoubleClick = () => {
     setIsEditingName(true);
     setEditName(session.name);
@@ -1009,6 +1014,7 @@ const TerminalView = forwardRef(function TerminalView({
 
   const isPaused = sessionStatus === 'paused';
   const isCompleted = sessionStatus === 'completed';
+  const canRestartFresh = session?.cliType === 'codex' && !isCompleted;
 
   // Compute filtered & grouped session list for @ picker
   const { pickerItems, pickerSelectableSessions } = useMemo(() => {
@@ -1172,6 +1178,15 @@ const TerminalView = forwardRef(function TerminalView({
             />
             {sidebarVisible ? '◀ Context' : 'Context ▶'}
           </button>
+          {canRestartFresh && (
+            <button
+              className="btn btn-secondary btn-small"
+              onClick={handleRestart}
+              title="Restart this Codex terminal with a fresh session"
+            >
+              Restart
+            </button>
+          )}
           {isPaused ? (
             <button className="btn btn-primary btn-small" onClick={handleResume}>
               Resume

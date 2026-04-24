@@ -345,7 +345,7 @@ test('convertToWslPath: passes through non-Windows paths', () => {
   );
 });
 
-test('buildCodexBootstrapScript: prefers native WSL npm-global Codex before PATH lookup', () => {
+test('buildCodexBootstrapScript: prefers npm prefix Codex before PATH lookup', () => {
   const script = SessionManager.prototype.buildCodexBootstrapScript.call(
     { quoteForPosixShell: SessionManager.prototype.quoteForPosixShell },
     '/mnt/c/Users/denni/apps/EasyCC',
@@ -354,17 +354,46 @@ test('buildCodexBootstrapScript: prefers native WSL npm-global Codex before PATH
 
   assert.match(script, /"\$HOME\/\.profile"/);
   assert.match(script, /"\$HOME\/\.bashrc"/);
-  assert.match(script, /"\$HOME\/\.npm-global\/bin\/codex"/);
-  assert.match(script, /if \[ -x "\$HOME\/\.npm-global\/bin\/codex" \]; then/);
+  assert.match(script, /codex_prefix="\$\(npm prefix -g 2>\/dev\/null \|\| true\)"/);
+  assert.match(script, /if \[ -n "\$codex_prefix" \] && \[ -x "\$codex_prefix\/bin\/codex" \]; then/);
   assert.ok(
-    script.indexOf('if [ -x "$HOME/.npm-global/bin/codex" ]; then') <
+    script.indexOf('if [ -n "$codex_prefix" ] && [ -x "$codex_prefix/bin/codex" ]; then') <
       script.indexOf('exec codex '),
-    'native WSL Codex should be checked before generic PATH lookup'
+    'npm-prefix Codex should be checked before generic PATH lookup'
   );
   assert.match(script, /resume --last/);
 
   const syntaxCheck = spawnSync('/bin/bash', ['-n', '-c', script], { encoding: 'utf8' });
   assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
+});
+
+test('buildCodexBootstrapScript: uses explicit resume target when available', () => {
+  const script = SessionManager.prototype.buildCodexBootstrapScript.call(
+    { quoteForPosixShell: SessionManager.prototype.quoteForPosixShell },
+    '/mnt/c/Users/denni/apps/EasyCC',
+    { resume: true, resumeTarget: '019dbd34-7fd7-7ec3-b5b8-838be24ac567' }
+  );
+
+  assert.match(script, /resume '019dbd34-7fd7-7ec3-b5b8-838be24ac567'/);
+  assert.doesNotMatch(script, /resume --last/);
+});
+
+test('selectCodexResumeTarget: prefers captured session ID only', () => {
+  assert.equal(
+    SessionManager.prototype.selectCodexResumeTarget.call({}, {
+      codexSessionId: 'session-123',
+      codexThreadName: 'thread-name'
+    }),
+    'session-123'
+  );
+
+  assert.equal(
+    SessionManager.prototype.selectCodexResumeTarget.call({}, {
+      codexSessionId: null,
+      codexThreadName: 'thread-name'
+    }),
+    null
+  );
 });
 
 test('deriveRepoContext: git worktree uses repo root as group key', () => {
@@ -555,5 +584,5 @@ test('spawnCodexProcess: on Linux launches bash bootstrap in cwd', () => {
   assert.equal(calls[0][0], '/bin/bash');
   assert.deepEqual(calls[0][1].slice(0, 2), ['-lc', calls[0][1][1]]);
   assert.equal(calls[0][2].cwd, '/mnt/c/Users/denni/apps/EasyCC');
-  assert.match(calls[0][1][1], /"\$HOME\/\.npm-global\/bin\/codex"/);
+  assert.match(calls[0][1][1], /"\$codex_prefix\/bin\/codex"/);
 });
