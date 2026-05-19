@@ -16,6 +16,7 @@ const {
   DEFAULT_STAGES,
   sessionStatusToStage,
   isCodexMidWorkApprovalPrompt,
+  isCodexFinalDecisionPrompt,
   decideKanbanAutoSync
 } = require('../backend/stagesConfig');
 const SessionManager = require('../backend/sessionManager');
@@ -184,6 +185,14 @@ test('isCodexMidWorkApprovalPrompt: only matches mid-run approvals', () => {
   );
 });
 
+test('isCodexFinalDecisionPrompt: matches final plan decision prompt', () => {
+  assert.equal(
+    isCodexFinalDecisionPrompt('Implement this plan?\n1. Yes, implement this plan'),
+    true
+  );
+  assert.equal(isCodexFinalDecisionPrompt('Would you like to run this command?'), false);
+});
+
 test('decideKanbanAutoSync: keeps pending review for transient thinking redraw', () => {
   const decision = decideKanbanAutoSync({
     session: {
@@ -196,6 +205,38 @@ test('decideKanbanAutoSync: keeps pending review for transient thinking redraw',
   });
 
   assert.deepEqual(decision, { action: 'keep', targetStage: 'in_review' });
+});
+
+test('decideKanbanAutoSync: keeps final codex plan prompt in review during active redraw', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_review',
+      stageEnteredAt: '2026-05-19T04:16:37.345Z',
+      lastSubmittedInputAtMs: new Date('2026-05-19T04:16:02.731Z').getTime()
+    },
+    status: 'active',
+    existingTargetStage: 'in_review',
+    recentOutput: 'Implement this plan?\n1. Yes, implement this plan'
+  });
+
+  assert.deepEqual(decision, { action: 'keep', targetStage: 'in_review' });
+});
+
+test('decideKanbanAutoSync: resumes progress after final plan prompt submission', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_review',
+      stageEnteredAt: '2026-05-19T04:16:37.345Z',
+      lastSubmittedInputAtMs: new Date('2026-05-19T04:17:00.000Z').getTime()
+    },
+    status: 'active',
+    existingTargetStage: 'in_review',
+    recentOutput: 'Implement this plan?\n1. Yes, implement this plan'
+  });
+
+  assert.deepEqual(decision, { action: 'schedule', targetStage: 'in_progress' });
 });
 
 test('decideKanbanAutoSync: schedules in_progress when real work resumes from review', () => {

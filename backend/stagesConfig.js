@@ -270,6 +270,21 @@ function decideKanbanAutoSync({
     return { action: 'keep', targetStage };
   }
 
+  const submittedAfterReview = session.lastSubmittedInputAtMs && session.stageEnteredAt &&
+    session.lastSubmittedInputAtMs > new Date(session.stageEnteredAt).getTime();
+
+  if (
+    targetStage === 'in_progress' &&
+    session.cliType === 'codex' &&
+    session.stage === 'in_review' &&
+    !submittedAfterReview &&
+    isCodexFinalDecisionPrompt(recentOutput)
+  ) {
+    return existingTargetStage === 'in_review'
+      ? { action: 'keep', targetStage: existingTargetStage }
+      : { action: 'noop', targetStage: session.stage };
+  }
+
   if (existingTargetStage === 'in_review' && targetStage === 'in_progress') {
     if (status === 'thinking') {
       return { action: 'keep', targetStage: existingTargetStage };
@@ -303,6 +318,21 @@ function isCodexMidWorkApprovalPrompt(terminalOutput) {
   return /Would you like to run/i.test(terminalOutput);
 }
 
+/**
+ * Whether Codex is waiting at a final human decision prompt.
+ * These prompts should keep the kanban card in review even if terminal redraws
+ * emit transient active/thinking status updates.
+ * @param {string} terminalOutput - Recent terminal output
+ * @returns {boolean}
+ */
+function isCodexFinalDecisionPrompt(terminalOutput) {
+  if (typeof terminalOutput !== 'string' || terminalOutput.trim().length === 0) {
+    return false;
+  }
+
+  return /Implement this plan\?/i.test(terminalOutput);
+}
+
 module.exports = {
   POOL_TYPES,
   DEFAULT_STAGES,
@@ -316,5 +346,6 @@ module.exports = {
   hasAgentPool,
   sessionStatusToStage,
   isCodexMidWorkApprovalPrompt,
+  isCodexFinalDecisionPrompt,
   decideKanbanAutoSync
 };
