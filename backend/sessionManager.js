@@ -441,8 +441,8 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    if (session.cliType === 'codex' && session.codexSessionId) {
-      const planPaths = this.getPlansForCodexSession(session.codexSessionId);
+    if (session.cliType === 'codex') {
+      const planPaths = this.backfillCodexPlansForSession(session);
       for (const planPath of planPaths) {
         this.addPlanToSession(sessionId, planPath);
       }
@@ -744,6 +744,215 @@ class SessionManager extends EventEmitter {
 
     const transcript = this.readCodexSessionTranscriptText(codexSessionId);
     return this.extractCodexPlanPathsFromText(transcript);
+  }
+
+  extractCodexSessionIdsFromText(text) {
+    if (typeof text !== 'string' || !text) {
+      return [];
+    }
+
+    const ids = new Set();
+    const matches = text.matchAll(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi);
+    for (const match of matches) {
+      ids.add(match[0].toLowerCase());
+    }
+    return [...ids];
+  }
+
+  getOwnedCodexSessionIds(currentSessionId = null) {
+    const ownedIds = new Set();
+    for (const [id, candidate] of this.sessions) {
+      if (id !== currentSessionId && candidate.codexSessionId) {
+        ownedIds.add(candidate.codexSessionId);
+      }
+    }
+    return ownedIds;
+  }
+
+  linkCodexSessionById(session, codexSessionId) {
+    if (!session || session.cliType !== 'codex' || !codexSessionId) {
+      return false;
+    }
+
+    const ownedIds = this.getOwnedCodexSessionIds(session.id);
+    if (ownedIds.has(codexSessionId)) {
+      return false;
+    }
+
+    const meta = this.readCodexSessionMetaById(codexSessionId);
+    if (!meta || meta.cwd !== this.normalizeGroupPath(session.workingDir)) {
+      return false;
+    }
+
+    const indexEntry = this.loadCodexSessionIndex()
+      .filter((entry) => entry.id === codexSessionId)
+      .sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0))[0] || null;
+
+    let changed = false;
+    if (session.codexSessionId !== codexSessionId) {
+      session.codexSessionId = codexSessionId;
+      changed = true;
+    }
+    if (indexEntry?.threadName && session.codexThreadName !== indexEntry.threadName) {
+      session.codexThreadName = indexEntry.threadName;
+      changed = true;
+    }
+
+    if (changed) {
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    }
+
+    return true;
+  }
+
+  getCodexThreadNameCandidates(session) {
+    const candidates = new Set();
+    if (session?.codexThreadName) {
+      candidates.add(session.codexThreadName.trim().toLowerCase());
+    }
+    if (session?.name) {
+      const beforeResumeHint = session.name.split(/\s+To resume this thread run codex resume\b/i)[0];
+      const cleaned = beforeResumeHint.trim().toLowerCase();
+      if (cleaned) {
+        candidates.add(cleaned);
+      }
+    }
+    return candidates;
+  }
+
+  getRecentCodexSessionIdsForSession(session) {
+    if (!session || session.cliType !== 'codex' || !session.workingDir) {
+      return [];
+    }
+
+    const ownedIds = this.getOwnedCodexSessionIds(session.id);
+    const threadNames = this.getCodexThreadNameCandidates(session);
+    const createdAtMs = Date.parse(session.createdAt) || 0;
+    const lastActivityMs = Date.parse(session.lastActivity) || Date.now();
+    const startMs = createdAtMs ? createdAtMs - CODEX_CAPTURE_MAX_WINDOW_MS : 0;
+    const endMs = Math.max(lastActivityMs, Date.now()) + CODEX_CAPTURE_MAX_WINDOW_MS;
+    const normalizedWorkingDir = this.normalizeGroupPath(session.workingDir);
+    const seen = new Set();
+    const matches = [];
+
+    for (const entry of this.loadCodexSessionIndex()) {
+      if (!entry?.id || seen.has(entry.id) || ownedIds.has(entry.id)) {
+        continue;
+      }
+      seen.add(entry.id);
+      if (entry.updatedAtMs && (entry.updatedAtMs < startMs || entry.updatedAtMs > endMs)) {
+        continue;
+      }
+      if (threadNames.size > 0) {
+        const entryThreadName = (entry.threadName || '').trim().toLowerCase();
+        if (!threadNames.has(entryThreadName)) {
+          continue;
+        }
+      }
+
+      const meta = this.readCodexSessionMetaById(entry.id);
+      if (!meta || meta.cwd !== normalizedWorkingDir) {
+        continue;
+      }
+
+      matches.push(entry);
+    }
+
+    return matches
+      .sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0))
+      .slice(0, CODEX_CAPTURE_MAX_INDEX_CANDIDATES)
+      .map((entry) => entry.id);
+  }
+
+  readSessionTerminalTranscriptText(sessionId) {
+    if (!sessionId) {
+      return '';
+    }
+
+    const transcriptPath = this.getTranscriptPath(sessionId);
+    if (!fs.existsSync(transcriptPath)) {
+      return '';
+    }
+
+    try {
+      return fs.readFileSync(transcriptPath, 'utf8');
+    } catch (error) {
+      console.error('Error reading session terminal transcript:', error.message);
+      return '';
+    }
+  }
+
+  ensureCodexSessionLinked(session) {
+    if (!session || session.cliType !== 'codex') {
+      return false;
+    }
+    if (session.codexSessionId) {
+      return true;
+    }
+
+    const textWithHints = [
+      session.name,
+      session.currentTask,
+      ...(session.outputBuffer?.getAll?.() || [])
+    ].filter(Boolean).join('\n');
+
+    for (const codexSessionId of this.extractCodexSessionIdsFromText(textWithHints)) {
+      if (this.linkCodexSessionById(session, codexSessionId)) {
+        return true;
+      }
+    }
+
+    if (this.syncWithCodexSession(session, { attemptNum: CODEX_CAPTURE_MAX_ATTEMPTS })) {
+      return true;
+    }
+
+    const recentIds = this.getRecentCodexSessionIdsForSession(session);
+    if (recentIds.length === 1) {
+      return this.linkCodexSessionById(session, recentIds[0]);
+    }
+
+    return false;
+  }
+
+  backfillCodexPlansForSession(session) {
+    if (!session || session.cliType !== 'codex') {
+      return [];
+    }
+
+    this.ensureCodexSessionLinked(session);
+
+    const planPaths = new Set();
+    const terminalText = [
+      ...(session.outputBuffer?.getAll?.() || []),
+      this.readSessionTerminalTranscriptText(session.id)
+    ].join('\n');
+
+    for (const planPath of this.extractCodexPlanPathsFromText(terminalText)) {
+      planPaths.add(planPath);
+    }
+
+    const codexSessionIds = new Set();
+    if (session.codexSessionId) {
+      codexSessionIds.add(session.codexSessionId);
+    }
+    for (const codexSessionId of this.getRecentCodexSessionIdsForSession(session)) {
+      codexSessionIds.add(codexSessionId);
+    }
+
+    for (const codexSessionId of codexSessionIds) {
+      for (const planPath of this.getPlansForCodexSession(codexSessionId)) {
+        planPaths.add(planPath);
+      }
+    }
+
+    for (const planPath of planPaths) {
+      if (!session.plans?.includes(planPath)) {
+        this.addPlanToSession(session.id, planPath);
+      }
+    }
+
+    return [...planPaths];
   }
 
   attachCodexPlansFromOutput(session, data) {
@@ -3261,6 +3470,7 @@ class SessionManager extends EventEmitter {
     }
 
     if (session.cliType === 'codex') {
+      this.backfillCodexPlansForSession(session);
       const trackedPlanPaths = session.codexSessionId
         ? this.getPlansForCodexSession(session.codexSessionId)
         : [];

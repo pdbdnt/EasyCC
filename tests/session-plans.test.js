@@ -126,6 +126,7 @@ test('attachCodexPlansFromOutput associates exact Codex plan path with session',
         assert.equal(requestedPath, planPath);
       }
     };
+    sessionManager.emit = () => {};
 
     const attached = sessionManager.attachCodexPlansFromOutput(
       session,
@@ -184,6 +185,11 @@ test('getSessionPlans includes Codex transcript plan paths and manual plans', ()
         throw new Error(`Unexpected plan path: ${requestedPath}`);
       }
     };
+    sessionManager.dataStore = {
+      addPlanToSession() {}
+    };
+    sessionManager.emit = () => {};
+    sessionManager.loadCodexSessionIndex = () => [];
 
     const plans = sessionManager.getSessionPlans(sessionId);
 
@@ -192,4 +198,93 @@ test('getSessionPlans includes Codex transcript plan paths and manual plans', ()
       [trackedPlanPath, manualPlanPath]
     );
   });
+});
+
+test('getSessionPlans backfills Codex plans from EasyCC terminal transcript without captured Codex ID', () => {
+  withCodexPlanFile(`easycc-terminal-backfill-plan-${process.pid}.md`, '# Terminal Backfill Plan\n', (trackedPlanPath) => {
+    const sessionId = 'session-codex-terminal-backfill';
+    const sessionManager = Object.create(SessionManager.prototype);
+    const session = {
+      id: sessionId,
+      name: 'cutsheetfont-etc',
+      cliType: 'codex',
+      codexSessionId: null,
+      workingDir: '/home/denni/apps/specsket',
+      createdAt: '2026-05-20T05:00:00.000Z',
+      lastActivity: '2026-05-20T05:30:00.000Z',
+      plans: []
+    };
+
+    sessionManager.sessions = new Map([[sessionId, session]]);
+    sessionManager.readSessionTerminalTranscriptText = (requestedSessionId) => {
+      assert.equal(requestedSessionId, sessionId);
+      return `Plan saved to: ${trackedPlanPath}\n`;
+    };
+    sessionManager.loadCodexSessionIndex = () => [];
+    sessionManager.dataStore = {
+      addPlanToSession(id, requestedPath) {
+        assert.equal(id, sessionId);
+        assert.equal(requestedPath, trackedPlanPath);
+      }
+    };
+    sessionManager.emit = () => {};
+    sessionManager.planManager = {
+      getPlanContent(requestedPath) {
+        assert.equal(requestedPath, trackedPlanPath);
+        return {
+          filename: path.basename(trackedPlanPath),
+          name: 'terminal backfill plan',
+          path: trackedPlanPath,
+          modifiedAt: '2026-05-20T12:00:00.000Z'
+        };
+      }
+    };
+
+    const plans = sessionManager.getSessionPlans(sessionId);
+
+    assert.deepEqual(plans.map((plan) => plan.path), [trackedPlanPath]);
+    assert.deepEqual(session.plans, [trackedPlanPath]);
+  });
+});
+
+test('ensureCodexSessionLinked recovers Codex ID from old resume hint title', () => {
+  const sessionId = 'session-codex-title-backfill';
+  const codexSessionId = '019e43b8-5674-7002-8ff3-b301c72d3c04';
+  const sessionManager = Object.create(SessionManager.prototype);
+  const session = {
+    id: sessionId,
+    name: `cutsheetfont-etc. To resume this thread run codex resume, then select cutsheetfont-etc (${codexSessionId})`,
+    cliType: 'codex',
+    codexSessionId: null,
+    workingDir: '/home/denni/apps/specsket',
+    plans: []
+  };
+
+  sessionManager.sessions = new Map([[sessionId, session]]);
+  sessionManager.readCodexSessionMetaById = (requestedSessionId) => {
+    assert.equal(requestedSessionId, codexSessionId);
+    return {
+      sessionId: codexSessionId,
+      cwd: '/home/denni/apps/specsket',
+      createdAt: '2026-05-20T05:00:00.000Z',
+      filePath: '/home/denni/.codex/sessions/fake.jsonl'
+    };
+  };
+  sessionManager.loadCodexSessionIndex = () => [{
+    id: codexSessionId,
+    threadName: 'cutsheetfont-etc',
+    updatedAt: '2026-05-20T05:30:00.000Z',
+    updatedAtMs: Date.parse('2026-05-20T05:30:00.000Z')
+  }];
+  sessionManager.dataStore = {
+    saveSession(requestedSession) {
+      assert.equal(requestedSession.id, sessionId);
+    }
+  };
+  sessionManager.emit = () => {};
+  sessionManager.getSessionSnapshot = (requestedSession) => requestedSession;
+
+  assert.equal(sessionManager.ensureCodexSessionLinked(session), true);
+  assert.equal(session.codexSessionId, codexSessionId);
+  assert.equal(session.codexThreadName, 'cutsheetfont-etc');
 });
