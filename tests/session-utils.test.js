@@ -363,6 +363,13 @@ test('extractSessionRename: detects Codex conversation rename output', () => {
     ),
     'https'
   );
+  assert.equal(
+    SessionManager.prototype.extractSessionRename.call(
+      manager,
+      'Thread renamed to cutsheetfont-etc. To resume this thread run codex resume, then select cutsheetfont-etc (019e43b8-5674-7002-8ff3-b301c72d3c04)\r\n'
+    ),
+    'cutsheetfont-etc'
+  );
 });
 
 test('convertToWslPath: converts Windows drive paths', () => {

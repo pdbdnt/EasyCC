@@ -696,12 +696,16 @@ function isAllowedPlanFilePath(filePath) {
   if (parentDir !== 'plans') return false;
 
   const claudePlansDir = path.resolve(path.join(os.homedir(), '.claude', 'plans'));
+  const codexPlansDir = path.resolve(path.join(os.homedir(), '.codex', 'plans'));
   const normalizedFile = normalizePathKey(resolved);
   const normalizedClaudePlansDir = normalizePathKey(claudePlansDir);
+  const normalizedCodexPlansDir = normalizePathKey(codexPlansDir);
 
   if (
     normalizedFile === normalizedClaudePlansDir ||
-    normalizedFile.startsWith(`${normalizedClaudePlansDir}${path.sep}`)
+    normalizedFile.startsWith(`${normalizedClaudePlansDir}${path.sep}`) ||
+    normalizedFile === normalizedCodexPlansDir ||
+    normalizedFile.startsWith(`${normalizedCodexPlansDir}${path.sep}`)
   ) {
     return true;
   }

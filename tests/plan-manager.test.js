@@ -54,3 +54,26 @@ test('getPlanContent reads plan by full path outside manager plans directory', (
     fs.rmSync(outsideDir, { recursive: true, force: true });
   }
 });
+
+test('listPlans and filename lookup include extra plan directories', () => {
+  const claudeDir = makeTempDir('plan-manager-claude-');
+  const codexDir = makeTempDir('plan-manager-codex-');
+  try {
+    const manager = new PlanManager(claudeDir, { extraPlansDirs: [codexDir] });
+    fs.writeFileSync(path.join(claudeDir, 'claude-plan.md'), '# Claude Plan\n', 'utf8');
+    fs.writeFileSync(path.join(codexDir, 'codex-plan.md'), '# Codex Plan\n', 'utf8');
+
+    const plans = manager.listPlans();
+    assert.deepEqual(
+      new Set(plans.map(plan => plan.filename)),
+      new Set(['claude-plan.md', 'codex-plan.md'])
+    );
+
+    const codexPlan = manager.getPlanContent('codex-plan.md');
+    assert.ok(codexPlan);
+    assert.equal(codexPlan.path, path.join(codexDir, 'codex-plan.md'));
+  } finally {
+    fs.rmSync(claudeDir, { recursive: true, force: true });
+    fs.rmSync(codexDir, { recursive: true, force: true });
+  }
+});

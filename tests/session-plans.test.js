@@ -1,7 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const SessionManager = require('../backend/sessionManager');
+
+function withCodexPlanFile(filename, content, fn) {
+  const plansDir = path.join(os.homedir(), '.codex', 'plans');
+  fs.mkdirSync(plansDir, { recursive: true });
+  const planPath = path.join(plansDir, filename);
+  assert.equal(fs.existsSync(planPath), false, `Test plan path already exists: ${planPath}`);
+  fs.writeFileSync(planPath, content, 'utf8');
+  try {
+    return fn(planPath);
+  } finally {
+    fs.rmSync(planPath, { force: true });
+  }
+}
 
 test('getSessionPlans keeps manually associated plans for terminal sessions even when workingDir text differs', () => {
   const sessionId = 'session-1';
@@ -90,4 +106,90 @@ test('getSessionPlans merges Claude-tracked and manual plans without duplicates 
     plans.map((plan) => plan.path),
     [manualPlanPath, trackedPlanPath]
   );
+});
+
+test('attachCodexPlansFromOutput associates exact Codex plan path with session', () => {
+  withCodexPlanFile(`easycc-output-plan-${process.pid}.md`, '# Output Plan\n', (planPath) => {
+    const sessionId = 'session-codex-output';
+    const sessionManager = Object.create(SessionManager.prototype);
+    const session = {
+      id: sessionId,
+      cliType: 'codex',
+      workingDir: '/home/denni/apps/specsket',
+      plans: []
+    };
+
+    sessionManager.sessions = new Map([[sessionId, session]]);
+    sessionManager.dataStore = {
+      addPlanToSession(id, requestedPath) {
+        assert.equal(id, sessionId);
+        assert.equal(requestedPath, planPath);
+      }
+    };
+
+    const attached = sessionManager.attachCodexPlansFromOutput(
+      session,
+      `Plan saved to: ${planPath}\n`
+    );
+
+    assert.deepEqual(attached, [planPath]);
+    assert.deepEqual(session.plans, [planPath]);
+  });
+});
+
+test('getSessionPlans includes Codex transcript plan paths and manual plans', () => {
+  withCodexPlanFile(`easycc-transcript-plan-${process.pid}.md`, '# Transcript Plan\n', (trackedPlanPath) => {
+    const manualPlanPath = '/tmp/project/plans/manual-codex-plan.md';
+    const sessionId = 'session-codex-transcript';
+    const sessionManager = Object.create(SessionManager.prototype);
+
+    sessionManager.sessions = new Map([
+      [sessionId, {
+        id: sessionId,
+        cliType: 'codex',
+        codexSessionId: 'codex-123',
+        workingDir: '/home/denni/apps/specsket',
+        plans: [manualPlanPath]
+      }]
+    ]);
+    sessionManager.readCodexSessionTranscriptText = (codexSessionId) => {
+      assert.equal(codexSessionId, 'codex-123');
+      return JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: `Plan saved to: ${trackedPlanPath}` }]
+        }
+      });
+    };
+    sessionManager.planManager = {
+      getPlanContent(requestedPath) {
+        if (requestedPath === trackedPlanPath) {
+          return {
+            filename: path.basename(trackedPlanPath),
+            name: 'transcript plan',
+            path: trackedPlanPath,
+            modifiedAt: '2026-05-20T10:00:00.000Z'
+          };
+        }
+        if (requestedPath === manualPlanPath) {
+          return {
+            filename: 'manual-codex-plan.md',
+            name: 'manual plan',
+            path: manualPlanPath,
+            modifiedAt: '2026-05-20T09:00:00.000Z'
+          };
+        }
+        throw new Error(`Unexpected plan path: ${requestedPath}`);
+      }
+    };
+
+    const plans = sessionManager.getSessionPlans(sessionId);
+
+    assert.deepEqual(
+      plans.map((plan) => plan.path),
+      [trackedPlanPath, manualPlanPath]
+    );
+  });
 });

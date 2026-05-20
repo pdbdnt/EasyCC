@@ -4,15 +4,32 @@ const os = require('os');
 const EventEmitter = require('events');
 
 /**
- * Manages Claude plan files from ~/.claude/plans directory
+ * Manages plan files from CLI-owned plan directories.
  */
 class PlanManager extends EventEmitter {
-  constructor(plansDir = null) {
+  constructor(plansDir = null, options = {}) {
     super();
     this.plansDir = plansDir || path.join(os.homedir(), '.claude', 'plans');
-    this.watcher = null;
+    this.extraPlansDirs = Array.isArray(options.extraPlansDirs)
+      ? options.extraPlansDirs.filter(Boolean)
+      : [path.join(os.homedir(), '.codex', 'plans')];
+    this.watchers = new Map();
+    this.parentWatchers = new Map();
     this.planCache = new Map();
     this.watchCallbacks = [];
+  }
+
+  getManagedPlansDirs() {
+    const seen = new Set();
+    const dirs = [];
+    for (const dir of [this.plansDir, ...this.extraPlansDirs]) {
+      if (!dir || typeof dir !== 'string') continue;
+      const resolved = path.resolve(dir);
+      if (seen.has(resolved)) continue;
+      seen.add(resolved);
+      dirs.push(resolved);
+    }
+    return dirs;
   }
 
   /**
@@ -20,7 +37,7 @@ class PlanManager extends EventEmitter {
    * @returns {boolean}
    */
   plansDirectoryExists() {
-    return fs.existsSync(this.plansDir);
+    return this.getManagedPlansDirs().some(dir => fs.existsSync(dir));
   }
 
   /**
@@ -29,26 +46,28 @@ class PlanManager extends EventEmitter {
    */
   listPlans() {
     try {
-      if (!this.plansDirectoryExists()) {
-        return [];
-      }
-
-      const files = fs.readdirSync(this.plansDir);
       const plans = [];
 
-      for (const file of files) {
-        if (file.endsWith('.md')) {
-          const filePath = path.join(this.plansDir, file);
-          const stats = fs.statSync(filePath);
+      for (const plansDir of this.getManagedPlansDirs()) {
+        if (!fs.existsSync(plansDir)) {
+          continue;
+        }
 
-          plans.push({
-            filename: file,
-            name: file.replace('.md', '').replace(/-/g, ' '),
-            path: filePath,
-            createdAt: stats.birthtime.toISOString(),
-            modifiedAt: stats.mtime.toISOString(),
-            size: stats.size
-          });
+        const files = fs.readdirSync(plansDir);
+        for (const file of files) {
+          if (file.endsWith('.md')) {
+            const filePath = path.join(plansDir, file);
+            const stats = fs.statSync(filePath);
+
+            plans.push({
+              filename: file,
+              name: file.replace('.md', '').replace(/-/g, ' '),
+              path: filePath,
+              createdAt: stats.birthtime.toISOString(),
+              modifiedAt: stats.mtime.toISOString(),
+              size: stats.size
+            });
+          }
         }
       }
 
@@ -86,7 +105,9 @@ class PlanManager extends EventEmitter {
     }
 
     if (baseName) {
-      candidatePaths.push(path.join(this.plansDir, baseName));
+      for (const plansDir of this.getManagedPlansDirs()) {
+        candidatePaths.push(path.join(plansDir, baseName));
+      }
     }
 
     for (const candidate of candidatePaths) {
@@ -226,49 +247,65 @@ class PlanManager extends EventEmitter {
     }
 
     // If watcher is already running, just register the callback — don't restart
-    if (this.watcher) {
-      return;
-    }
-
-    if (!this.plansDirectoryExists()) {
-      console.log('Plans directory does not exist yet:', this.plansDir);
-      // Try to watch parent directory for creation
-      const parentDir = path.dirname(this.plansDir);
-      if (fs.existsSync(parentDir)) {
-        this.watchParentForPlansDir();
+    if (this.watchers.size > 0) {
+      for (const plansDir of this.getManagedPlansDirs()) {
+        if (!this.watchers.has(plansDir) && fs.existsSync(plansDir)) {
+          this._startWatcher(plansDir);
+        }
       }
       return;
     }
 
-    this._startWatcher();
+    for (const plansDir of this.getManagedPlansDirs()) {
+      if (!fs.existsSync(plansDir)) {
+        console.log('Plans directory does not exist yet:', plansDir);
+        const parentDir = path.dirname(plansDir);
+        if (fs.existsSync(parentDir)) {
+          this.watchParentForPlansDir(plansDir);
+        }
+        continue;
+      }
+
+      this._startWatcher(plansDir);
+    }
   }
 
   /**
    * Internal: start the fs.watch on the plans directory
    */
-  _startWatcher() {
+  _startWatcher(plansDir = this.plansDir) {
+    const resolvedDir = path.resolve(plansDir);
+    if (this.watchers.has(resolvedDir)) {
+      return;
+    }
+
     try {
       // Cache existing files
-      const existingPlans = this.listPlans();
+      const existingPlans = fs.existsSync(resolvedDir)
+        ? fs.readdirSync(resolvedDir)
+          .filter(file => file.endsWith('.md'))
+          .map(file => this.getPlanContent(path.join(resolvedDir, file)))
+          .filter(Boolean)
+        : [];
       for (const plan of existingPlans) {
-        this.planCache.set(plan.filename, plan.modifiedAt);
+        this.planCache.set(plan.path, plan.modifiedAt);
       }
 
-      this.watcher = fs.watch(this.plansDir, { persistent: false }, (eventType, filename) => {
+      const watcher = fs.watch(resolvedDir, { persistent: false }, (eventType, filename) => {
         if (filename && filename.endsWith('.md')) {
-          const filePath = path.join(this.plansDir, filename);
+          const filePath = path.join(resolvedDir, filename);
 
           // Check if file exists (not deleted)
           if (fs.existsSync(filePath)) {
-            const cachedTime = this.planCache.get(filename);
+            const cachedTime = this.planCache.get(filePath);
             const stats = fs.statSync(filePath);
             const modifiedAt = stats.mtime.toISOString();
 
             // Trigger for new files OR modified files (cache time changed)
             if (!cachedTime || cachedTime !== modifiedAt) {
-              this.planCache.set(filename, modifiedAt);
+              this.planCache.set(filePath, modifiedAt);
 
-              const plan = this.getPlanContent(filename);
+              const plan = this.getPlanContent(filePath);
               if (plan) {
                 const isNew = !cachedTime;
                 this.emit(isNew ? 'newPlan' : 'planUpdated', plan);
@@ -284,15 +321,17 @@ class PlanManager extends EventEmitter {
             }
           } else if (eventType === 'rename') {
             // File was deleted (only on rename event)
-            this.planCache.delete(filename);
-            this.emit('planDeleted', filename);
+            this.planCache.delete(filePath);
+            this.emit('planDeleted', filePath);
           }
         }
       });
 
-      this.watcher.on('error', (error) => {
+      watcher.on('error', (error) => {
         console.error('Plan watcher error:', error.message);
+        this.watchers.delete(resolvedDir);
       });
+      this.watchers.set(resolvedDir, watcher);
     } catch (error) {
       console.error('Error starting plan watcher:', error.message);
     }
@@ -301,16 +340,22 @@ class PlanManager extends EventEmitter {
   /**
    * Watch parent directory for plans dir creation
    */
-  watchParentForPlansDir() {
-    const parentDir = path.dirname(this.plansDir);
+  watchParentForPlansDir(plansDir = this.plansDir) {
+    const resolvedDir = path.resolve(plansDir);
+    if (this.parentWatchers.has(resolvedDir)) {
+      return;
+    }
+    const parentDir = path.dirname(resolvedDir);
 
     try {
       const parentWatcher = fs.watch(parentDir, { persistent: false }, (eventType, filename) => {
-        if (filename === 'plans' && fs.existsSync(this.plansDir)) {
+        if (filename === path.basename(resolvedDir) && fs.existsSync(resolvedDir)) {
           parentWatcher.close();
-          this._startWatcher();
+          this.parentWatchers.delete(resolvedDir);
+          this._startWatcher(resolvedDir);
         }
       });
+      this.parentWatchers.set(resolvedDir, parentWatcher);
     } catch (error) {
       console.error('Error watching parent directory:', error.message);
     }
@@ -320,10 +365,14 @@ class PlanManager extends EventEmitter {
    * Stop watching for plan files
    */
   stopWatching() {
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = null;
+    for (const watcher of this.watchers.values()) {
+      watcher.close();
     }
+    this.watchers.clear();
+    for (const watcher of this.parentWatchers.values()) {
+      watcher.close();
+    }
+    this.parentWatchers.clear();
   }
 
   /**

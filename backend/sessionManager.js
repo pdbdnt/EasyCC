@@ -20,6 +20,7 @@ const CODEX_CAPTURE_MAX_ATTEMPTS = 6;
 const CODEX_CAPTURE_INITIAL_WINDOW_MS = 5 * 60 * 1000;
 const CODEX_CAPTURE_MAX_WINDOW_MS = 30 * 60 * 1000;
 const CODEX_CAPTURE_MAX_INDEX_CANDIDATES = 12;
+const CODEX_PLAN_PATH_PATTERN = /(?:~|\/home\/[^/\s"'`<>]+)\/\.codex\/plans\/[^\s"'`<>]+\.md/gi;
 const SESSION_TRANSCRIPTS_DIR = path.join(__dirname, '..', 'data', 'transcripts');
 
 // Message queue constants
@@ -439,6 +440,13 @@ class SessionManager extends EventEmitter {
         this.addPlanToSession(sessionId, planPath);
       }
     }
+
+    if (session.cliType === 'codex' && session.codexSessionId) {
+      const planPaths = this.getPlansForCodexSession(session.codexSessionId);
+      for (const planPath of planPaths) {
+        this.addPlanToSession(sessionId, planPath);
+      }
+    }
   }
 
   /**
@@ -647,6 +655,107 @@ class SessionManager extends EventEmitter {
     } catch {
       return null;
     }
+  }
+
+  normalizePlanPath(planPath) {
+    if (typeof planPath !== 'string') {
+      return '';
+    }
+
+    const trimmed = planPath.trim().replace(/[),.;:]+$/g, '');
+    if (!trimmed) {
+      return '';
+    }
+
+    if (trimmed.startsWith('~/')) {
+      return path.join(os.homedir(), trimmed.slice(2));
+    }
+
+    return path.resolve(trimmed);
+  }
+
+  isAllowedSessionPlanPath(planPath) {
+    if (!planPath || typeof planPath !== 'string') {
+      return false;
+    }
+
+    const resolved = path.resolve(planPath);
+    if (!resolved.toLowerCase().endsWith('.md')) {
+      return false;
+    }
+    if (!fs.existsSync(resolved)) {
+      return false;
+    }
+
+    const parentName = path.basename(path.dirname(resolved)).toLowerCase();
+    if (parentName !== 'plans') {
+      return false;
+    }
+
+    const normalized = resolved.replace(/\\/g, '/').toLowerCase();
+    const codexPlansDir = path.join(os.homedir(), '.codex', 'plans').replace(/\\/g, '/').toLowerCase();
+    const claudePlansDir = path.join(os.homedir(), '.claude', 'plans').replace(/\\/g, '/').toLowerCase();
+
+    return normalized.startsWith(`${codexPlansDir}/`) ||
+      normalized.startsWith(`${claudePlansDir}/`) ||
+      normalized.includes('/plans/');
+  }
+
+  extractCodexPlanPathsFromText(text) {
+    if (typeof text !== 'string' || !text) {
+      return [];
+    }
+
+    const cleanText = this.cleanTerminalText(text);
+    const paths = new Set();
+    const matches = cleanText.matchAll(CODEX_PLAN_PATH_PATTERN);
+    for (const match of matches) {
+      const normalized = this.normalizePlanPath(match[0]);
+      if (normalized && this.isAllowedSessionPlanPath(normalized)) {
+        paths.add(normalized);
+      }
+    }
+
+    return [...paths];
+  }
+
+  readCodexSessionTranscriptText(sessionId) {
+    const filePath = this.findCodexSessionFileById(sessionId);
+    if (!filePath) {
+      return '';
+    }
+
+    if (process.platform === 'win32') {
+      return this.runWslCodexCommand(`cat ${this.quoteForPosixShell(filePath)} 2>/dev/null || true`);
+    }
+
+    try {
+      return fs.readFileSync(filePath, 'utf8');
+    } catch (error) {
+      console.error('Error reading Codex session transcript:', error.message);
+      return '';
+    }
+  }
+
+  getPlansForCodexSession(codexSessionId) {
+    if (!codexSessionId) {
+      return [];
+    }
+
+    const transcript = this.readCodexSessionTranscriptText(codexSessionId);
+    return this.extractCodexPlanPathsFromText(transcript);
+  }
+
+  attachCodexPlansFromOutput(session, data) {
+    if (!session || session.cliType !== 'codex') {
+      return [];
+    }
+
+    const planPaths = this.extractCodexPlanPathsFromText(data);
+    for (const planPath of planPaths) {
+      this.addOrUpdatePlanInSession(session.id, planPath);
+    }
+    return planPaths;
   }
 
   getCodexCaptureWindowMs(attemptNum = 1) {
@@ -1288,7 +1397,7 @@ class SessionManager extends EventEmitter {
         const name = match[1]
           .trim()
           .replace(/^["']|["']$/g, '')
-          .replace(/\s*,\s*to\s+resume\s+this\s+thread\s+run\s+codex\s+resume(?:\s+.+)?$/i, '')
+          .replace(/\s*[,.;:]\s*to\s+resume\s+this\s+thread\s+run\s+codex\s+resume\b.*$/i, '')
           .trim();
         if (name) return name;
       }
@@ -1470,6 +1579,7 @@ class SessionManager extends EventEmitter {
 
       // Detect plan updates from terminal output
       this.detectPlanActivity(data, session);
+      this.attachCodexPlansFromOutput(session, data);
 
       this.emit('output', { sessionId: id, data });
     });
@@ -1901,6 +2011,7 @@ class SessionManager extends EventEmitter {
 
         // Detect plan updates from terminal output
         this.detectPlanActivity(data, session);
+        this.attachCodexPlansFromOutput(session, data);
 
         this.emit('output', { sessionId: id, data });
       });
@@ -2354,6 +2465,7 @@ class SessionManager extends EventEmitter {
       /Saved.*plan/i,
       /plan.*saved/i,
       /\.claude[/\\]plans[/\\].*\.md/i,
+      /\.codex[/\\]plans[/\\].*\.md/i,
       /written up a plan/i,
       /ready to execute/i
     ];
@@ -3144,6 +3256,29 @@ class SessionManager extends EventEmitter {
       }
 
       // Sort by modified time (newest first)
+      plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+      return plans;
+    }
+
+    if (session.cliType === 'codex') {
+      const trackedPlanPaths = session.codexSessionId
+        ? this.getPlansForCodexSession(session.codexSessionId)
+        : [];
+      const allPlanRefs = [...trackedPlanPaths, ...(session.plans || [])];
+      const seen = new Set();
+      const plans = [];
+
+      for (const planRef of allPlanRefs) {
+        const plan = this.planManager.getPlanContent(planRef);
+        if (plan) {
+          const key = plan.path || plan.filename;
+          if (!seen.has(key)) {
+            seen.add(key);
+            plans.push(plan);
+          }
+        }
+      }
+
       plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
       return plans;
     }
