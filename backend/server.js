@@ -18,6 +18,10 @@ const TeamStore = require('./teamStore');
 const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
 const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
 const { stripAnsi } = require('./sessionInputUtils');
+const {
+  getPlanSource,
+  resolvePlanRefForHost
+} = require('./planPathUtils');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
@@ -687,7 +691,7 @@ ${skill.body}
 
 function isAllowedPlanFilePath(filePath) {
   if (!filePath || typeof filePath !== 'string') return false;
-  const resolved = path.resolve(filePath);
+  const resolved = path.resolve(resolvePlanRefForHost(filePath));
   if (!resolved.toLowerCase().endsWith('.md')) return false;
   if (!path.isAbsolute(resolved)) return false;
   if (!fs.existsSync(resolved)) return false;
@@ -716,7 +720,7 @@ function isAllowedPlanFilePath(filePath) {
 
 function resolvePlanPathForApi({ filename, planPath }) {
   if (planPath) {
-    const candidatePath = path.resolve(planPath);
+    const candidatePath = path.resolve(resolvePlanRefForHost(planPath));
     if (!isAllowedPlanFilePath(candidatePath)) {
       return { error: 'Invalid planPath' };
     }
@@ -777,6 +781,7 @@ function listProjectPlans(workingDir) {
         filename: file,
         name: file.replace('.md', '').replace(/-/g, ' '),
         path: filePath,
+        source: getPlanSource(filePath),
         createdAt: stats.birthtime.toISOString(),
         modifiedAt: stats.mtime.toISOString(),
         size: stats.size
@@ -2420,18 +2425,18 @@ async function start() {
     const sessionPlans = session.plans || [];
 
     for (const plan of planManager.listPlans()) {
-      plansByPath.set(normalizePathKey(plan.path), plan);
+      plansByPath.set(normalizePathKey(resolvePlanRefForHost(plan.path)), plan);
     }
 
     if ((session.cliType === 'codex' || session.cliType === 'terminal' || session.cliType === 'wsl') && session.workingDir) {
       for (const plan of listProjectPlans(session.workingDir)) {
-        plansByPath.set(normalizePathKey(plan.path), plan);
+        plansByPath.set(normalizePathKey(resolvePlanRefForHost(plan.path)), plan);
       }
     }
 
-    const sessionPlanKeys = new Set(sessionPlans.map((planPath) => normalizePathKey(planPath)));
+    const sessionPlanKeys = new Set(sessionPlans.map((planPath) => normalizePathKey(resolvePlanRefForHost(planPath))));
     const available = [...plansByPath.values()]
-      .filter((plan) => !sessionPlanKeys.has(normalizePathKey(plan.path)))
+      .filter((plan) => !sessionPlanKeys.has(normalizePathKey(resolvePlanRefForHost(plan.path))))
       .sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
     return { plans: available };
   });

@@ -115,8 +115,6 @@ function PromptsWidget({ recentPrompts, onShowModal }) {
 function PlansWidget({
   plans, loadingPlans, expandedPlanIndex, setExpandedPlanIndex,
   archivedPlanKeys, handleTogglePlanArchive, userCollapsedRef,
-  showPlanPicker, handleOpenPlanPicker, availablePlans, loadingAvailable,
-  handleAddPlan, planPickerRef,
   showPastePlan, setShowPastePlan, pastedPlanName, setPastedPlanName,
   pastedPlanContent, setPastedPlanContent, savingPlan, handleSavePastedPlan,
   pastePlanError, setPastePlanError,
@@ -234,6 +232,68 @@ function PlansWidget({
   );
 }
 
+function ImportPlanModal({
+  availablePlans,
+  loadingAvailable,
+  planSearch,
+  setPlanSearch,
+  handleAddPlan,
+  onClose,
+}) {
+  const filteredPlans = availablePlans.filter((plan) => {
+    const query = planSearch.trim().toLowerCase();
+    if (!query) return true;
+    return [plan.name, plan.filename, plan.path, plan.source]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal import-plan-modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Import Plan</h2>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="import-plan-body">
+          <input
+            className="import-plan-search"
+            value={planSearch}
+            onChange={e => setPlanSearch(e.target.value)}
+            placeholder="Search plans..."
+            autoFocus
+          />
+          {loadingAvailable ? (
+            <div className="plan-picker-empty">Loading...</div>
+          ) : filteredPlans.length > 0 ? (
+            <div className="import-plan-list">
+              {filteredPlans.map((plan) => (
+                <button
+                  key={plan.path}
+                  type="button"
+                  className="import-plan-item"
+                  onClick={() => handleAddPlan(plan.path)}
+                >
+                  <span className={`import-plan-source ${plan.source || 'project'}`}>
+                    {(plan.source || 'project').toUpperCase()}
+                  </span>
+                  <span className="import-plan-main">
+                    <span className="import-plan-name">{plan.name || plan.filename}</span>
+                    <span className="import-plan-path">{plan.path}</span>
+                  </span>
+                  {plan.modifiedAt && <span className="import-plan-date">{formatRelativeTime(plan.modifiedAt)}</span>}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="plan-picker-empty">No other plans available</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ─────────────────────────────────────────────────
 
 function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFocus, hideCloseButton = false, widgetLayout, onWidgetLayoutChange }) {
@@ -249,7 +309,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
   const [showPlanPicker, setShowPlanPicker] = useState(false);
   const [availablePlans, setAvailablePlans] = useState([]);
   const [loadingAvailable, setLoadingAvailable] = useState(false);
-  const planPickerRef = useRef(null);
+  const [planSearch, setPlanSearch] = useState('');
   const userCollapsedRef = useRef(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [availableClaudeSessions, setAvailableClaudeSessions] = useState([]);
@@ -350,15 +410,6 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
     );
     if (firstUnarchivedIndex >= 0) setExpandedPlanIndex(firstUnarchivedIndex);
   }, [plans, archivedPlanKeys, expandedPlanIndex]);
-
-  useEffect(() => {
-    if (!showPlanPicker) return;
-    const handleClickOutside = (e) => {
-      if (planPickerRef.current && !planPickerRef.current.contains(e.target)) setShowPlanPicker(false);
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showPlanPicker]);
 
   useEffect(() => {
     if (!showSessionPicker) return;
@@ -490,6 +541,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
   const handleOpenPlanPicker = async () => {
     if (showPlanPicker) { setShowPlanPicker(false); return; }
     setShowPlanPicker(true);
+    setPlanSearch('');
     setLoadingAvailable(true);
     try {
       const response = await fetch(`/api/sessions/${session.id}/available-plans`);
@@ -815,30 +867,14 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
           >
             Paste
           </button>
-          <div className="plan-picker-wrapper" ref={planPickerRef}>
-            <button className="widget-header-action" onClick={handleOpenPlanPicker} title="Add existing plan">+</button>
-            {showPlanPicker && (
-              <div className="plan-picker-dropdown">
-                {loadingAvailable ? (
-                  <div className="plan-picker-empty">Loading...</div>
-                ) : availablePlans.length > 0 ? (
-                  availablePlans.map((plan) => (
-                    <div key={plan.path} className="plan-picker-item" onClick={() => handleAddPlan(plan.path)}>
-                      <span className="plan-picker-name">{plan.name}</span>
-                      {plan.modifiedAt && <span className="plan-picker-date">{formatRelativeTime(plan.modifiedAt)}</span>}
-                    </div>
-                  ))
-                ) : (
-                  <div className="plan-picker-empty">No other plans available</div>
-                )}
-              </div>
-            )}
+          <div className="plan-picker-wrapper">
+            <button className="widget-header-action" onClick={handleOpenPlanPicker} title="Import existing plan">+</button>
           </div>
         </div>
       );
     }
     return null;
-  }, [plans, showPastePlan, showPlanPicker, loadingAvailable, availablePlans, session?.promptHistory, handleOpenPlanPicker, handleAddPlan, fetchPlans]);
+  }, [plans, showPastePlan, session?.promptHistory, handleOpenPlanPicker, fetchPlans]);
 
   // ─── Render Widget Content ──────────────────────────────────────
 
@@ -858,9 +894,6 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
             expandedPlanIndex={expandedPlanIndex} setExpandedPlanIndex={setExpandedPlanIndex}
             archivedPlanKeys={archivedPlanKeys} handleTogglePlanArchive={handleTogglePlanArchive}
             userCollapsedRef={userCollapsedRef}
-            showPlanPicker={showPlanPicker} handleOpenPlanPicker={handleOpenPlanPicker}
-            availablePlans={availablePlans} loadingAvailable={loadingAvailable}
-            handleAddPlan={handleAddPlan} planPickerRef={planPickerRef}
             showPastePlan={showPastePlan} setShowPastePlan={setShowPastePlan}
             pastedPlanName={pastedPlanName} setPastedPlanName={setPastedPlanName}
             pastedPlanContent={pastedPlanContent} setPastedPlanContent={setPastedPlanContent}
@@ -873,9 +906,9 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
         return null;
     }
   }, [notes, recentPrompts, plans, loadingPlans, expandedPlanIndex, archivedPlanKeys,
-      showPlanPicker, availablePlans, loadingAvailable, showPastePlan, pastedPlanName,
-      pastedPlanContent, pastePlanError, savingPlan, session, handleNotesBlur, handleOpenPlanPicker,
-      handleAddPlan, handleSavePastedPlan, handleTogglePlanArchive]);
+      showPastePlan, pastedPlanName,
+      pastedPlanContent, pastePlanError, savingPlan, session, handleNotesBlur,
+      handleSavePastedPlan, handleTogglePlanArchive]);
 
   // ─── Render ─────────────────────────────────────────────────────
 
@@ -1103,6 +1136,16 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
         <PromptsModal
           prompts={recentPrompts}
           onClose={() => setShowPromptsModal(false)}
+        />
+      )}
+      {showPlanPicker && (
+        <ImportPlanModal
+          availablePlans={availablePlans}
+          loadingAvailable={loadingAvailable}
+          planSearch={planSearch}
+          setPlanSearch={setPlanSearch}
+          handleAddPlan={handleAddPlan}
+          onClose={() => setShowPlanPicker(false)}
         />
       )}
     </div>

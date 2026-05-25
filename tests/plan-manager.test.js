@@ -5,6 +5,10 @@ const os = require('os');
 const path = require('path');
 
 const PlanManager = require('../backend/planManager');
+const {
+  getCodexPlansDir,
+  normalizeWslCodexPlanPath
+} = require('../backend/planPathUtils');
 
 function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -76,4 +80,24 @@ test('listPlans and filename lookup include extra plan directories', () => {
     fs.rmSync(claudeDir, { recursive: true, force: true });
     fs.rmSync(codexDir, { recursive: true, force: true });
   }
+});
+
+test('normalizes WSL Codex plan paths to Windows UNC paths', () => {
+  const result = normalizeWslCodexPlanPath('/home/denni/.codex/plans/specsket-security-baseline.md', {
+    platform: 'win32',
+    homeDir: 'C:\\Users\\denni',
+    wslDistro: 'Ubuntu'
+  });
+
+  assert.equal(result, '\\\\wsl$\\Ubuntu\\home\\denni\\.codex\\plans\\specsket-security-baseline.md');
+});
+
+test('returns Codex WSL plans directory for Windows hosts', () => {
+  const result = getCodexPlansDir({
+    platform: 'win32',
+    homeDir: 'C:\\Users\\denni',
+    wslDistro: 'Ubuntu'
+  });
+
+  assert.equal(result, '\\\\wsl$\\Ubuntu\\home\\denni\\.codex\\plans');
 });

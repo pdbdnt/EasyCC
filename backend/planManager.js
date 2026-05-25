@@ -2,6 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const EventEmitter = require('events');
+const {
+  getDefaultExtraPlansDirs,
+  getPlanSource,
+  resolvePlanRefForHost
+} = require('./planPathUtils');
 
 /**
  * Manages plan files from CLI-owned plan directories.
@@ -12,7 +17,7 @@ class PlanManager extends EventEmitter {
     this.plansDir = plansDir || path.join(os.homedir(), '.claude', 'plans');
     this.extraPlansDirs = Array.isArray(options.extraPlansDirs)
       ? options.extraPlansDirs.filter(Boolean)
-      : [path.join(os.homedir(), '.codex', 'plans')];
+      : getDefaultExtraPlansDirs();
     this.watchers = new Map();
     this.parentWatchers = new Map();
     this.planCache = new Map();
@@ -63,6 +68,7 @@ class PlanManager extends EventEmitter {
               filename: file,
               name: file.replace('.md', '').replace(/-/g, ' '),
               path: filePath,
+              source: getPlanSource(filePath),
               createdAt: stats.birthtime.toISOString(),
               modifiedAt: stats.mtime.toISOString(),
               size: stats.size
@@ -99,9 +105,10 @@ class PlanManager extends EventEmitter {
 
     const baseName = trimmedRef.split(/[\\/]/).pop();
     const candidatePaths = [];
+    const hostRef = resolvePlanRefForHost(trimmedRef);
 
-    if (path.isAbsolute(trimmedRef) || /[\\/]/.test(trimmedRef)) {
-      candidatePaths.push(path.resolve(trimmedRef));
+    if (path.isAbsolute(hostRef) || /[\\/]/.test(hostRef)) {
+      candidatePaths.push(path.resolve(hostRef));
     }
 
     if (baseName) {
@@ -162,6 +169,7 @@ class PlanManager extends EventEmitter {
         filename,
         name: filename.replace('.md', '').replace(/-/g, ' '),
         path: filePath,
+        source: getPlanSource(filePath),
         content: content,
         workingDir: derivedWorkingDir,
         createdAt: stats.birthtime.toISOString(),
@@ -182,13 +190,14 @@ class PlanManager extends EventEmitter {
     try {
       // Security: prevent directory traversal
       const safeFilename = path.basename(filename);
-      const filePath = path.join(this.plansDir, safeFilename);
-
-      if (!fs.existsSync(filePath)) {
-        return null;
+      for (const plansDir of this.getManagedPlansDirs()) {
+        const filePath = path.join(plansDir, safeFilename);
+        if (fs.existsSync(filePath)) {
+          return filePath;
+        }
       }
 
-      return filePath;
+      return null;
     } catch (error) {
       console.error('Error getting plan path:', error.message);
       return null;

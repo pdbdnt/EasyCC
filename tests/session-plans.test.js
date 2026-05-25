@@ -138,6 +138,87 @@ test('attachCodexPlansFromOutput associates exact Codex plan path with session',
   });
 });
 
+test('attachCodexPlansFromOutput associates WSL shell Codex plan path with only that session', () => {
+  withCodexPlanFile(`easycc-wsl-output-plan-${process.pid}.md`, '# WSL Output Plan\n', (planPath) => {
+    const sessionId = 'session-wsl-output';
+    const otherSessionId = 'session-wsl-other';
+    const sessionManager = Object.create(SessionManager.prototype);
+    const session = {
+      id: sessionId,
+      cliType: 'wsl',
+      workingDir: '/home/denni/apps/specsket',
+      plans: []
+    };
+    const otherSession = {
+      id: otherSessionId,
+      cliType: 'wsl',
+      workingDir: '/home/denni/apps/specsket',
+      plans: []
+    };
+
+    sessionManager.sessions = new Map([[sessionId, session], [otherSessionId, otherSession]]);
+    sessionManager.dataStore = {
+      addPlanToSession(id, requestedPath) {
+        assert.equal(id, sessionId);
+        assert.equal(requestedPath, planPath);
+      }
+    };
+    sessionManager.emit = () => {};
+
+    const attached = sessionManager.attachCodexPlansFromOutput(
+      session,
+      `Plan saved to: ${planPath}\n`
+    );
+
+    assert.deepEqual(attached, [planPath]);
+    assert.deepEqual(session.plans, [planPath]);
+    assert.deepEqual(otherSession.plans, []);
+  });
+});
+
+test('getSessionPlans backfills WSL terminal Codex plan paths from EasyCC transcript', () => {
+  withCodexPlanFile(`easycc-wsl-terminal-backfill-plan-${process.pid}.md`, '# WSL Terminal Backfill Plan\n', (trackedPlanPath) => {
+    const sessionId = 'session-wsl-terminal-backfill';
+    const sessionManager = Object.create(SessionManager.prototype);
+    const session = {
+      id: sessionId,
+      name: 'manual-codex-wsl',
+      cliType: 'wsl',
+      workingDir: '/home/denni/apps/specsket',
+      plans: []
+    };
+
+    sessionManager.sessions = new Map([[sessionId, session]]);
+    sessionManager.readSessionTerminalTranscriptText = (requestedSessionId) => {
+      assert.equal(requestedSessionId, sessionId);
+      return `Plan saved to: ${trackedPlanPath}\n`;
+    };
+    sessionManager.dataStore = {
+      addPlanToSession(id, requestedPath) {
+        assert.equal(id, sessionId);
+        assert.equal(requestedPath, trackedPlanPath);
+      }
+    };
+    sessionManager.emit = () => {};
+    sessionManager.planManager = {
+      getPlanContent(requestedPath) {
+        assert.equal(requestedPath, trackedPlanPath);
+        return {
+          filename: path.basename(trackedPlanPath),
+          name: 'wsl terminal backfill plan',
+          path: trackedPlanPath,
+          modifiedAt: '2026-05-20T12:00:00.000Z'
+        };
+      }
+    };
+
+    const plans = sessionManager.getSessionPlans(sessionId);
+
+    assert.deepEqual(plans.map((plan) => plan.path), [trackedPlanPath]);
+    assert.deepEqual(session.plans, [trackedPlanPath]);
+  });
+});
+
 test('getSessionPlans includes Codex transcript plan paths and manual plans', () => {
   withCodexPlanFile(`easycc-transcript-plan-${process.pid}.md`, '# Transcript Plan\n', (trackedPlanPath) => {
     const manualPlanPath = '/tmp/project/plans/manual-codex-plan.md';

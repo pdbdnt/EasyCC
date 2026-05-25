@@ -3776,6 +3776,109 @@ textarea::placeholder {
   text-align: center;
 }
 
+.import-plan-modal {
+  max-width: 680px;
+  max-height: 78vh;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+}
+
+.import-plan-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.import-plan-search {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.import-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 54vh;
+}
+
+.import-plan-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.import-plan-item:hover {
+  background: var(--bg-active);
+  border-color: var(--accent-blue);
+}
+
+.import-plan-source {
+  min-width: 48px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.import-plan-source.codex {
+  background: rgba(88, 166, 255, 0.16);
+  color: #58a6ff;
+}
+
+.import-plan-source.claude {
+  background: rgba(218, 124, 66, 0.16);
+  color: #da7c42;
+}
+
+.import-plan-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.import-plan-name,
+.import-plan-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.import-plan-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.import-plan-path,
+.import-plan-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.import-plan-date {
+  white-space: nowrap;
+}
+
 /* Claude Session Link Row */
 .claude-session-row {
   position: relative;

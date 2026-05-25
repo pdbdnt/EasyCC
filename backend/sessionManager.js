@@ -11,6 +11,7 @@ const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStat
 const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInputUtils');
 const { createComment, addReactionToComment } = require('./commentUtils');
 const { readTranscriptWindow } = require('./terminalTranscriptUtils');
+const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
@@ -404,11 +405,13 @@ class SessionManager extends EventEmitter {
       session.plans = [];
     }
 
-    const isNew = !session.plans.includes(planPath);
+    const normalizedPlanPath = resolvePlanRefForHost(planPath);
+    const existingKeys = new Set(session.plans.map((existingPlanPath) => normalizePathKey(resolvePlanRefForHost(existingPlanPath))));
+    const isNew = !existingKeys.has(normalizePathKey(normalizedPlanPath));
 
     if (isNew) {
-      session.plans.push(planPath);
-      this.dataStore.addPlanToSession(sessionId, planPath);
+      session.plans.push(normalizedPlanPath);
+      this.dataStore.addPlanToSession(sessionId, normalizedPlanPath);
     }
 
     // Always emit sessionUpdated (for both new and updated plans)
@@ -462,9 +465,12 @@ class SessionManager extends EventEmitter {
       session.plans = [];
     }
 
-    if (!session.plans.includes(planPath)) {
-      session.plans.push(planPath);
-      this.dataStore.addPlanToSession(sessionId, planPath);
+    const normalizedPlanPath = resolvePlanRefForHost(planPath);
+    const existingKeys = new Set(session.plans.map((existingPlanPath) => normalizePathKey(resolvePlanRefForHost(existingPlanPath))));
+
+    if (!existingKeys.has(normalizePathKey(normalizedPlanPath))) {
+      session.plans.push(normalizedPlanPath);
+      this.dataStore.addPlanToSession(sessionId, normalizedPlanPath);
 
       this.emit('sessionUpdated', {
         id: sessionId,
@@ -667,11 +673,12 @@ class SessionManager extends EventEmitter {
       return '';
     }
 
-    if (trimmed.startsWith('~/')) {
-      return path.join(os.homedir(), trimmed.slice(2));
+    const hostPath = resolvePlanRefForHost(trimmed);
+    if (hostPath.startsWith('~/')) {
+      return path.join(os.homedir(), hostPath.slice(2));
     }
 
-    return path.resolve(trimmed);
+    return path.resolve(hostPath);
   }
 
   isAllowedSessionPlanPath(planPath) {
@@ -702,7 +709,7 @@ class SessionManager extends EventEmitter {
   }
 
   extractCodexPlanPathsFromText(text) {
-    if (typeof text !== 'string' || !text) {
+    if (typeof text !== 'string' || !text || (!text.includes('.codex/plans') && !text.includes('.codex\\plans'))) {
       return [];
     }
 
@@ -916,11 +923,13 @@ class SessionManager extends EventEmitter {
   }
 
   backfillCodexPlansForSession(session) {
-    if (!session || session.cliType !== 'codex') {
+    if (!session || (session.cliType !== 'codex' && session.cliType !== 'wsl')) {
       return [];
     }
 
-    this.ensureCodexSessionLinked(session);
+    if (session.cliType === 'codex') {
+      this.ensureCodexSessionLinked(session);
+    }
 
     const planPaths = new Set();
     const terminalText = [
@@ -933,11 +942,13 @@ class SessionManager extends EventEmitter {
     }
 
     const codexSessionIds = new Set();
-    if (session.codexSessionId) {
+    if (session.cliType === 'codex' && session.codexSessionId) {
       codexSessionIds.add(session.codexSessionId);
     }
-    for (const codexSessionId of this.getRecentCodexSessionIdsForSession(session)) {
-      codexSessionIds.add(codexSessionId);
+    if (session.cliType === 'codex') {
+      for (const codexSessionId of this.getRecentCodexSessionIdsForSession(session)) {
+        codexSessionIds.add(codexSessionId);
+      }
     }
 
     for (const codexSessionId of codexSessionIds) {
@@ -947,16 +958,14 @@ class SessionManager extends EventEmitter {
     }
 
     for (const planPath of planPaths) {
-      if (!session.plans?.includes(planPath)) {
-        this.addPlanToSession(session.id, planPath);
-      }
+      this.addPlanToSession(session.id, planPath);
     }
 
     return [...planPaths];
   }
 
   attachCodexPlansFromOutput(session, data) {
-    if (!session || session.cliType !== 'codex') {
+    if (!session || (session.cliType !== 'codex' && session.cliType !== 'wsl')) {
       return [];
     }
 
@@ -3469,7 +3478,7 @@ class SessionManager extends EventEmitter {
       return plans;
     }
 
-    if (session.cliType === 'codex') {
+    if (session.cliType === 'codex' || session.cliType === 'wsl') {
       this.backfillCodexPlansForSession(session);
       const trackedPlanPaths = session.codexSessionId
         ? this.getPlansForCodexSession(session.codexSessionId)
