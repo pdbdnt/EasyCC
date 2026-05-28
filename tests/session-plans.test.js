@@ -108,6 +108,93 @@ test('getSessionPlans merges Claude-tracked and manual plans without duplicates 
   );
 });
 
+test('getSessionPlans keeps manually associated Claude plan with different explicit working directory', () => {
+  const sessionId = 'session-claude-manual-cross-repo';
+  const manualPlanPath = '/tmp/project/plans/specsket-plan.md';
+  const sessionManager = Object.create(SessionManager.prototype);
+
+  sessionManager.sessions = new Map([
+    [sessionId, {
+      id: sessionId,
+      cliType: 'claude',
+      claudeSessionId: 'claude-cross-repo-123',
+      workingDir: '/home/denni/apps/EasyCC',
+      plans: [manualPlanPath]
+    }]
+  ]);
+
+  sessionManager.planManager = {
+    getPlansForClaudeSession() {
+      return [];
+    },
+    getPlanContent(requestedPath) {
+      assert.equal(requestedPath, manualPlanPath);
+      return {
+        filename: 'specsket-plan.md',
+        name: 'specsket plan',
+        path: manualPlanPath,
+        content: 'Working Directory: /home/denni/apps/specsket\n# Specsket Plan\n',
+        workingDir: '/home/denni/apps/specsket',
+        modifiedAt: '2026-05-20T12:00:00.000Z'
+      };
+    }
+  };
+
+  const plans = sessionManager.getSessionPlans(sessionId);
+
+  assert.deepEqual(plans.map((plan) => plan.path), [manualPlanPath]);
+});
+
+test('detectPlanActivity ignores generic plan mode chatter', () => {
+  const sessionManager = Object.create(SessionManager.prototype);
+  const session = {
+    id: 'session-plan-chatter',
+    plans: []
+  };
+  const emitted = [];
+
+  sessionManager.emit = (event, payload) => {
+    emitted.push({ event, payload });
+  };
+
+  sessionManager.detectPlanActivity('Entered plan mode\n', session);
+  sessionManager.detectPlanActivity('ready to execute\n', session);
+
+  assert.deepEqual(emitted, []);
+});
+
+test('detectPlanActivity emits for concrete plan output', () => {
+  const sessionManager = Object.create(SessionManager.prototype);
+  const pathSession = {
+    id: 'session-plan-path',
+    plans: []
+  };
+  const savedSession = {
+    id: 'session-plan-saved',
+    plans: ['existing-plan.md']
+  };
+  const emitted = [];
+
+  sessionManager.emit = (event, payload) => {
+    emitted.push({ event, payload });
+  };
+
+  sessionManager.detectPlanActivity(
+    'Plan written to /home/denni/.codex/plans/example.md\n',
+    pathSession
+  );
+  sessionManager.detectPlanActivity('Saved plan\n', savedSession);
+
+  assert.equal(emitted.length, 2);
+  assert.deepEqual(emitted.map(item => item.event), ['sessionUpdated', 'sessionUpdated']);
+  assert.equal(emitted[0].payload.id, pathSession.id);
+  assert.deepEqual(emitted[0].payload.plans, []);
+  assert.equal(typeof emitted[0].payload.plansUpdatedAt, 'number');
+  assert.equal(emitted[1].payload.id, savedSession.id);
+  assert.deepEqual(emitted[1].payload.plans, ['existing-plan.md']);
+  assert.equal(typeof emitted[1].payload.plansUpdatedAt, 'number');
+});
+
 test('attachCodexPlansFromOutput associates exact Codex plan path with session', () => {
   withCodexPlanFile(`easycc-output-plan-${process.pid}.md`, '# Output Plan\n', (planPath) => {
     const sessionId = 'session-codex-output';
@@ -174,6 +261,96 @@ test('attachCodexPlansFromOutput associates WSL shell Codex plan path with only 
     assert.deepEqual(session.plans, [planPath]);
     assert.deepEqual(otherSession.plans, []);
   });
+});
+
+test('attachCodexPlansFromOutput ignores Codex plan paths from another working directory', () => {
+  withCodexPlanFile(
+    `easycc-cross-repo-output-plan-${process.pid}.md`,
+    'Working Directory: /home/denni/apps/specsket\n# Specsket Plan\n',
+    (planPath) => {
+      const sessionId = 'session-codex-cross-repo-output';
+      const sessionManager = Object.create(SessionManager.prototype);
+      const session = {
+        id: sessionId,
+        cliType: 'codex',
+        workingDir: '/home/denni/apps/EasyCC',
+        plans: []
+      };
+
+      sessionManager.sessions = new Map([[sessionId, session]]);
+      sessionManager.dataStore = {
+        addPlanToSession() {
+          throw new Error('Cross-repo plan should not be added');
+        }
+      };
+      sessionManager.planManager = {
+        getPlanContent() {
+          return {
+            filename: path.basename(planPath),
+            name: 'specsket plan',
+            path: planPath,
+            content: 'Working Directory: /home/denni/apps/specsket\n# Specsket Plan\n',
+            workingDir: '/home/denni/apps/specsket',
+            modifiedAt: '2026-05-20T12:00:00.000Z'
+          };
+        }
+      };
+      sessionManager.emit = () => {};
+
+      const attached = sessionManager.attachCodexPlansFromOutput(
+        session,
+        `Plan saved to: ${planPath}\n`
+      );
+
+      assert.deepEqual(attached, []);
+      assert.deepEqual(session.plans, []);
+    }
+  );
+});
+
+test('getSessionPlans keeps explicitly imported Codex plans from another working directory', () => {
+  const sessionId = 'session-codex-cross-repo-existing';
+  const easyccPlanPath = '/tmp/project/plans/easycc-plan.md';
+  const specsketPlanPath = '/tmp/project/plans/specsket-plan.md';
+  const sessionManager = Object.create(SessionManager.prototype);
+
+  sessionManager.sessions = new Map([
+    [sessionId, {
+      id: sessionId,
+      cliType: 'codex',
+      codexSessionId: null,
+      workingDir: '/home/denni/apps/EasyCC',
+      plans: [specsketPlanPath, easyccPlanPath]
+    }]
+  ]);
+  sessionManager.backfillCodexPlansForSession = () => [];
+  sessionManager.planManager = {
+    getPlanContent(requestedPath) {
+      if (requestedPath === specsketPlanPath) {
+        return {
+          filename: 'specsket-plan.md',
+          name: 'specsket plan',
+          path: specsketPlanPath,
+          workingDir: '/home/denni/apps/specsket',
+          modifiedAt: '2026-05-20T12:00:00.000Z'
+        };
+      }
+      if (requestedPath === easyccPlanPath) {
+        return {
+          filename: 'easycc-plan.md',
+          name: 'easycc plan',
+          path: easyccPlanPath,
+          workingDir: '/home/denni/apps/EasyCC',
+          modifiedAt: '2026-05-20T11:00:00.000Z'
+        };
+      }
+      throw new Error(`Unexpected plan path: ${requestedPath}`);
+    }
+  };
+
+  const plans = sessionManager.getSessionPlans(sessionId);
+
+  assert.deepEqual(plans.map((plan) => plan.path), [specsketPlanPath, easyccPlanPath]);
 });
 
 test('getSessionPlans backfills WSL terminal Codex plan paths from EasyCC transcript', () => {
@@ -278,6 +455,131 @@ test('getSessionPlans includes Codex transcript plan paths and manual plans', ()
       plans.map((plan) => plan.path),
       [trackedPlanPath, manualPlanPath]
     );
+  });
+});
+
+test('getSessionPlans filters Codex transcript plan with different explicit working directory', () => {
+  withCodexPlanFile(
+    `easycc-codex-transcript-cross-repo-${process.pid}.md`,
+    'Working Directory: /home/denni/apps/specsket\n# Specsket Plan\n',
+    (trackedPlanPath) => {
+      const sessionId = 'session-codex-transcript-cross-repo';
+      const sessionManager = Object.create(SessionManager.prototype);
+
+      sessionManager.sessions = new Map([
+        [sessionId, {
+          id: sessionId,
+          cliType: 'codex',
+          codexSessionId: 'codex-cross-repo-123',
+          workingDir: '/home/denni/apps/EasyCC',
+          plans: []
+        }]
+      ]);
+      sessionManager.readCodexSessionTranscriptText = (codexSessionId) => {
+        assert.equal(codexSessionId, 'codex-cross-repo-123');
+        return `Plan saved to: ${trackedPlanPath}\n`;
+      };
+      sessionManager.planManager = {
+        getPlanContent(requestedPath) {
+          assert.equal(requestedPath, trackedPlanPath);
+          return {
+            filename: path.basename(trackedPlanPath),
+            name: 'specsket plan',
+            path: trackedPlanPath,
+            content: 'Working Directory: /home/denni/apps/specsket\n# Specsket Plan\n',
+            workingDir: '/home/denni/apps/specsket',
+            modifiedAt: '2026-05-20T10:00:00.000Z'
+          };
+        }
+      };
+      sessionManager.dataStore = {
+        addPlanToSession() {}
+      };
+      sessionManager.emit = () => {};
+      sessionManager.loadCodexSessionIndex = () => [];
+
+      const plans = sessionManager.getSessionPlans(sessionId);
+
+      assert.deepEqual(plans, []);
+    }
+  );
+});
+
+test('getSessionPlans includes Codex transcript plan without explicit working directory', () => {
+  withCodexPlanFile(`easycc-transcript-derived-codex-dir-${process.pid}.md`, '# Transcript Plan\n', (trackedPlanPath) => {
+    const sessionId = 'session-codex-transcript-derived-dir';
+    const sessionManager = Object.create(SessionManager.prototype);
+
+    sessionManager.sessions = new Map([
+      [sessionId, {
+        id: sessionId,
+        cliType: 'codex',
+        codexSessionId: 'codex-derived-dir-123',
+        workingDir: '/home/denni/apps/specsket',
+        plans: []
+      }]
+    ]);
+    sessionManager.readCodexSessionTranscriptText = (codexSessionId) => {
+      assert.equal(codexSessionId, 'codex-derived-dir-123');
+      return `Plan saved to: ${trackedPlanPath}\n`;
+    };
+    sessionManager.planManager = {
+      getPlanContent(requestedPath) {
+        assert.equal(requestedPath, trackedPlanPath);
+        return {
+          filename: path.basename(trackedPlanPath),
+          name: 'transcript plan',
+          path: trackedPlanPath,
+          content: '# Transcript Plan\n',
+          workingDir: path.dirname(path.dirname(trackedPlanPath)),
+          modifiedAt: '2026-05-20T10:00:00.000Z'
+        };
+      }
+    };
+    sessionManager.dataStore = {
+      addPlanToSession() {}
+    };
+    sessionManager.emit = () => {};
+    sessionManager.loadCodexSessionIndex = () => [];
+
+    const plans = sessionManager.getSessionPlans(sessionId);
+
+    assert.deepEqual(plans.map((plan) => plan.path), [trackedPlanPath]);
+  });
+});
+
+test('getSessionPlans includes manually imported Codex plan without explicit working directory', () => {
+  withCodexPlanFile(`easycc-manual-derived-codex-dir-${process.pid}.md`, '# Manual Plan\n', (manualPlanPath) => {
+    const sessionId = 'session-codex-manual-derived-dir';
+    const sessionManager = Object.create(SessionManager.prototype);
+
+    sessionManager.sessions = new Map([
+      [sessionId, {
+        id: sessionId,
+        cliType: 'codex',
+        codexSessionId: null,
+        workingDir: '/home/denni/apps/specsket',
+        plans: [manualPlanPath]
+      }]
+    ]);
+    sessionManager.backfillCodexPlansForSession = () => [];
+    sessionManager.planManager = {
+      getPlanContent(requestedPath) {
+        assert.equal(requestedPath, manualPlanPath);
+        return {
+          filename: path.basename(manualPlanPath),
+          name: 'manual plan',
+          path: manualPlanPath,
+          content: '# Manual Plan\n',
+          workingDir: path.dirname(path.dirname(manualPlanPath)),
+          modifiedAt: '2026-05-20T10:00:00.000Z'
+        };
+      }
+    };
+
+    const plans = sessionManager.getSessionPlans(sessionId);
+
+    assert.deepEqual(plans.map((plan) => plan.path), [manualPlanPath]);
   });
 });
 

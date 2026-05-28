@@ -479,6 +479,40 @@ class SessionManager extends EventEmitter {
     }
   }
 
+  planMatchesSessionWorkingDir(session, planRef, plan = null) {
+    if (!session?.workingDir || !planRef) {
+      return true;
+    }
+
+    if (!plan && !this.planManager?.getPlanContent) {
+      return true;
+    }
+
+    const planContent = plan || this.planManager.getPlanContent(planRef);
+    if (!planContent) {
+      return false;
+    }
+
+    if (!this.planHasExplicitWorkingDir(planContent)) {
+      return true;
+    }
+
+    if (!planContent.workingDir) {
+      return true;
+    }
+
+    return this.normalizeGroupPath(planContent.workingDir).toLowerCase() ===
+      this.normalizeGroupPath(session.workingDir).toLowerCase();
+  }
+
+  planHasExplicitWorkingDir(plan) {
+    if (!plan || typeof plan.content !== 'string') {
+      return false;
+    }
+
+    return /(?:^|\n)\s*(?:Working Directory|Project|Path)[:\s]+[^\n]+/i.test(plan.content);
+  }
+
   /**
    * Convert Windows or WSL UNC path to WSL path.
    * @param {string} windowsPath - Windows path (e.g., C:\Users\foo) or WSL UNC path
@@ -957,11 +991,15 @@ class SessionManager extends EventEmitter {
       }
     }
 
+    const attachedPlanPaths = [];
     for (const planPath of planPaths) {
-      this.addPlanToSession(session.id, planPath);
+      if (this.planMatchesSessionWorkingDir(session, planPath)) {
+        this.addPlanToSession(session.id, planPath);
+        attachedPlanPaths.push(planPath);
+      }
     }
 
-    return [...planPaths];
+    return attachedPlanPaths;
   }
 
   attachCodexPlansFromOutput(session, data) {
@@ -970,10 +1008,14 @@ class SessionManager extends EventEmitter {
     }
 
     const planPaths = this.extractCodexPlanPathsFromText(data);
+    const attachedPlanPaths = [];
     for (const planPath of planPaths) {
-      this.addOrUpdatePlanInSession(session.id, planPath);
+      if (this.planMatchesSessionWorkingDir(session, planPath)) {
+        this.addOrUpdatePlanInSession(session.id, planPath);
+        attachedPlanPaths.push(planPath);
+      }
     }
-    return planPaths;
+    return attachedPlanPaths;
   }
 
   getCodexCaptureWindowMs(attemptNum = 1) {
@@ -2672,20 +2714,17 @@ class SessionManager extends EventEmitter {
    * @param {object} session - Session object
    */
   detectPlanActivity(data, session) {
-    // Look for plan-related output patterns from Claude
+    // Look for concrete plan file activity. Avoid generic plan-mode chatter;
+    // the sidebar only needs a refresh when a plan was likely written/updated.
     const planPatterns = [
       /Updated plan/i,
       /plan.*updated/i,
       /Created.*plan/i,
-      /Entered plan mode/i,
-      /Exited plan mode/i,
       /wrote.*plan.*\.md/i,
       /Saved.*plan/i,
       /plan.*saved/i,
       /\.claude[/\\]plans[/\\].*\.md/i,
-      /\.codex[/\\]plans[/\\].*\.md/i,
-      /written up a plan/i,
-      /ready to execute/i
+      /\.codex[/\\]plans[/\\].*\.md/i
     ];
 
     for (const pattern of planPatterns) {
@@ -3458,19 +3497,29 @@ class SessionManager extends EventEmitter {
         session.workingDir
       );
 
-      const allPlanRefs = [...trackedPlanPaths, ...(session.plans || [])];
       const seen = new Set();
       const plans = [];
 
-      for (const planRef of allPlanRefs) {
+      const addPlan = (planRef, { filterWorkingDir = false } = {}) => {
         const plan = this.planManager.getPlanContent(planRef);
         if (plan) {
+          if (filterWorkingDir && !this.planMatchesSessionWorkingDir(session, planRef, plan)) {
+            return;
+          }
           const key = plan.path || plan.filename;
           if (!seen.has(key)) {
             seen.add(key);
             plans.push(plan);
           }
         }
+      };
+
+      for (const planRef of trackedPlanPaths) {
+        addPlan(planRef, { filterWorkingDir: true });
+      }
+
+      for (const planRef of (session.plans || [])) {
+        addPlan(planRef);
       }
 
       // Sort by modified time (newest first)
@@ -3483,19 +3532,29 @@ class SessionManager extends EventEmitter {
       const trackedPlanPaths = session.codexSessionId
         ? this.getPlansForCodexSession(session.codexSessionId)
         : [];
-      const allPlanRefs = [...trackedPlanPaths, ...(session.plans || [])];
       const seen = new Set();
       const plans = [];
 
-      for (const planRef of allPlanRefs) {
+      const addPlan = (planRef, { filterWorkingDir = false } = {}) => {
         const plan = this.planManager.getPlanContent(planRef);
         if (plan) {
+          if (filterWorkingDir && !this.planMatchesSessionWorkingDir(session, planRef, plan)) {
+            return;
+          }
           const key = plan.path || plan.filename;
           if (!seen.has(key)) {
             seen.add(key);
             plans.push(plan);
           }
         }
+      };
+
+      for (const planRef of trackedPlanPaths) {
+        addPlan(planRef, { filterWorkingDir: true });
+      }
+
+      for (const planRef of (session.plans || [])) {
+        addPlan(planRef);
       }
 
       plans.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));

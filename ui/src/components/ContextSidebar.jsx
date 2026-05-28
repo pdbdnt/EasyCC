@@ -173,7 +173,7 @@ function PlansWidget({
           </div>
         </div>
       )}
-      {loadingPlans ? (
+      {loadingPlans && plans.length === 0 ? (
         <p className="text-muted">Loading plans...</p>
       ) : plans.length > 0 ? (
         <div className="plans-mini-list">
@@ -322,6 +322,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
   const [savingPlan, setSavingPlan] = useState(false);
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
   const widgetPickerRef = useRef(null);
+  const hasLoadedPlansRef = useRef(false);
 
   // Widget layout state
   const registryIds = Object.keys(WIDGET_REGISTRY);
@@ -343,14 +344,25 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
 
   // ─── Existing effects (unchanged) ───────────────────────────────
 
+  useEffect(() => {
+    hasLoadedPlansRef.current = false;
+    setPlans([]);
+    setLoadingPlans(Boolean(session?.id));
+  }, [session?.id]);
+
   const plansKey = `${JSON.stringify(session?.plans || [])}-${session?.plansUpdatedAt || 0}`;
 
   const fetchPlans = useCallback(async () => {
     if (!session?.id) {
+      hasLoadedPlansRef.current = false;
       setPlans([]);
+      setLoadingPlans(false);
       return;
     }
-    setLoadingPlans(true);
+    const isInitialLoad = !hasLoadedPlansRef.current;
+    if (isInitialLoad) {
+      setLoadingPlans(true);
+    }
     try {
       const response = await fetch(`/api/sessions/${session.id}/plans`);
       if (response.ok) {
@@ -360,6 +372,7 @@ function ContextSidebar({ session, agent = null, onClose, onUpdateSession, onFoc
     } catch (error) {
       console.error('Error fetching plans:', error);
     } finally {
+      hasLoadedPlansRef.current = true;
       setLoadingPlans(false);
     }
   }, [session?.id]);
