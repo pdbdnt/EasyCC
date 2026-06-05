@@ -671,3 +671,43 @@ test('ensureCodexSessionLinked recovers Codex ID from old resume hint title', ()
   assert.equal(session.codexSessionId, codexSessionId);
   assert.equal(session.codexThreadName, 'cutsheetfont-etc');
 });
+
+test('ensureCodexSessionLinked recovers Codex ID from session resume hint title', () => {
+  const sessionId = 'session-codex-title-backfill-session-wording';
+  const codexSessionId = '019e95bd-9c65-7313-b0f1-5e58a16617bb';
+  const sessionManager = Object.create(SessionManager.prototype);
+  const session = {
+    id: sessionId,
+    name: `cutsheetdesignerhorizontaalscrollbar. To resume this session run codex resume, then select cutsheetdesignerhorizontaalscrollbar (${codexSessionId})`,
+    cliType: 'codex',
+    codexSessionId: null,
+    workingDir: '/home/denni/apps/specsket',
+    plans: []
+  };
+
+  sessionManager.sessions = new Map([[sessionId, session]]);
+  sessionManager.readCodexSessionMetaById = (requestedSessionId) => {
+    assert.equal(requestedSessionId, codexSessionId);
+    return {
+      sessionId: codexSessionId,
+      cwd: '/home/denni/apps/specsket',
+      createdAt: '2026-05-20T05:00:00.000Z',
+      filePath: '/home/denni/.codex/sessions/fake.jsonl'
+    };
+  };
+  sessionManager.loadCodexSessionIndex = () => [{
+    id: codexSessionId,
+    threadName: 'cutsheetdesignerhorizontaalscrollbar',
+    updatedAt: '2026-05-20T05:30:00.000Z',
+    updatedAtMs: Date.parse('2026-05-20T05:30:00.000Z')
+  }];
+  sessionManager.normalizeGroupPath = (value) => value;
+  sessionManager.getOwnedCodexSessionIds = () => new Set();
+  sessionManager.dataStore = { saveSession: () => {} };
+  sessionManager.emit = () => {};
+  sessionManager.getSessionSnapshot = () => session;
+
+  assert.equal(sessionManager.ensureCodexSessionLinked(session), true);
+  assert.equal(session.codexSessionId, codexSessionId);
+  assert.equal(session.codexThreadName, 'cutsheetdesignerhorizontaalscrollbar');
+});

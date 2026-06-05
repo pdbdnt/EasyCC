@@ -156,9 +156,12 @@ class SessionManager extends EventEmitter {
       if (canResume) {
         const outputBufferSize = this.getOutputBufferSize(cliType);
         const repoContext = this.deriveRepoContext(normalizedWorkingDir, sessionData);
+        const restoredName = cliType === 'codex'
+          ? this.stripCodexResumeHint(sessionData.name) || sessionData.name
+          : sessionData.name;
         const session = {
           id: sessionData.id,
-          name: sessionData.name,
+          name: restoredName,
           // Mark previously active sessions as paused (since they have no PTY now)
           status: 'paused',
           currentTask: sessionData.currentTask || '',
@@ -853,8 +856,7 @@ class SessionManager extends EventEmitter {
       candidates.add(session.codexThreadName.trim().toLowerCase());
     }
     if (session?.name) {
-      const beforeResumeHint = session.name.split(/\s+To resume this thread run codex resume\b/i)[0];
-      const cleaned = beforeResumeHint.trim().toLowerCase();
+      const cleaned = this.stripCodexResumeHint(session.name).trim().toLowerCase();
       if (cleaned) {
         candidates.add(cleaned);
       }
@@ -1627,6 +1629,12 @@ class SessionManager extends EventEmitter {
       .replace(/\r/g, '\n');
   }
 
+  stripCodexResumeHint(text) {
+    return String(text || '')
+      .replace(/\s*[,.;:]\s*to\s+resume\s+this\s+(?:thread|session)\s+run\s+codex\s+resume\b.*$/i, '')
+      .trim();
+  }
+
   updateStatusDetectionContext(session, data) {
     const cleanData = this.cleanTerminalText(data);
     const next = `${session?.statusDetectionContext || ''}${cleanData}`;
@@ -1654,11 +1662,11 @@ class SessionManager extends EventEmitter {
       for (const pattern of patterns) {
         const match = line.match(pattern);
         if (!match || !match[1]) continue;
-        const name = match[1]
-          .trim()
-          .replace(/^["']|["']$/g, '')
-          .replace(/\s*[,.;:]\s*to\s+resume\s+this\s+thread\s+run\s+codex\s+resume\b.*$/i, '')
-          .trim();
+        const name = this.stripCodexResumeHint(
+          match[1]
+            .trim()
+            .replace(/^["']|["']$/g, '')
+        );
         if (name) return name;
       }
     }

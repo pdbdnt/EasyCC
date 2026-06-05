@@ -333,6 +333,7 @@ test('getOutputBufferSize: terminal/codex larger than claude', () => {
 test('extractSessionRename: detects Claude rename output', () => {
   const manager = {
     cleanTerminalText: SessionManager.prototype.cleanTerminalText,
+    stripCodexResumeHint: SessionManager.prototype.stripCodexResumeHint,
     extractSessionRename: SessionManager.prototype.extractSessionRename
   };
 
@@ -345,6 +346,7 @@ test('extractSessionRename: detects Claude rename output', () => {
 test('extractSessionRename: detects Codex conversation rename output', () => {
   const manager = {
     cleanTerminalText: SessionManager.prototype.cleanTerminalText,
+    stripCodexResumeHint: SessionManager.prototype.stripCodexResumeHint,
     extractSessionRename: SessionManager.prototype.extractSessionRename
   };
 
@@ -370,6 +372,67 @@ test('extractSessionRename: detects Codex conversation rename output', () => {
     ),
     'cutsheetfont-etc'
   );
+  assert.equal(
+    SessionManager.prototype.extractSessionRename.call(
+      manager,
+      'Session renamed to cutsheetdesignerhorizontaalscrollbar. To resume this session run codex resume, then select cutsheetdesignerhorizontaalscrollbar (019e95bd-9c65-7313-b0f1-5e58a16617bb)\r\n'
+    ),
+    'cutsheetdesignerhorizontaalscrollbar'
+  );
+});
+
+test('loadPersistedSessions: strips Codex resume hint from restored session names', () => {
+  let savedSession = null;
+  const manager = Object.create(SessionManager.prototype);
+
+  manager.dataStore = {
+    loadSessions() {
+      return {
+        'session-1': {
+          id: 'session-1',
+          name: 'cutsheetdesignerhorizontaalscrollbar. To resume this session run codex resume, then select cutsheetdesignerhorizontaalscrollbar (019e95bd-9c65-7313-b0f1-5e58a16617bb)',
+          workingDir: '/home/denni/apps/specsket',
+          cliType: 'codex',
+          createdAt: '2026-06-05T00:00:00.000Z',
+          lastActivity: '2026-06-05T00:01:00.000Z',
+          status: 'active',
+          promptHistory: [],
+          tags: [],
+          plans: [],
+          blockedBy: [],
+          blocks: [],
+          rejectionHistory: [],
+          comments: [],
+          messageQueue: []
+        }
+      };
+    },
+    saveSession(session) {
+      savedSession = session;
+    },
+    deleteSession() {
+      throw new Error('deleteSession should not be called');
+    }
+  };
+  manager.sessions = new Map();
+  manager.deleteSessionTranscript = () => {};
+  manager.normalizeWorkingDirForCli = (value) => value;
+  manager.getOutputBufferSize = () => 12000;
+  manager.deriveRepoContext = () => ({
+    repoRoot: null,
+    repoName: null,
+    gitBranch: null,
+    groupKey: '/home/denni/apps/specsket'
+  });
+  manager.sanitizeRole = () => '';
+  manager._sweepExpiredQueueMessages = () => {};
+  manager.selectCodexResumeTarget = () => null;
+
+  manager.loadPersistedSessions();
+
+  const restored = manager.sessions.get('session-1');
+  assert.equal(restored.name, 'cutsheetdesignerhorizontaalscrollbar');
+  assert.equal(savedSession.name, 'cutsheetdesignerhorizontaalscrollbar');
 });
 
 test('convertToWslPath: converts Windows drive paths', () => {
