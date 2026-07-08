@@ -3170,13 +3170,27 @@ class SessionManager extends EventEmitter {
         this.flushPromptBuffer(session);
       }
 
-      // Only submitted input (Enter/newline) flips state back to active.
-      if (isSubmittedInput && (session.status === 'idle' || session.status === 'waiting')) {
-        session.status = 'active';
+      // Submitted input can restart work from review before Codex produces output.
+      if (
+        isSubmittedInput &&
+        session.status !== 'paused' &&
+        session.status !== 'completed' &&
+        (
+          session.status === 'idle' ||
+          session.status === 'waiting' ||
+          session.status === 'thinking' ||
+          session.stage === 'in_review'
+        )
+      ) {
+        const nextStatus = ['idle', 'waiting', 'thinking'].includes(session.status)
+          ? 'active'
+          : session.status;
+        session.status = nextStatus;
         this.emit('statusChange', {
           sessionId: id,
-          status: 'active',
-          currentTask: session.currentTask
+          status: nextStatus,
+          currentTask: session.currentTask,
+          source: 'input'
         });
       }
 
@@ -3399,6 +3413,30 @@ class SessionManager extends EventEmitter {
       return null;
     }
     return session.outputBuffer.getAll();
+  }
+
+  /**
+   * Get a bounded recent output tail for lightweight status/stage decisions.
+   * @param {string} id - Session ID
+   * @param {object} options
+   * @param {number} options.maxChunks - Maximum recent buffer chunks to inspect
+   * @param {number} options.maxChars - Maximum characters to return
+   * @returns {string}
+   */
+  getRecentSessionOutputText(id, { maxChunks = 80, maxChars = 20000 } = {}) {
+    const session = this.sessions.get(id);
+    if (!session?.outputBuffer?.getAll) {
+      return '';
+    }
+
+    const chunks = session.outputBuffer.getAll();
+    if (chunks.length === 0) {
+      return '';
+    }
+
+    const boundedChunks = chunks.slice(-Math.max(1, maxChunks));
+    const text = boundedChunks.map(chunk => String(chunk || '')).join('');
+    return text.length > maxChars ? text.slice(-maxChars) : text;
   }
 
   getSessionTranscript(id, options = {}) {

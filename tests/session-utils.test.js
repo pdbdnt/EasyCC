@@ -239,6 +239,37 @@ test('decideKanbanAutoSync: resumes progress after final plan prompt submission'
   assert.deepEqual(decision, { action: 'schedule', targetStage: 'in_progress' });
 });
 
+test('decideKanbanAutoSync: codex command approval after review follow-up resumes progress', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_review',
+      stageEnteredAt: '2026-05-19T04:16:37.345Z',
+      lastSubmittedInputAtMs: new Date('2026-05-19T04:17:00.000Z').getTime()
+    },
+    status: 'waiting',
+    existingTargetStage: 'in_review',
+    recentOutput: 'Would you like to run this command?'
+  });
+
+  assert.deepEqual(decision, { action: 'schedule', targetStage: 'in_progress' });
+});
+
+test('decideKanbanAutoSync: transient thinking after review follow-up resumes progress', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_review',
+      stageEnteredAt: '2026-05-19T04:16:37.345Z',
+      lastSubmittedInputAtMs: new Date('2026-05-19T04:17:00.000Z').getTime()
+    },
+    status: 'thinking',
+    existingTargetStage: 'in_review'
+  });
+
+  assert.deepEqual(decision, { action: 'schedule', targetStage: 'in_progress' });
+});
+
 test('decideKanbanAutoSync: schedules in_progress when real work resumes from review', () => {
   const decision = decideKanbanAutoSync({
     session: {
@@ -328,6 +359,41 @@ test('getOutputBufferSize: terminal/codex larger than claude', () => {
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'claude'), 750);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);
+});
+
+test('getRecentSessionOutputText: reads bounded recent tail only', () => {
+  const manager = {
+    sessions: new Map([[
+      'session-1',
+      {
+        outputBuffer: {
+          getAll() {
+            return [
+              'stale Implement this plan?',
+              '\nworking output\n',
+              'Would you like to run this command?'
+            ];
+          }
+        }
+      }
+    ]])
+  };
+
+  const text = SessionManager.prototype.getRecentSessionOutputText.call(
+    manager,
+    'session-1',
+    { maxChunks: 2, maxChars: 1000 }
+  );
+
+  assert.equal(text.includes('stale Implement this plan?'), false);
+  assert.equal(text.includes('Would you like to run this command?'), true);
+
+  const capped = SessionManager.prototype.getRecentSessionOutputText.call(
+    manager,
+    'session-1',
+    { maxChunks: 3, maxChars: 12 }
+  );
+  assert.equal(capped, 'his command?');
 });
 
 test('extractSessionRename: detects Claude rename output', () => {

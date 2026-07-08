@@ -253,7 +253,15 @@ function decideKanbanAutoSync({
     return { action: 'clear' };
   }
 
+  const submittedAfterReview = session.lastSubmittedInputAtMs && session.stageEnteredAt &&
+    session.lastSubmittedInputAtMs > new Date(session.stageEnteredAt).getTime();
+
   if (session.cliType === 'codex' && status === 'waiting' && isCodexMidWorkApprovalPrompt(recentOutput)) {
+    if (session.stage === 'in_review' && submittedAfterReview) {
+      return existingTargetStage === 'in_progress'
+        ? { action: 'keep', targetStage: 'in_progress' }
+        : { action: 'schedule', targetStage: 'in_progress' };
+    }
     return { action: 'clear' };
   }
 
@@ -270,9 +278,6 @@ function decideKanbanAutoSync({
     return { action: 'keep', targetStage };
   }
 
-  const submittedAfterReview = session.lastSubmittedInputAtMs && session.stageEnteredAt &&
-    session.lastSubmittedInputAtMs > new Date(session.stageEnteredAt).getTime();
-
   if (
     targetStage === 'in_progress' &&
     session.cliType === 'codex' &&
@@ -286,6 +291,10 @@ function decideKanbanAutoSync({
   }
 
   if (existingTargetStage === 'in_review' && targetStage === 'in_progress') {
+    if (session.stage === 'in_review' && submittedAfterReview) {
+      return { action: 'schedule', targetStage };
+    }
+
     if (status === 'thinking') {
       return { action: 'keep', targetStage: existingTargetStage };
     }

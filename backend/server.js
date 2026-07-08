@@ -3941,7 +3941,7 @@ async function start() {
     const existing = kanbanSyncTimers.get(sessionId);
     const session = sessionManager.getSession(sessionId);
     const recentOutput = session
-      ? (sessionManager.getSessionOutput(sessionId) || []).join('\n')
+      ? sessionManager.getRecentSessionOutputText(sessionId)
       : '';
     const decision = decideKanbanAutoSync({
       session,
