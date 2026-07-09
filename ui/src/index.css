@@ -2732,6 +2732,30 @@ textarea::placeholder {
   background: rgba(255, 68, 68, 0.15);
 }
 
+.group-kill-paused-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.session-group-header:hover .group-kill-paused-btn {
+  opacity: 0.6;
+}
+
+.group-kill-paused-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent-red);
+  background: rgba(255, 68, 68, 0.15);
+}
+
 .group-resume-btn {
   background: none;
   border: none;

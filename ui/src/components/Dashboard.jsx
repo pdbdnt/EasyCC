@@ -89,7 +89,7 @@ function Dashboard({
   const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups || new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
   const [showGroupNameInput, setShowGroupNameInput] = useState(false);
-  const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
+  const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds, titleLabel, itemLabel }
   const [savedPlansTarget, setSavedPlansTarget] = useState(null); // { dirName, workingDir }
   const [editingAlias, setEditingAlias] = useState(null); // workingDir being edited
   const [aliasInput, setAliasInput] = useState('');
@@ -831,19 +831,42 @@ function Dashboard({
                     </>
                   )}
                   {onKillSession && (
-                    <button
-                      className="group-kill-btn"
-                      title={`Kill all sessions in ${displayName}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setKillGroupTarget({
-                          dirName: displayName,
-                          sessionIds: sessionsInGroup.map(s => s.session.id)
-                        });
-                      }}
-                    >
-                      ✕
-                    </button>
+                    <>
+                      {sessionsInGroup.some(s => s.session.status === 'paused') && (
+                        <button
+                          className="group-kill-paused-btn"
+                          title={`Kill all paused sessions in ${displayName}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setKillGroupTarget({
+                              dirName: displayName,
+                              sessionIds: sessionsInGroup
+                                .filter(s => s.session.status === 'paused')
+                                .map(s => s.session.id),
+                              titleLabel: 'Paused Sessions',
+                              itemLabel: 'paused session'
+                            });
+                          }}
+                        >
+                          ⏸✕
+                        </button>
+                      )}
+                      <button
+                        className="group-kill-btn"
+                        title={`Kill all sessions in ${displayName}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setKillGroupTarget({
+                            dirName: displayName,
+                            sessionIds: sessionsInGroup.map(s => s.session.id),
+                            titleLabel: 'Sessions',
+                            itemLabel: 'session'
+                          });
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </>
                   )}
                 </span>
               </button>
@@ -931,9 +954,9 @@ function Dashboard({
       {killGroupTarget && (
         <div className="modal-overlay" onClick={() => setKillGroupTarget(null)} onKeyDown={e => { if (e.key === 'Escape') setKillGroupTarget(null); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2>Kill All Sessions?</h2>
+            <h2>Kill All {killGroupTarget.titleLabel || 'Sessions'}?</h2>
             <p className="settings-description">
-              This will kill <strong>{killGroupTarget.sessionIds.length}</strong> session{killGroupTarget.sessionIds.length > 1 ? 's' : ''} in <strong>{killGroupTarget.dirName}</strong>.
+              This will kill <strong>{killGroupTarget.sessionIds.length}</strong> {killGroupTarget.itemLabel || 'session'}{killGroupTarget.sessionIds.length > 1 ? 's' : ''} in <strong>{killGroupTarget.dirName}</strong>.
             </p>
             <div className="modal-actions">
               <button className="btn btn-secondary" onClick={() => setKillGroupTarget(null)} autoFocus>
@@ -948,7 +971,7 @@ function Dashboard({
                   setKillGroupTarget(null);
                 }}
               >
-                Kill {killGroupTarget.sessionIds.length} Session{killGroupTarget.sessionIds.length > 1 ? 's' : ''}
+                Kill {killGroupTarget.sessionIds.length} {killGroupTarget.itemLabel || 'session'}{killGroupTarget.sessionIds.length > 1 ? 's' : ''}
               </button>
             </div>
           </div>
