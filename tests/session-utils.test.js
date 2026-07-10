@@ -168,6 +168,24 @@ test('detectStatus: codex input prompt line is treated as idle', () => {
   assert.equal(status, 'idle');
 });
 
+test('detectStatus: Codex draft prompt text does not trigger broad thinking words', () => {
+  for (const draft of ['› Thinking through the next step', '› Processing CSV files']) {
+    assert.equal(
+      SessionManager.prototype.detectStatus.call({}, draft, 'idle', 'codex'),
+      'idle',
+      draft
+    );
+  }
+});
+
+test('detectStatus: real Codex activity still beats a draft prompt in the same redraw', () => {
+  const redraw = '› Thinking through the next step\n• Working (5s · esc to interrupt)';
+  assert.equal(
+    SessionManager.prototype.detectStatus.call({}, redraw, 'idle', 'codex'),
+    'thinking'
+  );
+});
+
 test('detectStatus: ansi-wrapped codex prompt line is treated as idle', () => {
   const status = SessionManager.prototype.detectStatus.call(
     {},
@@ -885,7 +903,7 @@ test('buildCodexBootstrapScript: prefers npm prefix Codex before PATH lookup', (
   const script = SessionManager.prototype.buildCodexBootstrapScript.call(
     { quoteForPosixShell: SessionManager.prototype.quoteForPosixShell },
     '/mnt/c/Users/denni/apps/EasyCC',
-    { resume: true }
+    { resume: false, easyccSessionId: 'easycc-session-1' }
   );
 
   assert.match(script, /"\$HOME\/\.profile"/);
@@ -897,10 +915,24 @@ test('buildCodexBootstrapScript: prefers npm prefix Codex before PATH lookup', (
       script.indexOf('exec codex '),
     'npm-prefix Codex should be checked before generic PATH lookup'
   );
-  assert.match(script, /resume --last/);
+  assert.match(script, /export EASYCC_SESSION_ID='easycc-session-1'/);
+  assert.doesNotMatch(script, /resume --last/);
 
-  const syntaxCheck = spawnSync('/bin/bash', ['-n', '-c', script], { encoding: 'utf8' });
+  const syntaxCheck = process.platform === 'win32'
+    ? spawnSync('wsl.exe', ['bash', '--noprofile', '--norc', '-n', '-c', script], { encoding: 'utf8' })
+    : spawnSync('/bin/bash', ['-n', '-c', script], { encoding: 'utf8' });
   assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
+});
+
+test('buildCodexBootstrapScript: rejects resume without an exact target', () => {
+  assert.throws(
+    () => SessionManager.prototype.buildCodexBootstrapScript.call(
+      { quoteForPosixShell: SessionManager.prototype.quoteForPosixShell },
+      '/mnt/c/Users/denni/apps/EasyCC',
+      { resume: true }
+    ),
+    /Exact Codex resume target is required/
+  );
 });
 
 test('buildCodexBootstrapScript: uses explicit resume target when available', () => {

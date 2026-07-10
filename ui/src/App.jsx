@@ -11,6 +11,7 @@ import KanbanBoard from './components/KanbanBoard';
 import AgentBoard from './components/AgentBoard';
 import AgentSidebar from './components/AgentSidebar';
 import ToastContainer from './components/Toast';
+import CodexResumeModal from './components/CodexResumeModal';
 import { useSessions } from './hooks/useSessions';
 import { useSessionGroups } from './hooks/useSessionGroups';
 import { useContextSidebar } from './hooks/useContextSidebar';
@@ -78,6 +79,7 @@ function App() {
   const [currentView, setCurrentView] = useState('sessions'); // 'sessions' | 'kanban' | 'agents'
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [codexResumeScope, setCodexResumeScope] = useState(null);
   const [detailsSession, setDetailsSession] = useState(null);
   const {
     sessions,
@@ -176,6 +178,7 @@ function App() {
   const prevSessionIdsRef = useRef(new Set());
   const hydratedRef = useRef(false);
   const starredFoldersMigrationRan = useRef(false);
+  const startupCodexRecoveryRan = useRef(false);
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -184,6 +187,21 @@ function App() {
     triggerKey: hintModeSettings.triggerKey
   });
   const confirmBeforeLeave = settings?.ui?.confirmBeforeLeave ?? true;
+
+  useEffect(() => {
+    if (connectionStatus !== 'connected' || startupCodexRecoveryRan.current) return;
+    startupCodexRecoveryRan.current = true;
+    const params = new URLSearchParams({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
+    fetch(`/api/codex/resume-catalog?${params}`)
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'Could not load Codex recovery');
+        if ((body.savedSessions || []).length > 0) {
+          setCodexResumeScope({ startup: true, initialCatalog: body });
+        }
+      })
+      .catch((error) => addToast(error.message, 'error'));
+  }, [addToast, connectionStatus]);
 
   // Apply theme to document root
   useEffect(() => {
@@ -1471,6 +1489,7 @@ function App() {
             onResetPlacement={resetPlacement}
             onKillSession={killSession}
             onResumeSession={resumeSession}
+            onOpenCodexResume={(scope) => setCodexResumeScope(scope || {})}
             connectionStatus={connectionStatus}
             hintModeActive={hintModeActive}
             typedChars={typedChars}
@@ -1771,6 +1790,16 @@ function App() {
               ? current.filter(f => f !== folderPath)
               : [...current, folderPath];
             updateSettings({ starredFolders: newStarred });
+          }}
+        />
+      )}
+      {codexResumeScope && (
+        <CodexResumeModal
+          scope={codexResumeScope}
+          onClose={() => setCodexResumeScope(null)}
+          onComplete={({ accepted = [], skipped = [] }) => {
+            if (accepted.length > 0) addToast(`Starting ${accepted.length} Codex session${accepted.length === 1 ? '' : 's'}`, 'success');
+            if (skipped.length > 0) addToast(`${skipped.length} Codex session${skipped.length === 1 ? '' : 's'} could not be resumed`, 'error', 5000);
           }}
         />
       )}

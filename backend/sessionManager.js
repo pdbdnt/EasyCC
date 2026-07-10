@@ -12,6 +12,7 @@ const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInp
 const { createComment, addReactionToComment } = require('./commentUtils');
 const { readTranscriptWindow } = require('./terminalTranscriptUtils');
 const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
+const { CodexSessionService, normalizePath: normalizeCodexPath } = require('./codexSessionService');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
@@ -95,6 +96,7 @@ class SessionManager extends EventEmitter {
     this.sessions = new Map();
     this.dataStore = new DataStore();
     this.planManager = new PlanManager();
+    this.codexSessionService = new CodexSessionService();
     this.stages = [...DEFAULT_STAGES];
     this.isShuttingDown = false;  // Prevents onExit handlers from deleting sessions during shutdown
 
@@ -106,6 +108,11 @@ class SessionManager extends EventEmitter {
 
     // Load persisted sessions on startup
     this.loadPersistedSessions();
+
+    this.codexSessionService.startMonitor({
+      getSessions: () => this.sessions,
+      onObservation: (observation) => this.applyCodexIdentityObservation(observation)
+    });
 
     // Start watching for new plans
     this.setupPlanWatcher();
@@ -171,7 +178,7 @@ class SessionManager extends EventEmitter {
 
       // Restore sessions that can be resumed:
       // - Claude sessions with claudeSessionId
-      // - Codex sessions (which can resume by captured session ID or fall back to --last)
+      // - Codex sessions (which resume only by their captured session ID)
       // - Terminal sessions (just re-launch a fresh shell)
       const cliType = sessionData.cliType || 'claude';
       const normalizedWorkingDir = this.normalizeWorkingDirForCli(sessionData.workingDir, cliType);
@@ -179,7 +186,16 @@ class SessionManager extends EventEmitter {
 
       if (canResume) {
         const outputBufferSize = this.getOutputBufferSize(cliType);
-        const repoContext = this.deriveRepoContext(normalizedWorkingDir, sessionData);
+        const repoContext = cliType === 'codex'
+          ? {
+              repoRoot: sessionData.repoRoot
+                ? this.normalizeWorkingDirForCli(sessionData.repoRoot, cliType)
+                : null,
+              repoName: sessionData.repoName || null,
+              gitBranch: sessionData.gitBranch || null,
+              groupKey: this.normalizeWorkingDirForCli(sessionData.groupKey || normalizedWorkingDir, cliType)
+            }
+          : this.deriveRepoContext(normalizedWorkingDir, sessionData);
         const restoredName = cliType === 'codex'
           ? this.stripCodexResumeHint(sessionData.name) || sessionData.name
           : sessionData.name;
@@ -205,6 +221,11 @@ class SessionManager extends EventEmitter {
           codexSessionId: sessionData.codexSessionId || null,
           codexThreadName: sessionData.codexThreadName || null,
           codexLaunchStartedAt: sessionData.codexLaunchStartedAt || null,
+          codexIdentityState: cliType === 'codex'
+            ? (sessionData.codexIdentityState || 'unverified')
+            : null,
+          codexIdentityVerifiedAt: sessionData.codexIdentityVerifiedAt || null,
+          codexIdentityError: sessionData.codexIdentityError || null,
           notes: sessionData.notes || '',
           role: this.sanitizeRole(sessionData.role || ''),
           agentId: sessionData.agentId || null,
@@ -218,6 +239,7 @@ class SessionManager extends EventEmitter {
           inEscapeSeq: false,
           // Kanban stage fields
           stage: sessionData.stage || 'todo',
+          stageEnteredAt: sessionData.stageEnteredAt || sessionData.createdAt || null,
           priority: sessionData.priority || 0,
           description: sessionData.description || '',
           blockedBy: sessionData.blockedBy || [],
@@ -247,7 +269,7 @@ class SessionManager extends EventEmitter {
         this.dataStore.saveSession(session);
         debugLog(`Session ${id} (${session.name}) marked PAUSED during server startup (loadSessions)`);
         const resumeInfo = cliType === 'codex'
-          ? `Codex (${this.selectCodexResumeTarget(session) || 'resume --last'})`
+          ? `Codex (${this.selectCodexResumeTarget(session) || 'exact target required'})`
           : `Claude session ${session.claudeSessionId}`;
         console.log(`Restored session: ${session.name} (${id}) - can be resumed with ${resumeInfo}`);
       } else {
@@ -1169,6 +1191,269 @@ class SessionManager extends EventEmitter {
     session.codexCaptureTimer = setTimeout(attemptCapture, initialDelayMs);
   }
 
+  applyCodexIdentityObservation(observation) {
+    const session = this.sessions.get(observation?.sessionId);
+    if (!session || session.cliType !== 'codex') return false;
+
+    if (observation.state === 'conflict') {
+      if (session.pty) {
+        try {
+          session.pty.kill();
+        } catch {
+          // The process may have already exited during collision handling.
+        }
+      }
+      session.pty = null;
+      session.status = 'paused';
+      session.codexIdentityState = 'conflict';
+      session.codexIdentityError = observation.error || 'Codex conversation is already open';
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      this.emit('statusChange', {
+        sessionId: session.id,
+        status: 'paused',
+        currentTask: session.currentTask,
+        error: session.codexIdentityError
+      });
+      return true;
+    }
+
+    if (observation.state !== 'verified' || !observation.candidateId) {
+      const error = observation.error || 'Codex identity could not be verified';
+      if (session.codexIdentityState === 'unresolved' && session.codexIdentityError === error) return false;
+      session.codexIdentityState = 'unresolved';
+      session.codexIdentityError = error;
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      return true;
+    }
+
+    if (observation.workingDir &&
+      normalizeCodexPath(observation.workingDir) !== normalizeCodexPath(session.workingDir)) {
+      session.codexIdentityState = 'unresolved';
+      session.codexIdentityError = 'Codex conversation belongs to a different folder';
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      return false;
+    }
+
+    const candidateId = String(observation.candidateId).toLowerCase();
+    const previousCodexSessionId = String(session.codexSessionId || '').toLowerCase();
+    const owner = [...this.sessions.values()].find((candidate) =>
+      candidate.id !== session.id && String(candidate.codexSessionId || '').toLowerCase() === candidateId
+    );
+    if (owner) {
+      if (owner.status === 'paused' && !owner.pty) {
+        const canTransferPrevious = previousCodexSessionId && previousCodexSessionId !== candidateId;
+        const transferredThreadName = canTransferPrevious
+          ? (session.codexThreadName || session.name || `Codex ${previousCodexSessionId.slice(0, 8)}`)
+          : null;
+        owner.codexSessionId = canTransferPrevious ? previousCodexSessionId : null;
+        owner.codexThreadName = transferredThreadName;
+        if (transferredThreadName) owner.name = transferredThreadName;
+        owner.codexIdentityState = canTransferPrevious ? 'unverified' : 'unresolved';
+        owner.codexIdentityVerifiedAt = null;
+        owner.codexIdentityError = canTransferPrevious
+          ? null
+          : `Conversation moved to active session ${session.name}`;
+        this.dataStore.saveSession(owner);
+        this.emit('sessionUpdated', this.getSessionSnapshot(owner));
+      } else {
+        return this.applyCodexIdentityObservation({
+          sessionId: session.id,
+          state: 'conflict',
+          error: `Codex conversation is already linked to ${owner.name}`
+        });
+      }
+    }
+
+    const switched = previousCodexSessionId !== candidateId;
+    const verifiedRecently = !switched &&
+      session.codexIdentityState === 'verified' &&
+      !session.codexIdentityError &&
+      Date.now() - Date.parse(session.codexIdentityVerifiedAt || 0) < 30_000;
+    if (verifiedRecently || (!switched && session.codexIdentityState === 'verified' && session.codexThreadName)) {
+      return false;
+    }
+    if (switched) {
+      session.codexSessionId = candidateId;
+      session.codexThreadName = null;
+      session.currentTask = '';
+    }
+    session.codexIdentityState = 'verified';
+    session.codexIdentityVerifiedAt = new Date().toISOString();
+    session.codexIdentityError = null;
+
+    if (observation.threadName) {
+      session.codexThreadName = observation.threadName;
+      session.name = observation.threadName;
+    } else if (switched) {
+      session.name = `Codex ${candidateId.slice(0, 8)}`;
+    }
+    if (observation.repoContext) {
+      session.repoRoot = observation.repoContext.repoRoot || null;
+      session.repoName = observation.repoContext.repoName || null;
+      session.gitBranch = observation.repoContext.gitBranch || null;
+      session.groupKey = observation.repoContext.groupKey || session.workingDir;
+    }
+
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    return true;
+  }
+
+  async getCodexResumeCatalog(query = {}) {
+    return this.codexSessionService.getResumeCatalog({
+      sessions: this.sessions,
+      groupKey: query.groupKey || '',
+      cursor: query.cursor || '',
+      timeZone: query.timeZone || 'UTC',
+      query: query.query || ''
+    });
+  }
+
+  createBoundCodexSession(thread) {
+    const now = new Date();
+    const id = uuidv4();
+    const repoContext = thread.repoContext || {
+      repoRoot: null,
+      repoName: null,
+      gitBranch: null,
+      groupKey: thread.workingDir
+    };
+    const session = {
+      id,
+      name: thread.threadName || `Codex ${thread.codexSessionId.slice(0, 8)}`,
+      status: 'paused',
+      currentTask: '',
+      createdAt: now,
+      lastActivity: new Date(thread.lastActivity || now),
+      outputBuffer: new RingBuffer(this.getOutputBufferSize('codex')),
+      pty: null,
+      workingDir: thread.workingDir,
+      repoRoot: repoContext.repoRoot,
+      repoName: repoContext.repoName,
+      gitBranch: repoContext.gitBranch,
+      groupKey: repoContext.groupKey || thread.workingDir,
+      cliType: 'codex',
+      claudeSessionId: null,
+      previousClaudeSessionIds: [],
+      claudeSessionName: null,
+      codexSessionId: thread.codexSessionId,
+      codexThreadName: thread.threadName || null,
+      codexLaunchStartedAt: null,
+      codexIdentityState: 'unverified',
+      codexIdentityVerifiedAt: null,
+      codexIdentityError: null,
+      notes: '',
+      role: '',
+      agentId: null,
+      taskId: null,
+      tags: [],
+      plans: [],
+      promptBuffer: '',
+      statusDetectionContext: '',
+      promptHistory: [],
+      promptFlushTimer: null,
+      inEscapeSeq: false,
+      isComposingPrompt: false,
+      lastSubmittedInputAtMs: 0,
+      statusDebounceTimer: null,
+      pendingStatus: null,
+      roleInjection: null,
+      startupSequence: null,
+      stage: 'todo',
+      stageEnteredAt: now.toISOString(),
+      priority: 0,
+      description: '',
+      blockedBy: [],
+      blocks: [],
+      manuallyPlaced: false,
+      manualPlacedAt: null,
+      placementLocked: false,
+      rejectionHistory: [],
+      completedAt: null,
+      updatedAt: now.toISOString(),
+      comments: [],
+      messageQueue: [],
+      isOrchestrator: false,
+      parentSessionId: null,
+      teamInstanceId: null,
+      codexCaptureTimer: null,
+      codexCaptureAttempts: 0
+    };
+    this.sessions.set(id, session);
+    this.dataStore.saveSession(session);
+    this.emit('sessionCreated', { id, session: this.getSessionSnapshot(session) });
+    return session;
+  }
+
+  async resumeCodexSelections(selections = []) {
+    const accepted = [];
+    const skipped = [];
+    const seen = new Set();
+    const requestedIds = selections.map((selection) => selection?.codexSessionId);
+    const [processState, threadsById] = await Promise.all([
+      this.codexSessionService.scanProcesses(),
+      this.codexSessionService.getThreadsByIds(requestedIds)
+    ]);
+
+    for (const selection of selections) {
+      const codexSessionId = String(selection?.codexSessionId || '').toLowerCase();
+      if (!codexSessionId || seen.has(codexSessionId)) {
+        skipped.push({ ...selection, code: 'duplicate', message: 'Duplicate or missing Codex session ID' });
+        continue;
+      }
+      seen.add(codexSessionId);
+
+      const thread = threadsById.get(codexSessionId);
+      if (!thread) {
+        skipped.push({ ...selection, code: 'not_found', message: 'Codex conversation is no longer available' });
+        continue;
+      }
+
+      let session = selection.easyccSessionId ? this.sessions.get(selection.easyccSessionId) : null;
+      if (selection.easyccSessionId && (!session || session.cliType !== 'codex' || session.status !== 'paused')) {
+        skipped.push({ ...selection, code: 'invalid_card', message: 'EasyCC card is not a paused Codex session' });
+        continue;
+      }
+      if (session && normalizeCodexPath(session.workingDir) !== normalizeCodexPath(thread.workingDir)) {
+        skipped.push({ ...selection, code: 'cwd_mismatch', message: 'Codex conversation belongs to a different folder' });
+        continue;
+      }
+
+      const linked = [...this.sessions.values()].find((candidate) =>
+        candidate.id !== session?.id && String(candidate.codexSessionId || '').toLowerCase() === codexSessionId
+      );
+      if (linked || processState.liveRootIds.has(codexSessionId)) {
+        skipped.push({ ...selection, code: 'already_open', message: 'Codex conversation is already open or linked' });
+        continue;
+      }
+
+      if (!session) session = this.createBoundCodexSession(thread);
+      session.codexSessionId = codexSessionId;
+      session.codexThreadName = thread.threadName || null;
+      if (thread.threadName) session.name = thread.threadName;
+      session.codexIdentityState = 'unverified';
+      session.codexIdentityError = null;
+      this.dataStore.saveSession(session);
+
+      const success = this.resumeSession(session.id);
+      if (!success) {
+        session.status = 'paused';
+        session.codexIdentityState = 'unresolved';
+        session.codexIdentityError = 'Failed to start exact Codex resume';
+        this.dataStore.saveSession(session);
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        skipped.push({ ...selection, easyccSessionId: session.id, code: 'launch_failed', message: session.codexIdentityError });
+        continue;
+      }
+      accepted.push(this.getSessionSnapshot(session));
+    }
+
+    return { accepted, skipped };
+  }
+
   deriveRepoContext(workingDir, fallback = null) {
     const normalizedWorkingDir = this.normalizeGroupPath(workingDir);
     const fallbackWorkingDir = this.normalizeGroupPath(fallback?.workingDir);
@@ -1269,17 +1554,25 @@ class SessionManager extends EventEmitter {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
   }
 
-  buildCodexBootstrapScript(workingDir, { resume = false, resumeTarget = null } = {}) {
+  buildCodexBootstrapScript(workingDir, { resume = false, resumeTarget = null, easyccSessionId = '' } = {}) {
     const quotedWorkingDir = this.quoteForPosixShell(workingDir);
+    const codexHome = this.codexSessionService?.resolveShellCodexHome?.() || '$HOME/.codex';
+    const codexHomeExport = codexHome === '$HOME/.codex'
+      ? 'export CODEX_HOME="$HOME/.codex";'
+      : `export CODEX_HOME=${this.quoteForPosixShell(codexHome)};`;
+    if (resume && !resumeTarget) {
+      throw new Error('Exact Codex resume target is required');
+    }
     const codexArgs = resume
-      ? `--dangerously-bypass-approvals-and-sandbox -C ${quotedWorkingDir} resume ${resumeTarget ? this.quoteForPosixShell(resumeTarget) : '--last'}`
+      ? `--dangerously-bypass-approvals-and-sandbox -C ${quotedWorkingDir} resume ${this.quoteForPosixShell(resumeTarget)}`
       : `--dangerously-bypass-approvals-and-sandbox -C ${quotedWorkingDir}`;
 
     return [
       'unset NPM_CONFIG_PREFIX npm_config_prefix PREFIX prefix;',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1; fi;',
       'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1; fi;',
-      'export CODEX_HOME="$HOME/.codex";',
+      codexHomeExport,
+      `export EASYCC_SESSION_ID=${this.quoteForPosixShell(easyccSessionId)};`,
       'if ! command -v codex >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then',
       '  . "$HOME/.nvm/nvm.sh" --no-use >/dev/null 2>&1;',
       '  nvm use --delete-prefix default >/dev/null 2>&1 || nvm use --delete-prefix >/dev/null 2>&1 || true;',
@@ -1338,7 +1631,7 @@ class SessionManager extends EventEmitter {
       : this.getEasyccEnv(easyccSessionId, meta);
     if (isWindows) {
       const wslPath = this.convertToWslPath(workingDir);
-      const bootstrapScript = this.buildCodexBootstrapScript(wslPath, { resume, resumeTarget });
+      const bootstrapScript = this.buildCodexBootstrapScript(wslPath, { resume, resumeTarget, easyccSessionId });
       return pty.spawn('wsl.exe', ['--cd', wslPath, 'bash', '--noprofile', '--norc', '-c', bootstrapScript], {
         name: 'xterm-color',
         cols: 120,
@@ -1347,7 +1640,7 @@ class SessionManager extends EventEmitter {
       });
     }
 
-    const bootstrapScript = this.buildCodexBootstrapScript(workingDir, { resume, resumeTarget });
+    const bootstrapScript = this.buildCodexBootstrapScript(workingDir, { resume, resumeTarget, easyccSessionId });
     return pty.spawn('/bin/bash', ['-lc', bootstrapScript], {
       name: 'xterm-color',
       cols: 120,
@@ -1764,7 +2057,9 @@ class SessionManager extends EventEmitter {
     const now = new Date();
     const sanitizedRole = this.sanitizeRole(role);
     const normalizedWorkingDir = this.normalizeWorkingDirForCli(workingDir, cliType);
-    const repoContext = this.deriveRepoContext(normalizedWorkingDir);
+    const repoContext = cliType === 'codex'
+      ? { repoRoot: null, repoName: null, gitBranch: null, groupKey: normalizedWorkingDir }
+      : this.deriveRepoContext(normalizedWorkingDir);
 
     let ptyProcess;
 
@@ -1821,6 +2116,9 @@ class SessionManager extends EventEmitter {
       codexSessionId: null,
       codexThreadName: null,
       codexLaunchStartedAt: cliType === 'codex' ? now.toISOString() : null,
+      codexIdentityState: cliType === 'codex' ? 'verifying' : null,
+      codexIdentityVerifiedAt: null,
+      codexIdentityError: null,
       notes: '',
       role: sanitizedRole,
       agentId: sessionMeta.agentId || null,
@@ -1908,6 +2206,7 @@ class SessionManager extends EventEmitter {
       const newName = this.extractSessionRename(data);
       if (newName && newName !== session.name) {
         session.name = newName;
+        if (cliType === 'codex') session.codexThreadName = newName;
         this.dataStore.saveSession(session);
         this.emit('sessionUpdated', this.getSessionSnapshot(session));
       }
@@ -1970,7 +2269,7 @@ class SessionManager extends EventEmitter {
     this.sessions.set(id, session);
     this.setupRoleInjectionWorkflow(session, 'create');
     if (cliType === 'codex') {
-      this.scheduleCodexSessionCapture(session, { resetAttempts: true });
+      this.codexSessionService.kickMonitor();
     }
 
     // Save to persistent storage
@@ -2206,12 +2505,19 @@ class SessionManager extends EventEmitter {
       return false;
     }
 
-    this.applyRepoContext(session);
-
     const cliType = session.cliType || 'claude';
+    if (cliType !== 'codex') {
+      this.applyRepoContext(session);
+    }
+    if (cliType === 'codex' && !fresh && !session.codexSessionId) {
+      session.codexIdentityState = 'unresolved';
+      session.codexIdentityError = 'Choose an exact Codex conversation before resuming';
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      return false;
+    }
     let ptyProcess;
     let claudeFallbackAttempted = false;
-    let codexFallbackAttempted = false;
     let suppressNextExit = false;
     let shouldResyncClaudeSession = false;
 
@@ -2219,14 +2525,6 @@ class SessionManager extends EventEmitter {
       return this.spawnClaudeProcess(session.workingDir, {
         sessionId,
         role: this.sanitizeRole(session.role || ''),
-        easyccSessionId: session.id
-      });
-    };
-
-    const createFreshCodexProcess = () => {
-      return this.spawnCodexProcess(session.workingDir, {
-        resume: false,
-        resumeTarget: null,
         easyccSessionId: session.id
       });
     };
@@ -2268,37 +2566,6 @@ class SessionManager extends EventEmitter {
       }
     };
 
-    const handleCodexResumeFallback = () => {
-      if (cliType !== 'codex' || codexFallbackAttempted) {
-        return false;
-      }
-
-      codexFallbackAttempted = true;
-
-      this.emit('output', {
-        sessionId: id,
-        data: '\r\n\x1b[33mScoped Codex resume failed. Starting a fresh Codex session in this folder.\x1b[0m\r\n'
-      });
-      debugLog(`Session ${id}: Codex scoped resume failed, falling back to fresh Codex shell in ${session.workingDir}`);
-
-      try {
-        session.codexSessionId = null;
-        session.codexThreadName = null;
-        session.codexLaunchStartedAt = new Date().toISOString();
-        this.clearCodexSessionCapture(session);
-        const freshProcess = createFreshCodexProcess();
-        wirePtyHandlers(freshProcess);
-        this.scheduleCodexSessionCapture(session, { resetAttempts: true });
-        return true;
-      } catch (error) {
-        this.emit('output', {
-          sessionId: id,
-          data: `\r\n\x1b[31mFallback launch failed: ${error.message}\x1b[0m\r\n`
-        });
-        return false;
-      }
-    };
-
     const wirePtyHandlers = (processRef) => {
       session.pty = processRef;
 
@@ -2323,6 +2590,13 @@ class SessionManager extends EventEmitter {
 
         this.processSessionOutputState(session, data);
 
+        const newName = this.extractSessionRename(data);
+        if (newName && newName !== session.name) {
+          session.name = newName;
+          if (cliType === 'codex') session.codexThreadName = newName;
+          this.dataStore.saveSession(session);
+          this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        }
 
         const task = this.detectTask(data);
         if (task && task !== session.currentTask) {
@@ -2364,16 +2638,16 @@ class SessionManager extends EventEmitter {
         // This preserves sessions that fail to resume (e.g., "Session ID already in use")
         const sessionAge = Date.now() - new Date(session.lastActivity).getTime();
         debugLog(`PTY onExit (resume) for session ${id}: exitCode=${exitCode}, signal=${signal}, sessionAge=${sessionAge}ms`);
-        if (cliType === 'codex' && sessionAge < 10000 && exitCode !== 0 && handleCodexResumeFallback()) {
-          return;
-        }
-
         if (sessionAge < 10000 && exitCode !== 0) {
           debugLog(`Session ${id} PAUSED due to early exit after resume (age=${sessionAge}ms, exitCode=${exitCode})`);
           session.status = 'paused';
           this._clearWriteQueue(session);
           session.pty = null;
           this.clearCodexSessionCapture(session);
+          if (cliType === 'codex') {
+            session.codexIdentityState = 'unresolved';
+            session.codexIdentityError = 'Exact Codex resume failed';
+          }
           this.dataStore.saveSession(session);
           this.emit('statusChange', {
             sessionId: id,
@@ -2432,6 +2706,9 @@ class SessionManager extends EventEmitter {
       } else if (cliType === 'codex') {
         session.codexSessionId = null;
         session.codexThreadName = null;
+        session.codexIdentityState = 'verifying';
+        session.codexIdentityVerifiedAt = null;
+        session.codexIdentityError = null;
       }
     }
 
@@ -2471,6 +2748,10 @@ class SessionManager extends EventEmitter {
     if (cliType === 'codex' && !session.codexLaunchStartedAt) {
       session.codexLaunchStartedAt = new Date().toISOString();
     }
+    if (cliType === 'codex') {
+      session.codexIdentityState = 'verifying';
+      session.codexIdentityError = null;
+    }
 
     // Re-setup PTY handlers
     wirePtyHandlers(ptyProcess);
@@ -2490,9 +2771,7 @@ class SessionManager extends EventEmitter {
         this.syncWithClaudeSession(session);
       }
     }
-    if (cliType === 'codex' && !session.codexSessionId) {
-      this.scheduleCodexSessionCapture(session, { resetAttempts: true });
-    }
+    if (cliType === 'codex') this.codexSessionService.kickMonitor();
 
     // Save to persistent storage
     this.dataStore.saveSession(session);
@@ -2690,6 +2969,12 @@ class SessionManager extends EventEmitter {
     ];
 
     if (cliType === 'codex') {
+      const hasReadyPrompt = codexPromptReadyPatterns.some((pattern) => pattern.test(cleanData));
+      const activityData = cleanData
+        .split('\n')
+        .filter((line) => !codexPromptReadyPatterns.some((pattern) => pattern.test(line)))
+        .join('\n');
+
       for (const pattern of codexPriorityWaitingPatterns) {
         if (pattern.test(cleanData)) {
           return 'waiting';
@@ -2697,21 +2982,19 @@ class SessionManager extends EventEmitter {
       }
 
       for (const pattern of editingPatterns) {
-        if (pattern.test(cleanData)) {
+        if (pattern.test(activityData)) {
           return 'editing';
         }
       }
 
       for (const pattern of thinkingPatterns) {
-        if (pattern.test(cleanData)) {
+        if (pattern.test(activityData)) {
           return 'thinking';
         }
       }
 
-      for (const pattern of codexPromptReadyPatterns) {
-        if (pattern.test(cleanData)) {
-          return 'idle';
-        }
+      if (hasReadyPrompt) {
+        return 'idle';
       }
 
       for (const pattern of waitingPatterns) {
@@ -3606,6 +3889,9 @@ class SessionManager extends EventEmitter {
       codexSessionId: session.codexSessionId || null,
       codexThreadName: session.codexThreadName || null,
       codexLaunchStartedAt: session.codexLaunchStartedAt || null,
+      codexIdentityState: session.codexIdentityState || null,
+      codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
+      codexIdentityError: session.codexIdentityError || null,
       notes: session.notes || '',
       role: session.role || '',
       agentId: session.agentId || null,
@@ -4334,6 +4620,7 @@ class SessionManager extends EventEmitter {
   cleanup() {
     this.isShuttingDown = true;  // Prevent onExit handlers from deleting sessions
     this.planManager.stopWatching();
+    this.codexSessionService.stopMonitor();
 
     for (const [id, session] of this.sessions) {
       if (session.status === 'killed') {

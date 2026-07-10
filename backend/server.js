@@ -22,6 +22,7 @@ const {
   getPlanSource,
   resolvePlanRefForHost
 } = require('./planPathUtils');
+const registerCodexResumeRoutes = require('./codexResumeRoutes');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
@@ -1124,6 +1125,8 @@ async function start() {
     }
   });
 
+  registerCodexResumeRoutes(app, { sessionManager });
+
   // Serve static files in production
   const uiDistPath = path.join(__dirname, '..', 'ui', 'dist');
   try {
@@ -1906,13 +1909,21 @@ async function start() {
   app.post('/api/sessions/:id/resume', async (request, reply) => {
     const { id } = request.params;
     const { fresh } = request.body || {};
+    const existing = sessionManager.getSession(id);
+    if (existing?.cliType === 'codex' && !fresh && !existing.codexSessionId) {
+      return reply.status(409).send({
+        error: 'Choose an exact Codex conversation before resuming',
+        code: 'codex_target_required'
+      });
+    }
     const success = sessionManager.resumeSession(id, { fresh: !!fresh });
 
     if (!success) {
       return reply.status(400).send({ error: 'Could not resume session (not found or not paused)' });
     }
 
-    return { success: true, session: sessionManager.getSession(id) };
+    const payload = { success: true, session: sessionManager.getSession(id) };
+    return existing?.cliType === 'codex' ? reply.status(202).send(payload) : payload;
   });
 
   // Get plans for a session

@@ -55,6 +55,7 @@ function Dashboard({
   onResetPlacement,
   onKillSession,
   onResumeSession,
+  onOpenCodexResume,
   connectionStatus,
   hintModeActive = false,
   typedChars = '',
@@ -553,6 +554,11 @@ function Dashboard({
             />
             ⚙️
           </button>
+          {onOpenCodexResume && (
+            <button className="btn btn-secondary btn-small" onClick={() => onOpenCodexResume({})} title="Browse Codex conversation history">
+              History
+            </button>
+          )}
           <button className="btn btn-primary btn-small" onClick={onNewSession}>
             <HintBadge
               code={newSessionHint}
@@ -800,14 +806,25 @@ function Dashboard({
                     <>
                       <button
                         className="group-resume-btn"
-                        title={`Resume all paused sessions in ${displayName}`}
+                        title={`Choose exact conversations to resume in ${displayName}`}
                         onClick={async (e) => {
                           e.stopPropagation();
-                          const pausedIds = sessionsInGroup
+                          const pausedSessions = sessionsInGroup
                             .filter(s => s.session.status === 'paused')
-                            .map(s => s.session.id);
-                          for (const id of pausedIds) {
-                            await onResumeSession(id);
+                            .map(s => s.session);
+                          const hasPausedCodex = pausedSessions.some(session => session.cliType === 'codex');
+                          if (hasPausedCodex && onOpenCodexResume) {
+                            for (const session of pausedSessions.filter(item => item.cliType !== 'codex')) {
+                              await onResumeSession(session.id);
+                            }
+                            onOpenCodexResume({
+                              groupKey,
+                              displayName
+                            });
+                            return;
+                          }
+                          for (const session of pausedSessions) {
+                            await onResumeSession(session.id);
                           }
                         }}
                       >
