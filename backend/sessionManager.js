@@ -37,6 +37,30 @@ function debugLog(message) {
   console.log(`[DEBUG] ${message}`);
 }
 
+const CODEX_PASSIVE_FOOTER_PATTERN = /^\s*gpt-[^·\r\n]+\s+·\s+[^·\r\n]+\s+·\s+Context\s+\d+%\s+used(?:\s+·\s+(?!Main\s+\[default\](?:\s|$))[^·\r\n]+?)?(?:\s+·\s+Main\s+\[default\])?(?:[ \t]{2,}(?:Plan(?:\s+mode)?)(?:\s*\([^\r\n)]*\))?)?\s*$/i;
+
+/**
+ * Whether a Codex output chunk is only terminal chrome that may safely
+ * preserve an already detected ready prompt.
+ * @param {string} data
+ * @returns {boolean}
+ */
+function isCodexPassiveReadyRedraw(data) {
+  const cleanData = String(data || '')
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '\n');
+
+  const lines = cleanData
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return true;
+  if (lines.length !== 1) return false;
+  return CODEX_PASSIVE_FOOTER_PATTERN.test(lines[0]);
+}
+
 /**
  * Ring buffer for storing terminal output with a maximum size
  */
@@ -1407,6 +1431,7 @@ class SessionManager extends EventEmitter {
     }
 
     const instruction = `System role instruction:\n${role}\n\nAcknowledge and continue following this role.`;
+    this.markSemanticSubmission(session, { source: 'automation' });
     session.pty.write(`${instruction}\r`);
     debugLog(`Session ${session.id}: injected Codex role (${reason})`);
     this.clearRoleInjectionWorkflow(session);
@@ -1481,17 +1506,17 @@ class SessionManager extends EventEmitter {
   }
 
   tryRoleInjectionOnOutput(session, data) {
-    if (!session?.roleInjection) return;
+    if (!session?.roleInjection) return false;
     if (session.roleInjection.cliType === 'codex' && this.isCodexReadyForInput(data)) {
-      this.injectCodexRole(session, 'prompt-detected');
-      return;
+      return this.injectCodexRole(session, 'prompt-detected');
     }
     if (session.roleInjection.cliType === 'claude') {
       const nextStatus = this.detectStatus(data, session.status, session.cliType);
       if (nextStatus === 'idle') {
-        this.injectClaudeRoleReminder(session, 'prompt-detected');
+        return this.injectClaudeRoleReminder(session, 'prompt-detected');
       }
     }
+    return false;
   }
 
   runStartupSequence(session, agent, { force = false } = {}) {
@@ -1567,7 +1592,7 @@ class SessionManager extends EventEmitter {
 
   processStartupSequenceOnOutput(session, data) {
     if (!session?.startupSequence?.active || !session.pty) {
-      return;
+      return false;
     }
     const startup = session.startupSequence;
     if (!startup.queue.length) {
@@ -1578,14 +1603,14 @@ class SessionManager extends EventEmitter {
       if (this.canAcceptOrchestratorInput(session)) {
         this.drainMessageQueue(session);
       }
-      return;
+      return false;
     }
 
     const nextStatus = this.detectStatus(data, session.status, session.cliType);
     const ready = nextStatus === 'idle' || /Would you like to proceed/i.test(data) || /Ask Codex to do anything/i.test(data);
     const now = Date.now();
-    if (!ready) return;
-    if (now - startup.lastSentAt < 1200) return;
+    if (!ready) return false;
+    if (now - startup.lastSentAt < 1200) return false;
 
     const nextCommand = startup.queue.shift();
     if (!nextCommand) {
@@ -1595,9 +1620,12 @@ class SessionManager extends EventEmitter {
       if (this.canAcceptOrchestratorInput(session)) {
         this.drainMessageQueue(session);
       }
-      return;
+      return false;
     }
 
+    if (session.cliType === 'codex') {
+      this.markSemanticSubmission(session, { source: 'automation' });
+    }
     session.pty.write(`${nextCommand}\r`);
     startup.sentCount += 1;
     startup.lastSentAt = now;
@@ -1611,6 +1639,7 @@ class SessionManager extends EventEmitter {
       startup.completedAt = new Date().toISOString();
       this.emit('sessionUpdated', this.getSessionSnapshot(session));
     }
+    return true;
   }
 
   rewarmSession(id, agent) {
@@ -1640,6 +1669,54 @@ class SessionManager extends EventEmitter {
     const next = `${session?.statusDetectionContext || ''}${cleanData}`;
     session.statusDetectionContext = next.length > 4000 ? next.slice(-4000) : next;
     return session.statusDetectionContext;
+  }
+
+  /**
+   * Process role/startup automation and status detection for one PTY chunk.
+   * Shared by create and resume handlers so their debounce behavior cannot drift.
+   * @param {object} session
+   * @param {string} data
+   * @returns {string}
+   */
+  processSessionOutputState(session, data) {
+    const roleSubmitted = this.tryRoleInjectionOnOutput(session, data);
+    const startupSubmitted = this.processStartupSequenceOnOutput(session, data);
+    const automatedCodexSubmission = session?.cliType === 'codex' &&
+      (roleSubmitted || startupSubmitted);
+
+    // The ready prompt that triggered automatic input is stale immediately after
+    // the write. Do not let the same callback recreate a pending idle transition.
+    if (automatedCodexSubmission) {
+      return session.status;
+    }
+
+    if (session.resizingUntil && Date.now() <= session.resizingUntil) {
+      return session.status;
+    }
+
+    const statusContext = this.updateStatusDetectionContext(session, data);
+    const newStatus = this.detectStatus(
+      data,
+      session.status,
+      session.cliType,
+      statusContext,
+      session.pendingStatus
+    );
+
+    if (newStatus === 'paused') {
+      return newStatus;
+    }
+
+    // A same-as-current Codex signal only needs the updater when it must cancel
+    // an opposite pending transition. Keep steady-state streaming on the cheap path.
+    const hasPendingTransition = !!(session.pendingStatus || session.statusDebounceTimer);
+    if (
+      newStatus !== session.status ||
+      (session.cliType === 'codex' && hasPendingTransition)
+    ) {
+      this.updateSessionStatus(session, newStatus);
+    }
+    return newStatus;
   }
 
   extractSessionRename(data) {
@@ -1813,17 +1890,7 @@ class SessionManager extends EventEmitter {
 
       // Try to detect Claude session ID from output
       this.detectClaudeSessionId(data, session);
-      this.tryRoleInjectionOnOutput(session, data);
-      this.processStartupSequenceOnOutput(session, data);
-
-      // Detect status from output (skip during resize — PTY redraws old content)
-      if (!session.resizingUntil || Date.now() > session.resizingUntil) {
-        const statusContext = this.updateStatusDetectionContext(session, data);
-        const newStatus = this.detectStatus(data, session.status, session.cliType, statusContext);
-        if (newStatus !== session.status) {
-          this.updateSessionStatus(session, newStatus);
-        }
-      }
+      this.processSessionOutputState(session, data);
 
       // Detect current task
       const task = this.detectTask(data);
@@ -2248,23 +2315,14 @@ class SessionManager extends EventEmitter {
         }
 
         this.detectClaudeSessionId(data, session);
-        this.tryRoleInjectionOnOutput(session, data);
-        this.processStartupSequenceOnOutput(session, data);
-
         if (cliType === 'claude' && /No conversation found with session ID/i.test(data)) {
           handleClaudeResumeFallback();
           this.emit('output', { sessionId: id, data });
           return;
         }
 
-        // Detect status from output (skip during resize — PTY redraws old content)
-        if (!session.resizingUntil || Date.now() > session.resizingUntil) {
-          const statusContext = this.updateStatusDetectionContext(session, data);
-          const newStatus = this.detectStatus(data, session.status, session.cliType, statusContext);
-          if (newStatus !== session.status && newStatus !== 'paused') {
-            this.updateSessionStatus(session, newStatus);
-          }
-        }
+        this.processSessionOutputState(session, data);
+
 
         const task = this.detectTask(data);
         if (task && task !== session.currentTask) {
@@ -2540,9 +2598,11 @@ class SessionManager extends EventEmitter {
    * @param {string} data - Terminal output data
    * @param {string} currentStatus - Current session status
    * @param {string} cliType - CLI type ('claude', 'codex', 'terminal')
+   * @param {string|null} contextData - Bounded recent cleaned output
+   * @param {string|null} pendingStatus - Debounced transition not yet committed
    * @returns {string} Detected status
    */
-  detectStatus(data, currentStatus, cliType = 'claude', contextData = null) {
+  detectStatus(data, currentStatus, cliType = 'claude', contextData = null, pendingStatus = null) {
     // Don't change status if paused
     if (currentStatus === 'paused') {
       return 'paused';
@@ -2582,7 +2642,72 @@ class SessionManager extends EventEmitter {
       /Type .* to (change|tell)/i
     ];
 
+    const codexPriorityWaitingPatterns = [
+      /Would you like to run/i,
+      /Implement this plan\?/i,
+      /^\s*›\s*\d+\./m,
+      /\[Y\/n\]/i,
+      /\[y\/N\]/i,
+      /Would you like to proceed/i
+    ];
+
+    const thinkingPatterns = [
+      // Claude Code patterns
+      /Thinking/i,
+      /Processing/i,
+      /\u2726/,
+      /Scampering/i,
+      /Pondering/i,
+      /Reasoning/i,
+      /Contemplating/i,
+      /Analyzing/i,
+      /Researching/i,
+      /Investigating/i,
+      /Examining/i,
+      /Considering/i,
+      /\(thought for \d+/i,
+      /[\u2800-\u28FF]/,
+      /[\u2721-\u2749]/,
+      /\b[A-Z][a-z]+ing\s*\.{3}/,
+      /\b[A-Z][a-z]+ing\s*\u2026/,
+      // Codex CLI patterns
+      /\u2022\s*Working\s*\(/,
+      /esc to interrupt/i,
+      /\u2022\s*\w+ing\s.*\(\d+s/
+    ];
+
+    const editingPatterns = [
+      // Claude Code tool-call patterns
+      /Write\(.+\)/,
+      /Edit\(.+\)/,
+      /MultiEdit\(.+\)/,
+      /Creating file/i,
+      // Codex CLI patterns
+      /\u2022\s*Edited/i,
+      /\u2022\s*Added/i,
+      /\u2022\s*Deleted/i,
+      /\u2714.*approved.*to run/i
+    ];
+
     if (cliType === 'codex') {
+      for (const pattern of codexPriorityWaitingPatterns) {
+        if (pattern.test(cleanData)) {
+          return 'waiting';
+        }
+      }
+
+      for (const pattern of editingPatterns) {
+        if (pattern.test(cleanData)) {
+          return 'editing';
+        }
+      }
+
+      for (const pattern of thinkingPatterns) {
+        if (pattern.test(cleanData)) {
+          return 'thinking';
+        }
+      }
+
       for (const pattern of codexPromptReadyPatterns) {
         if (pattern.test(cleanData)) {
           return 'idle';
@@ -2593,6 +2718,20 @@ class SessionManager extends EventEmitter {
         if (pattern.test(cleanData)) {
           return 'waiting';
         }
+      }
+
+      for (const pattern of codexPriorityWaitingPatterns) {
+        if (pattern.test(contextText)) {
+          return 'waiting';
+        }
+      }
+
+      if (
+        (currentStatus === 'idle' || pendingStatus === 'idle') &&
+        isCodexPassiveReadyRedraw(data) &&
+        codexPromptReadyPatterns.some(pattern => pattern.test(contextText))
+      ) {
+        return 'idle';
       }
     }
 
@@ -2622,63 +2761,28 @@ class SessionManager extends EventEmitter {
       return 'idle';
     }
 
-    // Detect thinking/processing indicators
-    const thinkingPatterns = [
-      // Claude Code patterns
-      /Thinking/i,
-      /Processing/i,
-      /\u2726/,                        // ✦ Claude Code thinking icon
-      /Scampering/i,
-      /Pondering/i,
-      /Reasoning/i,
-      /Contemplating/i,
-      /Analyzing/i,
-      /Researching/i,
-      /Investigating/i,
-      /Examining/i,
-      /Considering/i,
-      /\(thought for \d+/i,            // "(thought for 2s)" pattern
-      /[\u2800-\u28FF]/,               // Braille spinners (all 256 variants)
-      /[\u2721-\u2749]/,               // Dingbat stars/asterisks: ✳✻✱✶ etc.
-      /\b[A-Z][a-z]+ing\s*\.{3}/,     // "Doing...", "Reading..." with ASCII dots
-      /\b[A-Z][a-z]+ing\s*\u2026/,    // "Doing…", "Reading…" with Unicode ellipsis
-      // Codex CLI patterns
-      /\u2022\s*Working\s*\(/,         // • Working (Xs . esc to interrupt)
-      /esc to interrupt/i,             // Generic Codex working indicator
-      /\u2022\s*\w+ing\s.*\(\d+s/     // • Investigating... (0s — contextual thinking
-    ];
-
-    for (const pattern of thinkingPatterns) {
-      if (pattern.test(cleanData)) {
-        return 'thinking';
+    if (cliType !== 'codex') {
+      for (const pattern of thinkingPatterns) {
+        if (pattern.test(cleanData)) {
+          return 'thinking';
+        }
       }
-    }
 
-    // Detect editing patterns (must match actual tool-call output, not generic words)
-    const editingPatterns = [
-      // Claude Code tool-call patterns
-      /Write\(.+\)/,                  // Write(path/to/file)
-      /Edit\(.+\)/,                   // Edit(path/to/file)
-      /MultiEdit\(.+\)/,             // MultiEdit(path/to/file)
-      /Creating file/i,
-      // Codex CLI patterns
-      /\u2022\s*Edited/i,             // • Edited <file> (+N -N)
-      /\u2022\s*Added/i,              // • Added <file>
-      /\u2022\s*Deleted/i,            // • Deleted <file>
-      /\u2714.*approved.*to run/i     // ✔ You approved codex to run
-    ];
-
-    for (const pattern of editingPatterns) {
-      if (pattern.test(cleanData)) {
-        return 'editing';
+      // Detect editing patterns (must match actual tool-call output, not generic words)
+      for (const pattern of editingPatterns) {
+        if (pattern.test(cleanData)) {
+          return 'editing';
+        }
       }
     }
 
     // Detect waiting for input. Use the short rolling context window so Codex
     // menu redraws split across PTY chunks still count as waiting.
-    for (const pattern of waitingPatterns) {
-      if (pattern.test(contextText)) {
-        return 'waiting';
+    if (cliType !== 'codex') {
+      for (const pattern of waitingPatterns) {
+        if (pattern.test(contextText)) {
+          return 'waiting';
+        }
       }
     }
 
@@ -2755,6 +2859,53 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Cancel a debounced status transition atomically.
+   * @param {object} session
+   */
+  cancelPendingStatusTransition(session) {
+    if (!session) return;
+    if (session.statusDebounceTimer) {
+      clearTimeout(session.statusDebounceTimer);
+      session.statusDebounceTimer = null;
+    }
+    session.pendingStatus = null;
+  }
+
+  /**
+   * Mark a submitted prompt/command as new work before writing it to the PTY.
+   * @param {object} session
+   * @param {object} options
+   * @param {string} options.source
+   */
+  markSemanticSubmission(session, { source = 'input' } = {}) {
+    if (!session) return;
+
+    this.cancelPendingStatusTransition(session);
+    session.statusDetectionContext = '';
+    session.lastSubmittedInputAtMs = Date.now();
+    session.isComposingPrompt = false;
+
+    if (
+      session.status !== 'paused' &&
+      session.status !== 'completed' &&
+      (
+        session.status === 'idle' ||
+        session.status === 'waiting' ||
+        session.status === 'thinking' ||
+        session.stage === 'in_review'
+      )
+    ) {
+      session.status = 'active';
+      this.emit('statusChange', {
+        sessionId: session.id,
+        status: 'active',
+        currentTask: session.currentTask,
+        source
+      });
+    }
+  }
+
+  /**
    * Update session status with debouncing to avoid flickering
    * Status changes are only applied after 500ms of stability
    * @param {object} session - Session object
@@ -2763,11 +2914,7 @@ class SessionManager extends EventEmitter {
   updateSessionStatus(session, newStatus) {
     // If same as current status, cancel any pending transition
     if (newStatus === session.status) {
-      session.pendingStatus = null;
-      if (session.statusDebounceTimer) {
-        clearTimeout(session.statusDebounceTimer);
-        session.statusDebounceTimer = null;
-      }
+      this.cancelPendingStatusTransition(session);
       return;
     }
 
@@ -3090,11 +3237,9 @@ class SessionManager extends EventEmitter {
         return true; // Nothing left to send after filtering
       }
 
-      this._writeToPty(session, filteredText);
       const isSubmittedInput = hasSubmittedInput(filteredText);
       if (isSubmittedInput) {
-        session.lastSubmittedInputAtMs = Date.now();
-        session.isComposingPrompt = false;
+        this.markSemanticSubmission(session, { source: 'input' });
 
         // Resume auto-sync when user submits input (unless explicitly locked)
         if (session.manuallyPlaced && !session.placementLocked) {
@@ -3102,6 +3247,7 @@ class SessionManager extends EventEmitter {
           session.manualPlacedAt = null;
         }
       }
+      this._writeToPty(session, filteredText);
 
       // Prompt detection - buffer until Enter.
       // Treat multiline paste chunks as a single prompt entry.
@@ -3168,30 +3314,6 @@ class SessionManager extends EventEmitter {
 
       if (isSubmittedInput) {
         this.flushPromptBuffer(session);
-      }
-
-      // Submitted input can restart work from review before Codex produces output.
-      if (
-        isSubmittedInput &&
-        session.status !== 'paused' &&
-        session.status !== 'completed' &&
-        (
-          session.status === 'idle' ||
-          session.status === 'waiting' ||
-          session.status === 'thinking' ||
-          session.stage === 'in_review'
-        )
-      ) {
-        const nextStatus = ['idle', 'waiting', 'thinking'].includes(session.status)
-          ? 'active'
-          : session.status;
-        session.status = nextStatus;
-        this.emit('statusChange', {
-          sessionId: id,
-          status: nextStatus,
-          currentTask: session.currentTask,
-          source: 'input'
-        });
       }
 
       return true;

@@ -27,6 +27,48 @@ function git(args, cwd) {
   return result.stdout.trim();
 }
 
+function createStatusHarness(initialStatus = 'thinking', cliType = 'codex') {
+  const events = [];
+  const session = {
+    id: 'status-session',
+    status: initialStatus,
+    cliType,
+    stage: 'in_progress',
+    currentTask: '',
+    statusDetectionContext: '',
+    pendingStatus: null,
+    statusDebounceTimer: null
+  };
+  const manager = {
+    events,
+    dataStore: { saveSession() {} },
+    emit(type, payload) {
+      events.push({ type, payload });
+    },
+    canAcceptOrchestratorInput() {
+      return false;
+    },
+    drainMessageQueue() {},
+    tryRoleInjectionOnOutput() {
+      return false;
+    },
+    processStartupSequenceOnOutput() {
+      return false;
+    },
+    cleanTerminalText: SessionManager.prototype.cleanTerminalText,
+    updateStatusDetectionContext: SessionManager.prototype.updateStatusDetectionContext,
+    detectStatus: SessionManager.prototype.detectStatus,
+    cancelPendingStatusTransition: SessionManager.prototype.cancelPendingStatusTransition,
+    updateSessionStatus: SessionManager.prototype.updateSessionStatus,
+    processSessionOutputState: SessionManager.prototype.processSessionOutputState
+  };
+  return { manager, session, events };
+}
+
+function waitForStatusDebounce() {
+  return new Promise(resolve => setTimeout(resolve, 575));
+}
+
 test('hasSubmittedInput: typing without Enter is not submitted input', () => {
   assert.equal(hasSubmittedInput('hello world'), false);
   assert.equal(hasSubmittedInput('abc123'), false);
@@ -175,6 +217,323 @@ test('detectStatus: codex approval prompt is treated as waiting', () => {
     'codex'
   );
   assert.equal(status, 'waiting');
+});
+
+test('detectStatus: codex ready suggestion ending in question mark is idle', () => {
+  const prompt = '\n› Ask why?\n';
+  const promptStatus = SessionManager.prototype.detectStatus.call(
+    {},
+    prompt,
+    'thinking',
+    'codex'
+  );
+  const footerStatus = SessionManager.prototype.detectStatus.call(
+    {},
+    'gpt-5.6-sol high · ~/apps/specsket · Context 78% used · webclippeer',
+    'thinking',
+    'codex',
+    `${prompt}gpt-5.6-sol high · ~/apps/specsket · Context 78% used · webclippeer`,
+    'idle'
+  );
+
+  assert.equal(promptStatus, 'idle');
+  assert.equal(footerStatus, 'idle');
+});
+
+test('status transition: split codex prompt and footer settle thinking to idle', async () => {
+  const { manager, session, events } = createStatusHarness('thinking');
+  const prompt = '\x1b[1m\n›\x1b[22m \x1b[2mImplement {feature}\x1b[22m\r\n';
+  const footer = 'gpt-5.6-sol high · ~/apps/specsket · Context 78% used · webclippeer';
+
+  manager.processSessionOutputState(session, prompt);
+  manager.processSessionOutputState(session, footer);
+  assert.equal(session.pendingStatus, 'idle');
+
+  await waitForStatusDebounce();
+
+  assert.equal(session.status, 'idle');
+  assert.equal(
+    events.filter(event => event.type === 'statusChange' && event.payload.status === 'idle').length,
+    1
+  );
+});
+
+test('status transition: split codex prompt and footer settle active to idle', async () => {
+  const { manager, session, events } = createStatusHarness('active');
+  const prompt = '\n› Implement {feature}\n';
+  const footer = 'gpt-5.6-sol high · ~/apps/specsket · Context 78% used · webclippeer';
+
+  manager.processSessionOutputState(session, prompt);
+  manager.processSessionOutputState(session, footer);
+  await waitForStatusDebounce();
+
+  assert.equal(session.status, 'idle');
+  assert.equal(
+    events.filter(event => event.type === 'statusChange' && event.payload.status === 'idle').length,
+    1
+  );
+});
+
+test('status transition: current codex working signal cancels pending idle', async () => {
+  const { manager, session, events } = createStatusHarness('thinking');
+
+  manager.processSessionOutputState(session, '\n› Implement {feature}\n');
+  assert.equal(session.pendingStatus, 'idle');
+  manager.processSessionOutputState(session, '• Working (5s · esc to interrupt)');
+
+  assert.equal(session.pendingStatus, null);
+  assert.equal(session.statusDebounceTimer, null);
+  await waitForStatusDebounce();
+  assert.equal(session.status, 'thinking');
+  assert.equal(events.some(event => event.payload?.status === 'idle'), false);
+});
+
+test('detectStatus: codex current signals beat contextual ready prompt', () => {
+  const context = '\n› Implement {feature}\n';
+  const fixtures = [
+    ['Would you like to run this command?', 'waiting'],
+    ['• Edited backend/sessionManager.js (+2 -1)', 'editing'],
+    ['• Working (5s · esc to interrupt)', 'thinking'],
+    ['command output completed successfully', 'active']
+  ];
+
+  for (const [data, expected] of fixtures) {
+    const status = SessionManager.prototype.detectStatus.call(
+      {},
+      data,
+      'thinking',
+      'codex',
+      `${context}${data}`,
+      'idle'
+    );
+    assert.equal(status, expected, data);
+  }
+});
+
+test('detectStatus: codex passive footer variants preserve pending idle', () => {
+  const prompt = '\n› Implement {feature}\n';
+  const footers = [
+    '\x1b[?25h\x1b[48;1H',
+    'gpt-5.6-sol high · ~/apps/specsket · Context 78% used',
+    'gpt-5.6-sol high · ~/apps/specsket · Context 78% used · webclippeer · Main [default]',
+    'gpt-5.6-sol high · ~/apps/specsket · Context 78% used · Fix WSL folder create · Main [default]',
+    '\x1b[2m\n  gpt-5.6-sol high · ~/apps/specsket · Context 78% used · webclippeer · Main [default]          Plan mode (shift+tab to cycle)\x1b[22m\x1b[?25h'
+  ];
+
+  for (const footer of footers) {
+    const status = SessionManager.prototype.detectStatus.call(
+      {},
+      footer,
+      'thinking',
+      'codex',
+      `${prompt}${footer}`,
+      'idle'
+    );
+    assert.equal(status, 'idle', footer);
+  }
+});
+
+test('detectStatus: codex footer prefix does not hide substantive output', () => {
+  const prompt = '\n› Implement {feature}\n';
+  const fixtures = [
+    'gpt-5.6-sol high · ~/apps/specsket · Context 78% used\ncommand output completed',
+    'gpt-5.6-sol high · ~/apps/specsket · Context 78% used command output completed'
+  ];
+
+  for (const data of fixtures) {
+    const status = SessionManager.prototype.detectStatus.call(
+      {},
+      data,
+      'thinking',
+      'codex',
+      `${prompt}${data}`,
+      'idle'
+    );
+    assert.equal(status, 'active', data);
+  }
+});
+
+test('statusDetectionContext: remains capped at 4000 code units', () => {
+  const manager = { cleanTerminalText: SessionManager.prototype.cleanTerminalText };
+  const session = { statusDetectionContext: 'a'.repeat(3995) };
+  const context = SessionManager.prototype.updateStatusDetectionContext.call(
+    manager,
+    session,
+    'b'.repeat(5000)
+  );
+
+  assert.equal(context.length, 4000);
+  assert.equal(context, 'b'.repeat(4000));
+});
+
+test('submitted input: cancels pending idle before its debounce fires', async () => {
+  const { manager, session, events } = createStatusHarness('thinking');
+  manager.markSemanticSubmission = SessionManager.prototype.markSemanticSubmission;
+
+  manager.processSessionOutputState(session, '\n› Implement {feature}\n');
+  assert.equal(session.pendingStatus, 'idle');
+  assert.notEqual(session.statusDebounceTimer, null);
+
+  manager.markSemanticSubmission(session, { source: 'input' });
+  assert.equal(session.status, 'active');
+  assert.equal(session.statusDetectionContext, '');
+  assert.equal(session.pendingStatus, null);
+  assert.equal(session.statusDebounceTimer, null);
+
+  await waitForStatusDebounce();
+  assert.equal(session.status, 'active');
+  assert.equal(events.some(event => event.payload?.status === 'idle'), false);
+});
+
+test('submitted input: draft typing keeps context while CR, LF, and multiline clear it', () => {
+  const makeHarness = () => {
+    const session = {
+      id: 'input-session',
+      status: 'active',
+      stage: 'in_progress',
+      cliType: 'codex',
+      currentTask: '',
+      statusDetectionContext: 'ready prompt context',
+      pendingStatus: null,
+      statusDebounceTimer: null,
+      promptBuffer: '',
+      promptHistory: [],
+      promptFlushTimer: null,
+      inEscapeSeq: false,
+      isComposingPrompt: false,
+      manuallyPlaced: false,
+      placementLocked: false
+    };
+    const manager = {
+      sessions: new Map([[session.id, session]]),
+      _writeToPty() {},
+      emit() {},
+      addPromptToHistory() {},
+      cancelPendingStatusTransition: SessionManager.prototype.cancelPendingStatusTransition,
+      markSemanticSubmission: SessionManager.prototype.markSemanticSubmission,
+      clearPromptFlushTimer: SessionManager.prototype.clearPromptFlushTimer,
+      flushPromptBuffer: SessionManager.prototype.flushPromptBuffer
+    };
+    return { manager, session };
+  };
+
+  const draft = makeHarness();
+  assert.equal(SessionManager.prototype.sendInput.call(draft.manager, draft.session.id, 'draft'), true);
+  assert.equal(draft.session.statusDetectionContext, 'ready prompt context');
+
+  for (const input of ['\r', '\n', 'multiline prompt\n']) {
+    const { manager, session } = makeHarness();
+    assert.equal(SessionManager.prototype.sendInput.call(manager, session.id, input), true);
+    assert.equal(session.statusDetectionContext, '', JSON.stringify(input));
+  }
+});
+
+test('Codex role automation skips ready-prompt status detection in the same callback', () => {
+  const writes = [];
+  const events = [];
+  const pendingTimer = setTimeout(() => {}, 10_000);
+  const session = {
+    id: 'role-session',
+    status: 'thinking',
+    stage: 'in_progress',
+    cliType: 'codex',
+    currentTask: '',
+    statusDetectionContext: 'stale prompt',
+    pendingStatus: 'idle',
+    statusDebounceTimer: pendingTimer,
+    startupSequence: null,
+    roleInjection: { cliType: 'codex', role: 'Review architecture carefully.' },
+    pty: { write(value) { writes.push(value); } }
+  };
+  const manager = {
+    emit(type, payload) { events.push({ type, payload }); },
+    isCodexReadyForInput: SessionManager.prototype.isCodexReadyForInput,
+    injectCodexRole: SessionManager.prototype.injectCodexRole,
+    tryRoleInjectionOnOutput: SessionManager.prototype.tryRoleInjectionOnOutput,
+    processStartupSequenceOnOutput: SessionManager.prototype.processStartupSequenceOnOutput,
+    clearRoleInjectionWorkflow: SessionManager.prototype.clearRoleInjectionWorkflow,
+    cancelPendingStatusTransition: SessionManager.prototype.cancelPendingStatusTransition,
+    markSemanticSubmission: SessionManager.prototype.markSemanticSubmission,
+    cleanTerminalText: SessionManager.prototype.cleanTerminalText,
+    updateStatusDetectionContext: SessionManager.prototype.updateStatusDetectionContext,
+    detectStatus: SessionManager.prototype.detectStatus,
+    updateSessionStatus() {
+      assert.fail('same-callback status detection should be skipped');
+    },
+    processSessionOutputState: SessionManager.prototype.processSessionOutputState
+  };
+
+  manager.processSessionOutputState(session, '\n› Implement {feature}\n');
+
+  assert.equal(writes.length, 1);
+  assert.equal(session.status, 'active');
+  assert.equal(session.statusDetectionContext, '');
+  assert.equal(session.pendingStatus, null);
+  assert.equal(session.statusDebounceTimer, null);
+  assert.equal(events.some(event => event.payload?.source === 'automation'), true);
+});
+
+test('Codex startup automation skips ready-prompt status detection in the same callback', () => {
+  const writes = [];
+  const session = {
+    id: 'startup-session',
+    status: 'thinking',
+    stage: 'in_progress',
+    cliType: 'codex',
+    currentTask: '',
+    statusDetectionContext: 'stale prompt',
+    pendingStatus: 'idle',
+    statusDebounceTimer: setTimeout(() => {}, 10_000),
+    roleInjection: null,
+    startupSequence: {
+      active: true,
+      queue: ['/skills'],
+      sentCount: 0,
+      lastSentAt: 0,
+      completedAt: null
+    },
+    pty: { write(value) { writes.push(value); } }
+  };
+  const manager = {
+    emit() {},
+    tryRoleInjectionOnOutput: SessionManager.prototype.tryRoleInjectionOnOutput,
+    processStartupSequenceOnOutput: SessionManager.prototype.processStartupSequenceOnOutput,
+    canAcceptOrchestratorInput() { return false; },
+    drainMessageQueue() {},
+    getSessionSnapshot(current) { return { ...current }; },
+    cancelPendingStatusTransition: SessionManager.prototype.cancelPendingStatusTransition,
+    markSemanticSubmission: SessionManager.prototype.markSemanticSubmission,
+    cleanTerminalText: SessionManager.prototype.cleanTerminalText,
+    updateStatusDetectionContext: SessionManager.prototype.updateStatusDetectionContext,
+    detectStatus: SessionManager.prototype.detectStatus,
+    updateSessionStatus() {
+      assert.fail('same-callback status detection should be skipped');
+    },
+    processSessionOutputState: SessionManager.prototype.processSessionOutputState
+  };
+
+  manager.processSessionOutputState(session, '\n› Implement {feature}\n');
+
+  assert.deepEqual(writes, ['/skills\r']);
+  assert.equal(session.status, 'active');
+  assert.equal(session.statusDetectionContext, '');
+  assert.equal(session.pendingStatus, null);
+  assert.equal(session.statusDebounceTimer, null);
+});
+
+test('status transition: non-Codex current-status guard remains unchanged', () => {
+  const { manager, session } = createStatusHarness('thinking', 'claude');
+  const pendingTimer = setTimeout(() => {}, 10_000);
+  session.pendingStatus = 'idle';
+  session.statusDebounceTimer = pendingTimer;
+
+  manager.processSessionOutputState(session, 'Thinking');
+
+  assert.equal(session.pendingStatus, 'idle');
+  assert.equal(session.statusDebounceTimer, pendingTimer);
+  clearTimeout(pendingTimer);
+  session.statusDebounceTimer = null;
+  session.pendingStatus = null;
 });
 
 test('isCodexMidWorkApprovalPrompt: only matches mid-run approvals', () => {
