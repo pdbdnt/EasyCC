@@ -40,6 +40,7 @@ export function useSessions() {
   // Derived compat field — last selected is the "primary" for context sidebar etc.
   const selectedId = selectedIds[selectedIds.length - 1] || null;
   const [connectionStatus, setConnectionStatus] = useState('connecting');
+  const [initialized, setInitialized] = useState(false);
 
   // Fetch stages on mount
   useEffect(() => {
@@ -74,6 +75,7 @@ export function useSessions() {
           }
           return prev;
         });
+        setInitialized(true);
         break;
 
       case 'sessionCreated':
@@ -90,7 +92,9 @@ export function useSessions() {
                 ...session,
                 status: data.status,
                 currentTask: data.currentTask || session.currentTask,
-                lastActivity: new Date().toISOString()
+                lastActivity: new Date().toISOString(),
+                recoveryError: data.error || (data.status === 'active' ? null : session.recoveryError),
+                recoveryFailure: !!data.recoveryFailure
               }
             : session
         ));
@@ -687,8 +691,9 @@ export function useSessions() {
     deleteTask,
     deleteAgent,
     connectionStatus,
+    initialized,
     isConnected
-  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, setSelectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, restartSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, isConnected]);
+  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, setSelectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, restartSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, initialized, isConnected]);
 }
 
 export default useSessions;

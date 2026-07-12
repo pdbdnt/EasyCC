@@ -76,6 +76,7 @@ class DataStore {
           : null,
         codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
         codexIdentityError: session.codexIdentityError || null,
+        recoveryError: session.recoveryError || null,
         notes: session.notes || '',
         role: session.role || '',
         agentId: session.agentId || null,
@@ -149,7 +150,7 @@ class DataStore {
       }
 
       // Update allowed metadata fields
-      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'codexSessionId', 'codexThreadName', 'codexLaunchStartedAt', 'codexIdentityState', 'codexIdentityVerifiedAt', 'codexIdentityError', 'status', 'lastActivity',
+      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'codexSessionId', 'codexThreadName', 'codexLaunchStartedAt', 'codexIdentityState', 'codexIdentityVerifiedAt', 'codexIdentityError', 'recoveryError', 'status', 'lastActivity',
         'repoRoot', 'repoName', 'gitBranch', 'groupKey',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt', 'placementLocked',
         'rejectionHistory', 'completedAt', 'updatedAt', 'comments', 'messageQueue',

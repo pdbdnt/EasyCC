@@ -208,7 +208,7 @@ class CodexSessionService {
     }
     const executable = this.platform === 'win32' ? 'wsl.exe' : '/bin/bash';
     const args = this.platform === 'win32'
-      ? ['bash', '--noprofile', '--norc', '-lc', command]
+      ? ['--exec', 'bash', '--noprofile', '--norc', '-lc', command]
       : ['-lc', command];
     return new Promise((resolve, reject) => {
       this.execFile(executable, args, {

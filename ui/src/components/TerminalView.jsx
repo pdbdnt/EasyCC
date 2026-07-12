@@ -1212,7 +1212,7 @@ const TerminalView = forwardRef(function TerminalView({
             <div className="paused-content">
               <div className="paused-icon">⏸️</div>
               <h3>Session Paused</h3>
-              <p>Resume the previous session or start a new one</p>
+              <p>{session?.recoveryError || 'Resume the previous session or start a new one'}</p>
               <div className="paused-actions">
                 <button className="btn btn-primary" onClick={handleResume}>
                   Resume Session

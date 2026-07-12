@@ -23,6 +23,7 @@ const {
   resolvePlanRefForHost
 } = require('./planPathUtils');
 const registerCodexResumeRoutes = require('./codexResumeRoutes');
+const registerRecoveryRoutes = require('./recoveryRoutes');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
@@ -1126,6 +1127,7 @@ async function start() {
   });
 
   registerCodexResumeRoutes(app, { sessionManager });
+  registerRecoveryRoutes(app, { sessionManager });
 
   // Serve static files in production
   const uiDistPath = path.join(__dirname, '..', 'ui', 'dist');
@@ -3692,12 +3694,14 @@ async function start() {
   });
 
   // Broadcast status changes to dashboard clients
-  sessionManager.on('statusChange', ({ sessionId, status, currentTask }) => {
+  sessionManager.on('statusChange', ({ sessionId, status, currentTask, error, recoveryFailure }) => {
     const message = JSON.stringify({
       type: 'statusChange',
       sessionId,
       status,
-      currentTask
+      currentTask,
+      error: error || null,
+      recoveryFailure: !!recoveryFailure
     });
 
     for (const client of dashboardClients) {
@@ -3711,7 +3715,7 @@ async function start() {
     // Also notify terminal clients about status changes (for paused overlay)
     const termClients = terminalClients.get(sessionId);
     if (termClients) {
-      const statusMessage = JSON.stringify({ type: 'status', status });
+      const statusMessage = JSON.stringify({ type: 'status', status, error: error || null, recoveryFailure: !!recoveryFailure });
       for (const client of termClients) {
         try {
           client.send(statusMessage);

@@ -124,6 +124,30 @@ test('date cursors are opaque and complete-date based', () => {
   assert.equal(getLocalDate('2026-07-09T16:30:00.000Z', 'Asia/Singapore'), '2026-07-10');
 });
 
+test('Windows shell execution bypasses WSL command re-parsing', async () => {
+  let invocation = null;
+  const service = new CodexSessionService({
+    platform: 'win32',
+    execFile(executable, args, options, callback) {
+      invocation = { executable, args, options };
+      callback(null, 'ok');
+    }
+  });
+
+  const command = 'codex_root="$HOME/.codex"; printf %s "$codex_root"';
+  const output = await service.runShell(command);
+  assert.equal(output, 'ok');
+  assert.equal(invocation.executable, 'wsl.exe');
+  assert.deepEqual(invocation.args, [
+    '--exec',
+    'bash',
+    '--noprofile',
+    '--norc',
+    '-lc',
+    command
+  ]);
+});
+
 test('resume catalog deduplicates titles, excludes subagents, pages by two complete dates, and uses direct prompt events', async () => {
   const service = new CodexSessionService({
     platform: 'linux',

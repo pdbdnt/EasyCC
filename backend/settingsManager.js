@@ -63,7 +63,7 @@ class SettingsManager {
       },
       session: {
         defaultWorkingDir: '',
-        autoResumeOnStart: true
+        startupRecoveryMode: 'ask'
       },
       general: {
         clearTerminalWhenSessionListEmpty: false
@@ -130,8 +130,9 @@ class SettingsManager {
   updateSettings(updates) {
     const current = this.loadSettings();
     const updated = this.deepMerge(current, updates);
-    this.saveSettings(updated);
-    return updated;
+    const normalized = this.mergeWithDefaults(updated);
+    this.saveSettings(normalized);
+    return normalized;
   }
 
   /**
@@ -151,7 +152,15 @@ class SettingsManager {
    */
   mergeWithDefaults(settings) {
     const defaults = this.getDefaults();
-    return this.deepMerge(defaults, settings);
+    const merged = this.deepMerge(defaults, settings || {});
+    const validModes = new Set(['ask', 'auto-resume', 'restore-paused']);
+    if (!validModes.has(merged.session?.startupRecoveryMode)) {
+      merged.session.startupRecoveryMode = 'ask';
+    }
+    if (merged.session) {
+      delete merged.session.autoResumeOnStart;
+    }
+    return merged;
   }
 
   /**

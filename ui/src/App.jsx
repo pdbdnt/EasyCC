@@ -12,6 +12,7 @@ import AgentBoard from './components/AgentBoard';
 import AgentSidebar from './components/AgentSidebar';
 import ToastContainer from './components/Toast';
 import CodexResumeModal from './components/CodexResumeModal';
+import StartupRecoveryModal from './components/StartupRecoveryModal';
 import { useSessions } from './hooks/useSessions';
 import { useSessionGroups } from './hooks/useSessionGroups';
 import { useContextSidebar } from './hooks/useContextSidebar';
@@ -80,6 +81,11 @@ function App() {
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [codexResumeScope, setCodexResumeScope] = useState(null);
+  const [startupRecoverySummary, setStartupRecoverySummary] = useState(null);
+  const [startupRecoveryOpen, setStartupRecoveryOpen] = useState(false);
+  const [startupRecoveryLoading, setStartupRecoveryLoading] = useState(false);
+  const [startupRecoveryBusy, setStartupRecoveryBusy] = useState(false);
+  const [startupRecoveryError, setStartupRecoveryError] = useState('');
   const [detailsSession, setDetailsSession] = useState(null);
   const {
     sessions,
@@ -119,7 +125,8 @@ function App() {
     stopTaskRun,
     deleteTask,
     deleteAgent,
-    connectionStatus
+    connectionStatus,
+    initialized: sessionsInitialized
   } = useSessions();
   const { isVisible: sidebarVisible, toggle: toggleSidebar, hide: hideSidebar } = useContextSidebar();
   const { settings, loading: settingsLoading, error: settingsError, updateSettings, resetSettings } = useSettings();
@@ -178,7 +185,11 @@ function App() {
   const prevSessionIdsRef = useRef(new Set());
   const hydratedRef = useRef(false);
   const starredFoldersMigrationRan = useRef(false);
-  const startupCodexRecoveryRan = useRef(false);
+  const startupRecoveryRan = useRef(false);
+  const startupRecoveryDismissedRef = useRef(false);
+  const startupRecoveryActionRef = useRef(false);
+  const recoveryLaunchIdsRef = useRef(new Set());
+  const recoveryFailureNotifiedRef = useRef(new Set());
 
   // Hint mode configuration from settings
   const hintModeSettings = settings?.keyboard?.hintMode || { enabled: true, triggerKey: '`' };
@@ -188,20 +199,121 @@ function App() {
   });
   const confirmBeforeLeave = settings?.ui?.confirmBeforeLeave ?? true;
 
+  const openCodexRecovery = useCallback(() => {
+    setCodexResumeScope({ startup: true });
+  }, []);
+
+  const needsCodexSelection = useCallback((summary) => (
+    (summary?.sessions || []).some((session) =>
+      session.cliType === 'codex' && (
+        session.category === 'requiresSelection' || ['cwd_mismatch', 'duplicate_owner'].includes(session.code)
+      )
+    )
+  ), []);
+
+  const executeStartupRecovery = useCallback(async (summary, selectedSessionIds = null) => {
+    const selected = selectedSessionIds ? new Set(selectedSessionIds) : null;
+    const sessionIds = (summary?.sessions || [])
+      .filter((session) => session.category === 'launchable' && (!selected || selected.has(session.id)))
+      .map((session) => session.id);
+    if (sessionIds.length === 0) {
+      if (needsCodexSelection(summary)) openCodexRecovery();
+      return;
+    }
+
+    setStartupRecoveryBusy(true);
+    for (const id of sessionIds) recoveryLaunchIdsRef.current.add(id);
+    try {
+      const response = await fetch('/api/sessions/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionIds })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Could not restart previous sessions');
+      const launchedIds = new Set((body.launchStarted || []).map((session) => session.id));
+      for (const id of sessionIds) {
+        if (!launchedIds.has(id)) recoveryLaunchIdsRef.current.delete(id);
+      }
+      if ((body.launchStarted || []).length > 0) {
+        addToast(`Starting ${(body.launchStarted || []).length} recovered session${body.launchStarted.length === 1 ? '' : 's'}`, 'success');
+      }
+      if ((body.skipped || []).length > 0) {
+        addToast(`${body.skipped.length} session${body.skipped.length === 1 ? '' : 's'} could not be started`, 'error', 5000);
+      }
+      setStartupRecoveryOpen(false);
+      if ((body.requiresSelection || []).length > 0 || needsCodexSelection(summary)) {
+        openCodexRecovery();
+      }
+    } catch (error) {
+      for (const id of sessionIds) recoveryLaunchIdsRef.current.delete(id);
+      setStartupRecoveryError(error.message);
+    } finally {
+      setStartupRecoveryBusy(false);
+    }
+  }, [addToast, needsCodexSelection, openCodexRecovery]);
+
+  const handleResumeSession = useCallback((id, options = {}) => {
+    const session = sessions.find((candidate) => candidate.id === id);
+    if (session?.cliType === 'codex' && !options.fresh && !session.codexSessionId) {
+      setCodexResumeScope({
+        groupKey: session.groupKey || session.workingDir,
+        displayName: session.repoName || session.name
+      });
+      return Promise.resolve(false);
+    }
+    return resumeSession(id, options);
+  }, [resumeSession, sessions]);
+
+  const loadStartupRecovery = useCallback(async () => {
+    const mode = settings?.session?.startupRecoveryMode || 'ask';
+    startupRecoveryDismissedRef.current = false;
+    setStartupRecoveryOpen(mode === 'ask');
+    setStartupRecoveryLoading(true);
+    setStartupRecoveryError('');
+    try {
+      const response = await fetch('/api/sessions/recovery-summary');
+      const summary = await response.json();
+      if (!response.ok) throw new Error(summary.error || 'Could not prepare session recovery');
+      setStartupRecoverySummary(summary);
+      if (startupRecoveryDismissedRef.current) return;
+      if (!summary.totals?.candidateTotal) {
+        setStartupRecoveryOpen(false);
+        return;
+      }
+      if (mode === 'auto-resume') {
+        await executeStartupRecovery(summary);
+      } else if (mode === 'restore-paused') {
+        setStartupRecoveryOpen(false);
+        if (summary.sessions.some((session) => session.cliType === 'codex')) openCodexRecovery();
+      }
+    } catch (error) {
+      if (!startupRecoveryDismissedRef.current) setStartupRecoveryOpen(true);
+      setStartupRecoveryError(error.message);
+    } finally {
+      setStartupRecoveryLoading(false);
+    }
+  }, [executeStartupRecovery, openCodexRecovery, settings?.session?.startupRecoveryMode]);
+
   useEffect(() => {
-    if (connectionStatus !== 'connected' || startupCodexRecoveryRan.current) return;
-    startupCodexRecoveryRan.current = true;
-    const params = new URLSearchParams({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
-    fetch(`/api/codex/resume-catalog?${params}`)
-      .then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error || 'Could not load Codex recovery');
-        if ((body.savedSessions || []).length > 0) {
-          setCodexResumeScope({ startup: true, initialCatalog: body });
-        }
-      })
-      .catch((error) => addToast(error.message, 'error'));
-  }, [addToast, connectionStatus]);
+    if (connectionStatus !== 'connected' || !sessionsInitialized || settingsLoading || startupRecoveryRan.current) return;
+    startupRecoveryRan.current = true;
+    if (settingsError) {
+      setStartupRecoveryOpen(true);
+      setStartupRecoveryError('Settings could not be loaded. Sessions remain paused. Reload to retry.');
+      return;
+    }
+    void loadStartupRecovery();
+  }, [connectionStatus, loadStartupRecovery, sessionsInitialized, settingsError, settingsLoading]);
+
+  useEffect(() => {
+    for (const session of sessions) {
+      if (!recoveryLaunchIdsRef.current.has(session.id) || !session.recoveryError || session.status !== 'paused') continue;
+      if (recoveryFailureNotifiedRef.current.has(session.id)) continue;
+      recoveryFailureNotifiedRef.current.add(session.id);
+      addToast(`${session.name}: ${session.recoveryError}`, 'error', 6000);
+    }
+  }, [addToast, sessions]);
 
   // Apply theme to document root
   useEffect(() => {
@@ -1488,7 +1600,7 @@ function App() {
             onMoveSession={moveSession}
             onResetPlacement={resetPlacement}
             onKillSession={killSession}
-            onResumeSession={resumeSession}
+            onResumeSession={handleResumeSession}
             onOpenCodexResume={(scope) => setCodexResumeScope(scope || {})}
             connectionStatus={connectionStatus}
             hintModeActive={hintModeActive}
@@ -1542,7 +1654,7 @@ function App() {
             selectedSessionId={selectedId}
             focusedColumnId={focusedColumnId}
             onPauseSession={pauseSession}
-            onResumeSession={resumeSession}
+            onResumeSession={handleResumeSession}
             onKillSession={killSession}
             onResetPlacement={resetPlacement}
             onLockPlacement={lockPlacement}
@@ -1730,7 +1842,7 @@ function App() {
                       sessions={sessions}
                       onKillSession={() => killSession(paneSession.id)}
                       onPauseSession={pauseSession}
-                      onResumeSession={resumeSession}
+                      onResumeSession={handleResumeSession}
                       onRestartSession={restartSession}
                       onToggleSidebar={toggleSidebar}
                       sidebarVisible={sidebarVisible}
@@ -1790,6 +1902,59 @@ function App() {
               ? current.filter(f => f !== folderPath)
               : [...current, folderPath];
             updateSettings({ starredFolders: newStarred });
+          }}
+        />
+      )}
+      {startupRecoveryOpen && (
+        <StartupRecoveryModal
+          summary={startupRecoverySummary}
+          loading={startupRecoveryLoading}
+          busy={startupRecoveryBusy}
+          error={startupRecoveryError}
+          onRetry={() => {
+            startupRecoveryDismissedRef.current = false;
+            if (settingsError) {
+              window.location.reload();
+            } else {
+              void loadStartupRecovery();
+            }
+          }}
+          onClose={() => {
+            startupRecoveryDismissedRef.current = true;
+            setStartupRecoveryOpen(false);
+          }}
+          onRestart={async ({ remember, sessionIds }) => {
+            if (startupRecoveryActionRef.current) return;
+            startupRecoveryActionRef.current = true;
+            setStartupRecoveryBusy(true);
+            try {
+              if (remember) {
+                const saved = await updateSettings({ session: { startupRecoveryMode: 'auto-resume' } });
+                if (!saved) addToast('Recovery choice was not saved; EasyCC will ask again next launch', 'error', 5000);
+              }
+              await executeStartupRecovery(startupRecoverySummary, sessionIds);
+            } finally {
+              startupRecoveryActionRef.current = false;
+              setStartupRecoveryBusy(false);
+            }
+          }}
+          onRestorePaused={async ({ remember }) => {
+            if (startupRecoveryActionRef.current) return;
+            startupRecoveryActionRef.current = true;
+            setStartupRecoveryBusy(true);
+            try {
+              if (remember) {
+                const saved = await updateSettings({ session: { startupRecoveryMode: 'restore-paused' } });
+                if (!saved) addToast('Recovery choice was not saved; EasyCC will ask again next launch', 'error', 5000);
+              }
+              setStartupRecoveryOpen(false);
+              if ((startupRecoverySummary?.sessions || []).some((session) => session.cliType === 'codex')) {
+                openCodexRecovery();
+              }
+            } finally {
+              startupRecoveryActionRef.current = false;
+              setStartupRecoveryBusy(false);
+            }
           }}
         />
       )}

@@ -413,15 +413,20 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                 />
               </div>
 
-              <div className="form-group checkbox-group">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={localSettings.session.autoResumeOnStart}
-                    onChange={e => updateSetting('session', 'autoResumeOnStart', e.target.checked)}
-                  />
-                  Auto-resume sessions on startup
-                </label>
+              <div className="form-group">
+                <label htmlFor="startup-recovery-mode">Startup session recovery</label>
+                <select
+                  id="startup-recovery-mode"
+                  value={localSettings.session.startupRecoveryMode || 'ask'}
+                  onChange={e => updateSetting('session', 'startupRecoveryMode', e.target.value)}
+                >
+                  <option value="ask">Ask every launch</option>
+                  <option value="auto-resume">Automatically restart safe sessions</option>
+                  <option value="restore-paused">Restore paused and show Codex picker</option>
+                </select>
+                <p className="settings-description">
+                  Terminal and WSL sessions reopen as fresh shells. Codex conversations without an exact match stay paused for selection.
+                </p>
               </div>
 
               <div className="form-group checkbox-group">

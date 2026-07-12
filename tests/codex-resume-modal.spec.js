@@ -3,6 +3,14 @@ const { test, expect } = require('@playwright/test');
 const BASE_URL = process.env.CM_BASE_URL || 'http://localhost:5010';
 const THREAD_ID = '019f4a56-26a5-7440-bbc6-54b00447d986';
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/settings', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ settings: { session: { startupRecoveryMode: 'ask' } } })
+  }));
+});
+
 function catalogFixture() {
   return {
     savedSessions: [{
@@ -33,8 +41,33 @@ function catalogFixture() {
   };
 }
 
-test('startup recovery selects and submits the exact saved Codex thread', async ({ page }) => {
+async function mockRecoverySummary(page, { candidate = true } = {}) {
+  await page.route('**/api/sessions/recovery-summary', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(candidate ? {
+        sessions: [{
+          id: 'easycc-paused-one',
+          name: 'Saved exact thread',
+          cliType: 'codex',
+          workingDir: '/mnt/c/work/easycc',
+          groupKey: '/mnt/c/work/easycc',
+          category: 'launchable',
+          code: 'exact'
+        }],
+        totals: { candidateTotal: 1, launchableTotal: 1, requiresSelectionTotal: 0, disabledTotal: 0, projectTotal: 1 }
+      } : {
+        sessions: [],
+        totals: { candidateTotal: 0, launchableTotal: 0, requiresSelectionTotal: 0, disabledTotal: 0, projectTotal: 0 }
+      })
+    });
+  });
+}
+
+test('paused recovery choice selects and submits the exact saved Codex thread', async ({ page }) => {
   let submittedBody = null;
+  await mockRecoverySummary(page);
   await page.route('**/api/codex/resume-catalog?**', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(catalogFixture()) });
   });
@@ -48,6 +81,8 @@ test('startup recovery selects and submits the exact saved Codex thread', async 
   });
 
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('dialog', { name: 'Previous workspace found' })
+    .getByRole('button', { name: 'Restore paused and choose Codex' }).click();
   const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('Saved exact thread')).toBeVisible();
@@ -61,15 +96,15 @@ test('startup recovery selects and submits the exact saved Codex thread', async 
   });
 });
 
-test('History action reopens the exact-thread chooser and search stays server-backed', async ({ page }) => {
+test('History action opens the exact-thread chooser and search stays server-backed', async ({ page }) => {
   const requestedQueries = [];
+  await mockRecoverySummary(page, { candidate: false });
   await page.route('**/api/codex/resume-catalog?**', async (route) => {
     requestedQueries.push(new URL(route.request().url()).searchParams.get('query') || '');
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(catalogFixture()) });
   });
 
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('dialog', { name: 'Resume exact conversations' }).getByRole('button', { name: 'Close resume dialog' }).click();
   await page.getByRole('button', { name: 'History' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
@@ -80,6 +115,7 @@ test('History action reopens the exact-thread chooser and search stays server-ba
 });
 
 test('unresolved cards cannot choose a thread owned by another paused card', async ({ page }) => {
+  await mockRecoverySummary(page);
   const fixture = catalogFixture();
   fixture.savedSessions = [{
     easyccSessionId: 'easycc-unresolved',
@@ -107,6 +143,8 @@ test('unresolved cards cannot choose a thread owned by another paused card', asy
   });
 
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('dialog', { name: 'Previous workspace found' })
+    .getByRole('button', { name: 'Restore paused and choose Codex' }).click();
   const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
   const mappingSelect = dialog.getByRole('combobox', { name: 'Choose a Codex conversation for Needs mapping' });
 

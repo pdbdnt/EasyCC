@@ -94,9 +94,11 @@ class SessionManager extends EventEmitter {
   constructor() {
     super();
     this.sessions = new Map();
+    this.platform = process.platform;
     this.dataStore = new DataStore();
     this.planManager = new PlanManager();
     this.codexSessionService = new CodexSessionService();
+    this.recoveryInFlight = new Set();
     this.stages = [...DEFAULT_STAGES];
     this.isShuttingDown = false;  // Prevents onExit handlers from deleting sessions during shutdown
 
@@ -226,6 +228,7 @@ class SessionManager extends EventEmitter {
             : null,
           codexIdentityVerifiedAt: sessionData.codexIdentityVerifiedAt || null,
           codexIdentityError: sessionData.codexIdentityError || null,
+          recoveryError: sessionData.recoveryError || null,
           notes: sessionData.notes || '',
           role: this.sanitizeRole(sessionData.role || ''),
           agentId: sessionData.agentId || null,
@@ -1312,6 +1315,202 @@ class SessionManager extends EventEmitter {
     });
   }
 
+  async validateRecoveryWorkingDir(session) {
+    const workingDir = this.normalizeWorkingDirForCli(session?.workingDir, session?.cliType || 'claude');
+    if (!workingDir) {
+      return { ok: false, code: 'missing_working_dir', message: 'Working directory is missing' };
+    }
+
+    if (this.platform === 'win32' && ['codex', 'wsl'].includes(session.cliType)) {
+      try {
+        const output = await this.codexSessionService.runShell(
+          `if test -d ${this.quoteForPosixShell(workingDir)}; then printf ok; else printf missing; fi`
+        );
+        return String(output).trim() === 'ok'
+          ? { ok: true }
+          : { ok: false, code: 'missing_working_dir', message: 'Working directory is not available in WSL' };
+      } catch (error) {
+        const message = error.message || '';
+        const unavailable = error.code === 'ENOENT' ||
+          /wsl(?:\.exe)?.*(?:not found|cannot find|not recognized)/i.test(message) ||
+          /WSL_E_DEFAULT_DISTRO_NOT_FOUND|no installed distributions|no distribution.*installed|specified distribution.*does not exist/i.test(message);
+        return {
+          ok: false,
+          code: unavailable ? 'wsl_unavailable' : 'directory_check_failed',
+          message: unavailable ? 'WSL is not available' : 'Could not verify the WSL working directory'
+        };
+      }
+    }
+
+    try {
+      return fs.statSync(workingDir).isDirectory()
+        ? { ok: true }
+        : { ok: false, code: 'missing_working_dir', message: 'Working directory is not a directory' };
+    } catch {
+      return { ok: false, code: 'missing_working_dir', message: 'Working directory does not exist' };
+    }
+  }
+
+  async prepareRecoverySummary() {
+    const paused = [...this.sessions.values()].filter((session) => session?.status === 'paused');
+    const codexIds = paused
+      .filter((session) => session.cliType === 'codex' && session.codexSessionId)
+      .map((session) => session.codexSessionId);
+    const [threadsById, processState] = await Promise.all([
+      this.codexSessionService.getThreadsByIds(codexIds),
+      this.codexSessionService.scanProcesses()
+    ]);
+    const rows = [];
+    const exactCodex = [];
+
+    for (const session of paused) {
+      const cliType = session.cliType || 'claude';
+      const row = {
+        id: session.id,
+        name: session.name,
+        cliType,
+        workingDir: session.workingDir,
+        groupKey: session.groupKey || session.workingDir,
+        projectName: session.repoName || path.basename(String(session.groupKey || session.workingDir || 'Project')),
+        category: 'launchable',
+        code: cliType === 'terminal' || cliType === 'wsl' ? 'fresh_shell' : 'exact',
+        message: cliType === 'terminal' || cliType === 'wsl' ? 'Starts a fresh shell' : null
+      };
+
+      const directory = await this.validateRecoveryWorkingDir(session);
+      if (!directory.ok) {
+        Object.assign(row, { category: 'disabled', code: directory.code, message: directory.message });
+        rows.push(row);
+        continue;
+      }
+
+      if (cliType === 'claude' && !session.claudeSessionId) {
+        Object.assign(row, { category: 'disabled', code: 'missing_identity', message: 'Claude conversation ID is missing' });
+      } else if (cliType === 'codex') {
+        const codexId = String(session.codexSessionId || '').toLowerCase();
+        const thread = codexId ? threadsById.get(codexId) : null;
+        if (!thread) {
+          Object.assign(row, { category: 'requiresSelection', code: 'requires_selection', message: 'Choose an exact Codex conversation' });
+        } else if (normalizeCodexPath(thread.workingDir) !== normalizeCodexPath(session.workingDir)) {
+          Object.assign(row, { category: 'disabled', code: 'cwd_mismatch', message: 'Codex conversation belongs to a different folder' });
+        } else {
+          if (thread.threadName && thread.threadName !== session.name) {
+            session.name = thread.threadName;
+            session.codexThreadName = thread.threadName;
+            this.dataStore.saveSession(session);
+            this.emit('sessionUpdated', this.getSessionSnapshot(session));
+          }
+          row.name = thread.threadName || session.name;
+          row.codexSessionId = codexId;
+          const activeOwner = [...this.sessions.values()].find((candidate) =>
+            candidate.id !== session.id &&
+            !['paused', 'completed', 'killed'].includes(candidate.status) &&
+            String(candidate.codexSessionId || '').toLowerCase() === codexId
+          );
+          if (activeOwner) {
+            Object.assign(row, { category: 'disabled', code: 'already_active', message: `Conversation is active in ${activeOwner.name}` });
+          } else if (processState.liveRootIds.has(codexId)) {
+            Object.assign(row, { category: 'disabled', code: 'already_live', message: 'Codex conversation is already running' });
+          } else {
+            exactCodex.push({ session, row, codexId });
+          }
+        }
+      }
+      rows.push(row);
+    }
+
+    const owners = new Map();
+    exactCodex
+      .sort((a, b) => Date.parse(a.session.createdAt || 0) - Date.parse(b.session.createdAt || 0) || a.session.id.localeCompare(b.session.id))
+      .forEach(({ row, codexId }) => {
+        if (!owners.has(codexId)) {
+          owners.set(codexId, row.id);
+          return;
+        }
+        Object.assign(row, {
+          category: 'disabled',
+          code: 'duplicate_owner',
+          message: `Conversation is already assigned to ${owners.get(codexId)}`
+        });
+      });
+
+    const totals = {
+      candidateTotal: rows.length,
+      launchableTotal: rows.filter((row) => row.category === 'launchable').length,
+      requiresSelectionTotal: rows.filter((row) => row.category === 'requiresSelection').length,
+      disabledTotal: rows.filter((row) => row.category === 'disabled').length,
+      projectTotal: new Set(rows.map((row) => row.groupKey).filter(Boolean)).size
+    };
+    return { sessions: rows, totals };
+  }
+
+  async recoverSessions(sessionIds = []) {
+    const requestedIds = [...new Set((sessionIds || []).filter((id) => typeof id === 'string'))];
+    const summary = await this.prepareRecoverySummary();
+    const byId = new Map(summary.sessions.map((row) => [row.id, row]));
+    const launchStarted = [];
+    const skipped = [];
+    const requiresSelection = [];
+
+    for (const id of requestedIds) {
+      const row = byId.get(id);
+      if (!row) {
+        skipped.push({ id, code: 'not_found', message: 'Paused recovery candidate was not found' });
+        continue;
+      }
+      if (row.category === 'requiresSelection') {
+        requiresSelection.push(row);
+        continue;
+      }
+      if (row.category !== 'launchable') {
+        skipped.push(row);
+        continue;
+      }
+      const current = this.sessions.get(id);
+      if (!current) {
+        skipped.push({ ...row, code: 'not_found', message: 'Session no longer exists' });
+        continue;
+      }
+      if (current.status !== 'paused') {
+        skipped.push({
+          ...row,
+          code: current.status === 'active' ? 'already_active' : 'not_paused',
+          message: current.status === 'active' ? 'Session is already active' : 'Session is no longer paused'
+        });
+        continue;
+      }
+      if (current.cliType === 'codex' && current.codexSessionId) {
+        const activeOwner = [...this.sessions.values()].find((candidate) =>
+          candidate.id !== current.id &&
+          !['paused', 'completed', 'killed'].includes(candidate.status) &&
+          String(candidate.codexSessionId || '').toLowerCase() === String(current.codexSessionId).toLowerCase()
+        );
+        if (activeOwner) {
+          skipped.push({ ...row, code: 'already_active', message: `Conversation is active in ${activeOwner.name}` });
+          continue;
+        }
+      }
+      if (this.recoveryInFlight.has(id)) {
+        skipped.push({ ...row, code: 'already_starting', message: 'Session recovery is already starting' });
+        continue;
+      }
+
+      this.recoveryInFlight.add(id);
+      try {
+        const started = this.resumeSession(id, { recovery: true });
+        if (!started) {
+          skipped.push({ ...row, code: 'spawn_failed', message: 'Could not start session recovery' });
+          continue;
+        }
+        launchStarted.push(this.getSessionSnapshot(this.sessions.get(id)));
+      } finally {
+        this.recoveryInFlight.delete(id);
+      }
+    }
+
+    return { launchStarted, skipped, requiresSelection };
+  }
+
   createBoundCodexSession(thread) {
     const now = new Date();
     const id = uuidv4();
@@ -1345,6 +1544,7 @@ class SessionManager extends EventEmitter {
       codexIdentityState: 'unverified',
       codexIdentityVerifiedAt: null,
       codexIdentityError: null,
+      recoveryError: null,
       notes: '',
       role: '',
       agentId: null,
@@ -2119,6 +2319,7 @@ class SessionManager extends EventEmitter {
       codexIdentityState: cliType === 'codex' ? 'verifying' : null,
       codexIdentityVerifiedAt: null,
       codexIdentityError: null,
+      recoveryError: null,
       notes: '',
       role: sanitizedRole,
       agentId: sessionMeta.agentId || null,
@@ -2493,9 +2694,10 @@ class SessionManager extends EventEmitter {
    * @param {string} id - Session ID
    * @param {object} options - Resume options
    * @param {boolean} options.fresh - Start a fresh CLI session instead of resuming
+   * @param {boolean} options.recovery - Safe startup recovery without role/startup automation or Claude fresh fallback
    * @returns {boolean} Success status
    */
-  resumeSession(id, { fresh = false } = {}) {
+  resumeSession(id, { fresh = false, recovery = false } = {}) {
     const session = this.sessions.get(id);
     if (!session) {
       return false;
@@ -2506,6 +2708,7 @@ class SessionManager extends EventEmitter {
     }
 
     const cliType = session.cliType || 'claude';
+    session.recoveryError = null;
     if (cliType !== 'codex') {
       this.applyRepoContext(session);
     }
@@ -2524,13 +2727,34 @@ class SessionManager extends EventEmitter {
     const createFreshClaudeProcess = ({ sessionId = null } = {}) => {
       return this.spawnClaudeProcess(session.workingDir, {
         sessionId,
-        role: this.sanitizeRole(session.role || ''),
+        role: recovery ? '' : this.sanitizeRole(session.role || ''),
         easyccSessionId: session.id
       });
     };
 
     const handleClaudeResumeFallback = () => {
       if (cliType !== 'claude' || claudeFallbackAttempted) {
+        return;
+      }
+
+      if (recovery) {
+        claudeFallbackAttempted = true;
+        session.status = 'paused';
+        session.recoveryError = 'Saved Claude conversation could not be found';
+        this._clearWriteQueue(session);
+        if (session.pty) {
+          try { session.pty.kill(); } catch { /* process may already be exiting */ }
+        }
+        session.pty = null;
+        this.dataStore.saveSession(session);
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        this.emit('statusChange', {
+          sessionId: id,
+          status: 'paused',
+          currentTask: session.currentTask,
+          error: session.recoveryError,
+          recoveryFailure: true
+        });
         return;
       }
 
@@ -2638,7 +2862,7 @@ class SessionManager extends EventEmitter {
         // This preserves sessions that fail to resume (e.g., "Session ID already in use")
         const sessionAge = Date.now() - new Date(session.lastActivity).getTime();
         debugLog(`PTY onExit (resume) for session ${id}: exitCode=${exitCode}, signal=${signal}, sessionAge=${sessionAge}ms`);
-        if (sessionAge < 10000 && exitCode !== 0) {
+        if (sessionAge < 10000 && (exitCode !== 0 || recovery)) {
           debugLog(`Session ${id} PAUSED due to early exit after resume (age=${sessionAge}ms, exitCode=${exitCode})`);
           session.status = 'paused';
           this._clearWriteQueue(session);
@@ -2648,12 +2872,16 @@ class SessionManager extends EventEmitter {
             session.codexIdentityState = 'unresolved';
             session.codexIdentityError = 'Exact Codex resume failed';
           }
+          if (recovery) {
+            session.recoveryError = 'Session recovery exited before it was ready';
+          }
           this.dataStore.saveSession(session);
           this.emit('statusChange', {
             sessionId: id,
             status: 'paused',
             currentTask: session.currentTask,
-            error: 'Failed to resume session'
+            error: session.recoveryError || 'Failed to resume session',
+            recoveryFailure: recovery
           });
           return;
         }
@@ -2732,13 +2960,20 @@ class SessionManager extends EventEmitter {
           // Claude: resume existing session when possible, and append role for consistency.
           ptyProcess = this.spawnClaudeProcess(session.workingDir, {
             resumeId: session.claudeSessionId || null,
-            role: this.sanitizeRole(session.role || ''),
+            role: recovery ? '' : this.sanitizeRole(session.role || ''),
             easyccSessionId: session.id
           });
         }
       }
     } catch (error) {
       console.error(`Failed to resume session ${id}:`, error.message);
+      if (recovery) {
+        session.recoveryError = error.message || 'Could not start session recovery';
+        session.status = 'paused';
+        session.pty = null;
+        this.dataStore.saveSession(session);
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      }
       return false;
     }
 
@@ -2755,7 +2990,12 @@ class SessionManager extends EventEmitter {
 
     // Re-setup PTY handlers
     wirePtyHandlers(ptyProcess);
-    this.setupRoleInjectionWorkflow(session, 'resume');
+    if (!recovery) {
+      this.setupRoleInjectionWorkflow(session, 'resume');
+    } else {
+      this.clearRoleInjectionWorkflow(session);
+      session.startupSequence = null;
+    }
 
     if (cliType === 'claude') {
       if (session.claudeIndexWatcher) {
@@ -3892,6 +4132,7 @@ class SessionManager extends EventEmitter {
       codexIdentityState: session.codexIdentityState || null,
       codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
       codexIdentityError: session.codexIdentityError || null,
+      recoveryError: session.recoveryError || null,
       notes: session.notes || '',
       role: session.role || '',
       agentId: session.agentId || null,
