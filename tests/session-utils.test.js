@@ -55,6 +55,8 @@ function createStatusHarness(initialStatus = 'thinking', cliType = 'codex') {
     processStartupSequenceOnOutput() {
       return false;
     },
+    isCodexReadyForInput: SessionManager.prototype.isCodexReadyForInput,
+    clearCodexStatusSampler: SessionManager.prototype.clearCodexStatusSampler,
     cleanTerminalText: SessionManager.prototype.cleanTerminalText,
     updateStatusDetectionContext: SessionManager.prototype.updateStatusDetectionContext,
     detectStatus: SessionManager.prototype.detectStatus,
@@ -382,6 +384,120 @@ test('statusDetectionContext: remains capped at 4000 code units', () => {
 
   assert.equal(context.length, 4000);
   assert.equal(context, 'b'.repeat(4000));
+});
+
+test('codex status sampler reconstructs fragmented Working redraw after three seconds', () => {
+  const scheduled = [];
+  const deferred = [];
+  const statusUpdates = [];
+  const session = {
+    id: 'sampled-working-session',
+    cliType: 'codex',
+    status: 'idle',
+    stage: 'in_review',
+    pty: {}
+  };
+  const manager = {
+    setTimeoutFn(callback, delay) {
+      scheduled.push({ callback, delay });
+      return { type: 'timeout' };
+    },
+    setImmediateFn(callback) {
+      deferred.push(callback);
+      return { type: 'immediate' };
+    },
+    getCodexStatusSampler: SessionManager.prototype.getCodexStatusSampler,
+    collectCodexStatusSample: SessionManager.prototype.collectCodexStatusSample,
+    scheduleCodexStatusSample: SessionManager.prototype.scheduleCodexStatusSample,
+    observeCodexStatusSample: SessionManager.prototype.observeCodexStatusSample,
+    analyzeCodexStatusSample: SessionManager.prototype.analyzeCodexStatusSample,
+    updateSessionStatus(current, status) {
+      statusUpdates.push(status);
+      current.pendingStatus = status;
+    }
+  };
+  const fragments = [
+    '\x1b[43;3HW\x1b[4Cng',
+    '\x1b[43;3HWo\x1b[4Cg',
+    '\x1b[43;4Hor',
+    '\x1b[43;5Hrk',
+    '\x1b[43;6Hki',
+    '\x1b[43;7Hin',
+    '\x1b[43;8Hng',
+    '\x1b[43;9Hg'
+  ];
+
+  for (const fragment of fragments) manager.observeCodexStatusSample(session, fragment);
+
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 3000);
+  assert.deepEqual(statusUpdates, []);
+
+  scheduled[0].callback();
+  assert.equal(deferred.length, 1);
+  assert.deepEqual(statusUpdates, []);
+
+  deferred[0]();
+  assert.deepEqual(statusUpdates, ['thinking']);
+  assert.equal(session.pendingStatus, 'thinking');
+  assert.ok(session.codexSampledWorkingUntil > Date.now());
+});
+
+test('codex status sampler stays bounded and schedules once during output bursts', () => {
+  const scheduled = [];
+  const session = {
+    id: 'bounded-sampler-session',
+    cliType: 'codex',
+    status: 'idle',
+    stage: 'in_review',
+    pty: {}
+  };
+  const manager = {
+    setTimeoutFn(callback, delay) {
+      scheduled.push({ callback, delay });
+      return { type: 'timeout' };
+    },
+    getCodexStatusSampler: SessionManager.prototype.getCodexStatusSampler,
+    collectCodexStatusSample: SessionManager.prototype.collectCodexStatusSample,
+    scheduleCodexStatusSample: SessionManager.prototype.scheduleCodexStatusSample,
+    observeCodexStatusSample: SessionManager.prototype.observeCodexStatusSample
+  };
+
+  for (let index = 0; index < 10_000; index += 1) {
+    manager.observeCodexStatusSample(session, '0123456789');
+  }
+
+  const sampler = session.codexStatusSampler;
+  const retained = sampler.chunks.slice(sampler.head).filter(Boolean).join('');
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 3000);
+  assert.equal(sampler.chars, 8 * 1024);
+  assert.equal(retained.length, 8 * 1024);
+});
+
+test('codex status sampler ignores static Working text without animated row rewrites', () => {
+  const statusUpdates = [];
+  const session = {
+    id: 'static-working-session',
+    cliType: 'codex',
+    status: 'idle',
+    stage: 'in_review',
+    pty: {}
+  };
+  const manager = {
+    getCodexStatusSampler: SessionManager.prototype.getCodexStatusSampler,
+    collectCodexStatusSample: SessionManager.prototype.collectCodexStatusSample,
+    analyzeCodexStatusSample: SessionManager.prototype.analyzeCodexStatusSample,
+    updateSessionStatus(current, status) {
+      statusUpdates.push(status);
+      current.pendingStatus = status;
+    }
+  };
+
+  manager.collectCodexStatusSample(session, '\nWorking output completed successfully\n');
+
+  assert.equal(manager.analyzeCodexStatusSample(session), false);
+  assert.deepEqual(statusUpdates, []);
 });
 
 test('submitted input: cancels pending idle before its debounce fires', async () => {

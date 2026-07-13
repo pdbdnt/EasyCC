@@ -20,6 +20,11 @@ const MEDIUM_OUTPUT_BUFFER_CHUNKS = 12000;
 const CODEX_CAPTURE_MAX_WINDOW_MS = 30 * 60 * 1000;
 const CODEX_CAPTURE_MAX_INDEX_CANDIDATES = 12;
 const CODEX_PLAN_PATH_PATTERN = /(?:~|\/home\/[^/\s"'`<>]+)\/\.codex\/plans\/[^\s"'`<>]+\.md/gi;
+const CODEX_STATUS_SAMPLE_INTERVAL_MS = 3000;
+const CODEX_STATUS_SAMPLE_MAX_CHARS = 8 * 1024;
+const CODEX_STATUS_SAMPLE_HOLD_MS = 1500;
+const CODEX_STATUS_SCREEN_MAX_ROWS = 32;
+const CODEX_STATUS_SCREEN_MAX_COORDINATE = 500;
 const SESSION_TRANSCRIPTS_DIR = path.join(__dirname, '..', 'data', 'transcripts');
 
 // Message queue constants
@@ -57,6 +62,147 @@ function isCodexPassiveReadyRedraw(data) {
   if (lines.length === 0) return true;
   if (lines.length !== 1) return false;
   return CODEX_PASSIVE_FOOTER_PATTERN.test(lines[0]);
+}
+
+function createCodexStatusScreen() {
+  return {
+    row: 1,
+    column: 1,
+    rows: new Map()
+  };
+}
+
+function getCodexStatusScreenRow(screen, row) {
+  const safeRow = Math.max(1, Math.min(CODEX_STATUS_SCREEN_MAX_COORDINATE, row || 1));
+  let line = screen.rows.get(safeRow);
+  if (!line) {
+    line = [];
+    screen.rows.set(safeRow, line);
+    while (screen.rows.size > CODEX_STATUS_SCREEN_MAX_ROWS) {
+      screen.rows.delete(screen.rows.keys().next().value);
+    }
+  }
+  return line;
+}
+
+function applyCodexStatusScreenSample(screen, data) {
+  const cursorHits = new Map();
+  const raw = String(data || '');
+  let index = 0;
+
+  const clampCursor = () => {
+    screen.row = Math.max(1, Math.min(CODEX_STATUS_SCREEN_MAX_COORDINATE, screen.row || 1));
+    screen.column = Math.max(1, Math.min(CODEX_STATUS_SCREEN_MAX_COORDINATE, screen.column || 1));
+  };
+
+  const writeCharacter = (character) => {
+    clampCursor();
+    const line = getCodexStatusScreenRow(screen, screen.row);
+    line[screen.column - 1] = character;
+    screen.column += 1;
+  };
+
+  while (index < raw.length) {
+    const character = raw[index];
+
+    if (character === '\x1b') {
+      const next = raw[index + 1];
+      if (next === '[') {
+        let end = index + 2;
+        while (end < raw.length && !/[\x40-\x7e]/.test(raw[end])) end += 1;
+        if (end >= raw.length) break;
+
+        const final = raw[end];
+        const body = raw.slice(index + 2, end).replace(/^[?!>]/, '');
+        const params = body.split(';').map(value => {
+          const parsed = Number.parseInt(value, 10);
+          return Number.isFinite(parsed) ? parsed : 0;
+        });
+        const first = params[0] || 1;
+
+        if (final === 'H' || final === 'f') {
+          screen.row = first;
+          screen.column = params[1] || 1;
+          clampCursor();
+          cursorHits.set(screen.row, (cursorHits.get(screen.row) || 0) + 1);
+        } else if (final === 'A') {
+          screen.row -= first;
+        } else if (final === 'B') {
+          screen.row += first;
+        } else if (final === 'C') {
+          screen.column += first;
+        } else if (final === 'D') {
+          screen.column -= first;
+        } else if (final === 'G') {
+          screen.column = first;
+        } else if (final === 'K') {
+          const line = getCodexStatusScreenRow(screen, screen.row);
+          const mode = params[0] || 0;
+          if (mode === 2) {
+            line.length = 0;
+          } else if (mode === 1) {
+            for (let column = 0; column < screen.column; column += 1) line[column] = ' ';
+          } else {
+            line.length = Math.min(line.length, Math.max(0, screen.column - 1));
+          }
+        } else if (final === 'J' && (params[0] === 2 || params[0] === 3)) {
+          screen.rows.clear();
+        }
+        clampCursor();
+        index = end + 1;
+        continue;
+      }
+
+      if (next === ']') {
+        let end = index + 2;
+        while (end < raw.length && raw[end] !== '\x07' && !(raw[end] === '\x1b' && raw[end + 1] === '\\')) {
+          end += 1;
+        }
+        index = end < raw.length && raw[end] === '\x1b' ? end + 2 : end + 1;
+        continue;
+      }
+
+      index += 2;
+      continue;
+    }
+
+    if (character === '\r') {
+      screen.column = 1;
+      index += 1;
+      continue;
+    }
+    if (character === '\n') {
+      screen.row += 1;
+      clampCursor();
+      index += 1;
+      continue;
+    }
+    if (character === '\b') {
+      screen.column -= 1;
+      clampCursor();
+      index += 1;
+      continue;
+    }
+    if (character < ' ' || character === '\x7f') {
+      index += 1;
+      continue;
+    }
+
+    const codePoint = raw.codePointAt(index);
+    const printable = String.fromCodePoint(codePoint);
+    writeCharacter(printable);
+    index += printable.length;
+  }
+
+  const workingRows = [];
+  for (const [row, line] of screen.rows) {
+    const text = line.join('').replace(/\s+/g, ' ').trim();
+    if (/\bWorking\b/i.test(text) && (cursorHits.get(row) || 0) >= 4) {
+      workingRows.push({ row, text, cursorHits: cursorHits.get(row) });
+    }
+  }
+
+  return { workingRows };
 }
 
 /**
@@ -1089,6 +1235,7 @@ class SessionManager extends EventEmitter {
         }
       }
       session.pty = null;
+      this.clearCodexStatusSampler(session);
       session.status = 'paused';
       session.codexIdentityState = 'conflict';
       session.codexIdentityError = observation.error || 'Codex conversation is already open';
@@ -2059,6 +2206,110 @@ class SessionManager extends EventEmitter {
     return session.statusDetectionContext;
   }
 
+  getCodexStatusSampler(session) {
+    if (!session.codexStatusSampler) {
+      session.codexStatusSampler = {
+        chunks: [],
+        head: 0,
+        chars: 0,
+        timer: null,
+        deferred: null,
+        screen: createCodexStatusScreen()
+      };
+    }
+    return session.codexStatusSampler;
+  }
+
+  collectCodexStatusSample(session, data) {
+    if (!session || session.cliType !== 'codex') return null;
+    const sample = String(data || '');
+    if (!sample) return this.getCodexStatusSampler(session);
+
+    const sampler = this.getCodexStatusSampler(session);
+    sampler.chunks.push(sample);
+    sampler.chars += sample.length;
+
+    while (sampler.chars > CODEX_STATUS_SAMPLE_MAX_CHARS && sampler.head < sampler.chunks.length) {
+      const overflow = sampler.chars - CODEX_STATUS_SAMPLE_MAX_CHARS;
+      const chunk = sampler.chunks[sampler.head];
+      if (chunk.length <= overflow) {
+        sampler.chars -= chunk.length;
+        sampler.chunks[sampler.head] = null;
+        sampler.head += 1;
+      } else {
+        sampler.chunks[sampler.head] = chunk.slice(overflow);
+        sampler.chars -= overflow;
+      }
+    }
+
+    if (sampler.head >= 1024 && sampler.head * 2 >= sampler.chunks.length) {
+      sampler.chunks = sampler.chunks.slice(sampler.head);
+      sampler.head = 0;
+    }
+
+    return sampler;
+  }
+
+  analyzeCodexStatusSample(session) {
+    const sampler = session?.codexStatusSampler;
+    if (!sampler || sampler.chars === 0) return false;
+
+    const sample = sampler.chunks.slice(sampler.head).filter(Boolean).join('');
+    sampler.chunks = [];
+    sampler.head = 0;
+    sampler.chars = 0;
+
+    const analysis = applyCodexStatusScreenSample(sampler.screen, sample);
+    if (analysis.workingRows.length === 0) return false;
+    if (session.status === 'paused' || session.status === 'completed' || session.status === 'killed') return false;
+
+    session.codexSampledWorkingUntil = Date.now() + CODEX_STATUS_SAMPLE_HOLD_MS;
+    this.updateSessionStatus(session, 'thinking');
+    return true;
+  }
+
+  scheduleCodexStatusSample(session) {
+    const sampler = this.getCodexStatusSampler(session);
+    if (sampler.timer || sampler.deferred) return;
+
+    const scheduleTimeout = this.setTimeoutFn || setTimeout;
+    const scheduleImmediate = this.setImmediateFn || setImmediate;
+    sampler.timer = scheduleTimeout(() => {
+      sampler.deferred = scheduleImmediate(() => {
+        sampler.timer = null;
+        sampler.deferred = null;
+        this.analyzeCodexStatusSample(session);
+        if (sampler.chars > 0 && session.pty && !['paused', 'completed', 'killed'].includes(session.status)) {
+          this.scheduleCodexStatusSample(session);
+        }
+      });
+    }, CODEX_STATUS_SAMPLE_INTERVAL_MS);
+  }
+
+  observeCodexStatusSample(session, data) {
+    if (!session || session.cliType !== 'codex') return;
+    if (session.status !== 'idle' && session.stage !== 'in_review') return;
+    this.collectCodexStatusSample(session, data);
+    this.scheduleCodexStatusSample(session);
+  }
+
+  clearCodexStatusSampler(session, { resetScreen = true } = {}) {
+    const sampler = session?.codexStatusSampler;
+    if (!sampler) return;
+
+    const cancelTimeout = this.clearTimeoutFn || clearTimeout;
+    const cancelImmediate = this.clearImmediateFn || clearImmediate;
+    if (sampler.timer) cancelTimeout(sampler.timer);
+    if (sampler.deferred) cancelImmediate(sampler.deferred);
+    sampler.timer = null;
+    sampler.deferred = null;
+    sampler.chunks = [];
+    sampler.head = 0;
+    sampler.chars = 0;
+    if (resetScreen) sampler.screen = createCodexStatusScreen();
+    session.codexSampledWorkingUntil = 0;
+  }
+
   /**
    * Process role/startup automation and status detection for one PTY chunk.
    * Shared by create and resume handlers so their debounce behavior cannot drift.
@@ -2091,20 +2342,34 @@ class SessionManager extends EventEmitter {
       session.pendingStatus
     );
 
-    if (newStatus === 'paused') {
-      return newStatus;
+    const hasSampledWorkingSignal = session.cliType === 'codex' &&
+      session.codexSampledWorkingUntil &&
+      Date.now() < session.codexSampledWorkingUntil;
+    const hasExplicitReadySignal = session.cliType === 'codex' &&
+      newStatus === 'idle' &&
+      this.isCodexReadyForInput(data);
+    const effectiveStatus = hasSampledWorkingSignal && newStatus === 'idle' && !hasExplicitReadySignal
+      ? 'thinking'
+      : newStatus;
+
+    if (hasExplicitReadySignal) {
+      this.clearCodexStatusSampler(session);
+    }
+
+    if (effectiveStatus === 'paused') {
+      return effectiveStatus;
     }
 
     // A same-as-current Codex signal only needs the updater when it must cancel
     // an opposite pending transition. Keep steady-state streaming on the cheap path.
     const hasPendingTransition = !!(session.pendingStatus || session.statusDebounceTimer);
     if (
-      newStatus !== session.status ||
+      effectiveStatus !== session.status ||
       (session.cliType === 'codex' && hasPendingTransition)
     ) {
-      this.updateSessionStatus(session, newStatus);
+      this.updateSessionStatus(session, effectiveStatus);
     }
-    return newStatus;
+    return effectiveStatus;
   }
 
   extractSessionRename(data) {
@@ -2272,6 +2537,7 @@ class SessionManager extends EventEmitter {
     // Handle PTY output
     ptyProcess.onData((data) => {
       session.outputBuffer.push(data);
+      this.emit('output', { sessionId: id, data });
       this.appendToTranscript(id, data);
       if (shouldCountOutputAsActivity({
         data,
@@ -2285,6 +2551,7 @@ class SessionManager extends EventEmitter {
       // Try to detect Claude session ID from output
       this.detectClaudeSessionId(data, session);
       this.processSessionOutputState(session, data);
+      this.observeCodexStatusSample(session, data);
 
       // Detect current task
       const task = this.detectTask(data);
@@ -2311,7 +2578,6 @@ class SessionManager extends EventEmitter {
       this.detectPlanActivity(data, session);
       this.attachCodexPlansFromOutput(session, data);
 
-      this.emit('output', { sessionId: id, data });
     });
 
     // Handle PTY exit
@@ -2336,6 +2602,7 @@ class SessionManager extends EventEmitter {
         session.status = 'paused';
         this._clearWriteQueue(session);
         session.pty = null;
+        this.clearCodexStatusSampler(session);
         this.clearCodexSessionCapture(session);
         this.dataStore.saveSession(session);
         this.emit('statusChange', {
@@ -2349,6 +2616,7 @@ class SessionManager extends EventEmitter {
 
       session.status = 'completed';
       const endedSnapshot = this.getSessionSnapshot(session);
+      this.clearCodexStatusSampler(session);
       this.clearCodexSessionCapture(session);
       this.dataStore.deleteSession(id);
       this.deleteSessionTranscript(id);
@@ -2555,6 +2823,7 @@ class SessionManager extends EventEmitter {
     }
     this.clearRoleInjectionWorkflow(session);
     this.clearCodexSessionCapture(session);
+    this.clearCodexStatusSampler(session);
 
     // Kill the PTY process
     try {
@@ -2690,6 +2959,7 @@ class SessionManager extends EventEmitter {
 
       processRef.onData((data) => {
         session.outputBuffer.push(data);
+        this.emit('output', { sessionId: id, data });
         this.appendToTranscript(id, data);
         if (shouldCountOutputAsActivity({
           data,
@@ -2703,11 +2973,11 @@ class SessionManager extends EventEmitter {
         this.detectClaudeSessionId(data, session);
         if (cliType === 'claude' && /No conversation found with session ID/i.test(data)) {
           handleClaudeResumeFallback();
-          this.emit('output', { sessionId: id, data });
           return;
         }
 
         this.processSessionOutputState(session, data);
+        this.observeCodexStatusSample(session, data);
 
         const newName = this.extractSessionRename(data);
         if (newName && newName !== session.name) {
@@ -2732,7 +3002,6 @@ class SessionManager extends EventEmitter {
         this.detectPlanActivity(data, session);
         this.attachCodexPlansFromOutput(session, data);
 
-        this.emit('output', { sessionId: id, data });
       });
 
       processRef.onExit(({ exitCode, signal }) => {
@@ -2762,6 +3031,7 @@ class SessionManager extends EventEmitter {
           session.status = 'paused';
           this._clearWriteQueue(session);
           session.pty = null;
+          this.clearCodexStatusSampler(session);
           this.clearCodexSessionCapture(session);
           if (cliType === 'codex') {
             session.codexIdentityState = 'unresolved';
@@ -2784,6 +3054,7 @@ class SessionManager extends EventEmitter {
         debugLog(`Session ${id} marked COMPLETED (exitCode=${exitCode}, signal=${signal})`);
         session.status = 'completed';
         const endedSnapshot = this.getSessionSnapshot(session);
+        this.clearCodexStatusSampler(session);
         this.clearCodexSessionCapture(session);
         this.dataStore.deleteSession(id);
         this.deleteSessionTranscript(id);
@@ -2799,6 +3070,7 @@ class SessionManager extends EventEmitter {
     };
 
     if (fresh) {
+      this.clearCodexStatusSampler(session);
       session.outputBuffer = new RingBuffer(this.getOutputBufferSize(cliType));
 
       if (cliType === 'claude') {
@@ -3299,6 +3571,7 @@ class SessionManager extends EventEmitter {
     if (!session) return;
 
     this.cancelPendingStatusTransition(session);
+    this.clearCodexStatusSampler?.(session);
     session.statusDetectionContext = '';
     session.lastSubmittedInputAtMs = Date.now();
     session.isComposingPrompt = false;
@@ -3419,6 +3692,7 @@ class SessionManager extends EventEmitter {
     this.clearPromptFlushTimer(session);
     this.clearRoleInjectionWorkflow(session);
     this.clearCodexSessionCapture(session);
+    this.clearCodexStatusSampler(session);
 
     // Close Claude sessions watcher
     if (session.claudeIndexWatcher) {
@@ -3907,6 +4181,7 @@ class SessionManager extends EventEmitter {
         session.statusDebounceTimer = null;
       }
       session.pendingStatus = null;
+      this.clearCodexStatusSampler(session);
       // Suppress status detection for 2s (PTY redraws old content on resize)
       session.resizingUntil = Date.now() + 2000;
       session.pty.resize(cols, rows);
@@ -4764,6 +5039,7 @@ class SessionManager extends EventEmitter {
       }
       this.clearRoleInjectionWorkflow(session);
       this.clearCodexSessionCapture(session);
+      this.clearCodexStatusSampler(session);
       session.startupSequence = null;
       if (session.pty) {
         this._clearWriteQueue(session);
