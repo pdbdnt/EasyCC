@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+const MAX_RESUME_SELECTIONS = 100;
+const catalogCache = new Map();
+const catalogRequests = new Map();
+
+async function requestCatalog(url) {
+  if (catalogRequests.has(url)) return catalogRequests.get(url);
+  const request = fetch(url)
+    .then(async (response) => {
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Could not load Codex conversations');
+      return body;
+    })
+    .finally(() => catalogRequests.delete(url));
+  catalogRequests.set(url, request);
+  return request;
+}
+
 function formatActivity(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -32,36 +49,80 @@ function sameFolder(left, right) {
 export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
   const [catalog, setCatalog] = useState(scope.initialCatalog || null);
   const [loading, setLoading] = useState(!scope.initialCatalog);
+  const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [warning, setWarning] = useState('');
+  const [bulkMessage, setBulkMessage] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [query, setQuery] = useState('');
   const [cursor, setCursor] = useState('');
   const [cursorStack, setCursorStack] = useState([]);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [selections, setSelections] = useState(() => new Map());
   const dialogRef = useRef(null);
   const initialCatalogPendingRef = useRef(!!scope.initialCatalog);
   const defaultsInitializedRef = useRef(false);
+  const requestVersionRef = useRef(0);
 
   const loadCatalog = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const params = new URLSearchParams({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
-      if (scope.groupKey) params.set('groupKey', scope.groupKey);
-      if (scope.easyccSessionId) params.set('easyccSessionId', scope.easyccSessionId);
-      if (cursor) params.set('cursor', cursor);
-      if (query) params.set('query', query);
-      const response = await fetch(`/api/codex/resume-catalog?${params}`);
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || 'Could not load Codex conversations');
-      setCatalog(body);
-    } catch (loadError) {
-      setError(loadError.message);
-    } finally {
+    const version = requestVersionRef.current + 1;
+    requestVersionRef.current = version;
+    const params = new URLSearchParams({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
+    if (scope.groupKey) params.set('groupKey', scope.groupKey);
+    if (scope.easyccSessionId) params.set('easyccSessionId', scope.easyccSessionId);
+    if (cursor) params.set('cursor', cursor);
+    if (query) params.set('query', query);
+    const cacheKey = params.toString();
+    const cached = catalogCache.get(cacheKey) || null;
+
+    if (cached) {
+      setCatalog(cached);
       setLoading(false);
+      setRefreshing(true);
+    } else {
+      setCatalog(null);
+      setLoading(true);
+      setRefreshing(false);
     }
-  }, [cursor, query, scope.easyccSessionId, scope.groupKey]);
+    setError('');
+    setWarning('');
+    try {
+      const body = await requestCatalog(`/api/codex/resume-catalog?${params}`);
+      if (requestVersionRef.current !== version) return;
+      catalogCache.set(cacheKey, body);
+      setCatalog(body);
+      setLoading(false);
+
+      if (body.cache?.historyStale) {
+        setRefreshing(true);
+        const refreshParams = new URLSearchParams(params);
+        refreshParams.set('refresh', '1');
+        try {
+          const freshBody = await requestCatalog(`/api/codex/resume-catalog?${refreshParams}`);
+          if (requestVersionRef.current !== version) return;
+          catalogCache.set(cacheKey, freshBody);
+          setCatalog(freshBody);
+        } catch (refreshError) {
+          if (requestVersionRef.current === version) {
+            setWarning(`${refreshError.message} Cached conversations are still shown.`);
+          }
+        }
+      }
+    } catch (loadError) {
+      if (requestVersionRef.current !== version) return;
+      if (cached) {
+        setWarning(`${loadError.message} Cached conversations are still shown.`);
+      } else {
+        setError(loadError.message);
+      }
+    } finally {
+      if (requestVersionRef.current === version) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, [cursor, query, reloadNonce, scope.easyccSessionId, scope.groupKey]);
 
   useEffect(() => {
     if (initialCatalogPendingRef.current && !cursor && !query) {
@@ -69,7 +130,10 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
       return;
     }
     loadCatalog();
-  }, [loadCatalog, cursor, query]);
+    return () => {
+      requestVersionRef.current += 1;
+    };
+  }, [loadCatalog]);
 
   useEffect(() => {
     if (!catalog || defaultsInitializedRef.current) return;
@@ -85,6 +149,19 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
         }
       }
       return next;
+    });
+  }, [catalog]);
+
+  useEffect(() => {
+    if (!catalog) return;
+    const disabledIds = new Set([
+      ...(catalog.threads || []).filter((thread) => !thread.selectable).map((thread) => thread.codexSessionId),
+      ...(catalog.savedSessions || []).filter((saved) => saved.selectable === false).map((saved) => saved.codexSessionId)
+    ].filter(Boolean));
+    if (disabledIds.size === 0) return;
+    setSelections((current) => {
+      const next = new Map([...current].filter(([, value]) => !disabledIds.has(value.codexSessionId)));
+      return next.size === current.size ? current : next;
     });
   }, [catalog]);
 
@@ -111,8 +188,13 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
         }
       }
       if (checked && codexSessionId) {
+        if (next.size >= MAX_RESUME_SELECTIONS) {
+          setBulkMessage(`A maximum of ${MAX_RESUME_SELECTIONS} conversations can be selected.`);
+          return next;
+        }
         next.set(selectionKey(easyccSessionId, codexSessionId), { codexSessionId, easyccSessionId });
       }
+      setBulkMessage('');
       return next;
     });
   }, []);
@@ -143,6 +225,37 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
   const savedSessions = catalog?.savedSessions || [];
   const threads = catalog?.threads || [];
   const eligibleThreads = threads.filter((thread) => thread.selectable);
+  const canSelectVisible = !scope.easyccSessionId && eligibleThreads.some((thread) =>
+    !selectedCodexIds.has(thread.codexSessionId)
+  ) && selections.size < MAX_RESUME_SELECTIONS;
+
+  const selectVisible = () => {
+    setSelections((current) => {
+      const next = new Map(current);
+      const currentCodexIds = new Set([...current.values()].map((item) => item.codexSessionId));
+      let limited = false;
+      for (const thread of eligibleThreads) {
+        if (currentCodexIds.has(thread.codexSessionId)) continue;
+        if (next.size >= MAX_RESUME_SELECTIONS) {
+          limited = true;
+          break;
+        }
+        const easyccSessionId = thread.linkedEasyccSessionId || undefined;
+        next.set(selectionKey(easyccSessionId, thread.codexSessionId), {
+          codexSessionId: thread.codexSessionId,
+          easyccSessionId
+        });
+        currentCodexIds.add(thread.codexSessionId);
+      }
+      setBulkMessage(limited ? `A maximum of ${MAX_RESUME_SELECTIONS} conversations can be selected.` : '');
+      return next;
+    });
+  };
+
+  const unselectAll = () => {
+    setSelections(new Map());
+    setBulkMessage('');
+  };
 
   return (
     <div className="modal-overlay codex-resume-overlay" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
@@ -169,7 +282,9 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
             event.preventDefault();
             setCursor('');
             setCursorStack([]);
-            setQuery(searchInput.trim());
+            const nextQuery = searchInput.trim();
+            if (nextQuery === query) setReloadNonce((value) => value + 1);
+            else setQuery(nextQuery);
           }}
         >
           <input
@@ -182,8 +297,14 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
         </form>
 
         {error && <div className="codex-resume-error" role="alert">{error}</div>}
+        {warning && (
+          <div className="codex-resume-warning" role="status">
+            <span>{warning}</span>
+            <button className="btn btn-secondary btn-small" type="button" onClick={() => setReloadNonce((value) => value + 1)}>Retry</button>
+          </div>
+        )}
 
-        <div className="codex-resume-body" aria-busy={loading}>
+        <div className="codex-resume-body" aria-busy={loading || refreshing}>
           {savedSessions.length > 0 && (
             <section className="codex-resume-section" aria-labelledby="saved-codex-sessions">
               <div className="codex-resume-section-title">
@@ -240,9 +361,9 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
           <section className="codex-resume-section" aria-labelledby="codex-history-list">
             <div className="codex-resume-section-title">
               <h3 id="codex-history-list">Conversation history</h3>
-              <span>{catalog?.page?.dates?.join(' · ') || ''}</span>
+              <span>{refreshing ? 'Refreshing…' : (catalog?.page?.dates?.join(' · ') || '')}</span>
             </div>
-            {loading ? (
+            {loading && !catalog ? (
               <div className="codex-resume-empty">Loading Codex history…</div>
             ) : threads.length === 0 ? (
               <div className="codex-resume-empty">No matching conversations found.</div>
@@ -303,6 +424,16 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
             </button>
           </div>
           <div className="codex-resume-actions">
+            {!scope.easyccSessionId && (
+              <button className="btn btn-secondary btn-small" type="button" disabled={!canSelectVisible || submitting} onClick={selectVisible}>
+                Select visible
+              </button>
+            )}
+            {selections.size > 0 && (
+              <button className="btn btn-secondary btn-small" type="button" disabled={submitting} onClick={unselectAll}>
+                Unselect all
+              </button>
+            )}
             <span>{selections.size} selected</span>
             <button className="btn btn-secondary" type="button" onClick={onClose}>Cancel</button>
             <button className="btn btn-primary" type="button" disabled={selections.size === 0 || submitting} onClick={submit}>
@@ -310,6 +441,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
             </button>
           </div>
         </footer>
+        {bulkMessage && <div className="codex-resume-limit" role="status">{bulkMessage}</div>}
       </div>
     </div>
   );

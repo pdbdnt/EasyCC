@@ -112,6 +112,7 @@ class SessionManager extends EventEmitter {
       getSessions: () => this.sessions,
       onObservation: (observation) => this.applyCodexIdentityObservation(observation)
     });
+    this.codexSessionService.warmHistoryCache();
 
     // Start watching for new plans
     this.setupPlanWatcher();
@@ -1198,7 +1199,8 @@ class SessionManager extends EventEmitter {
       easyccSessionId: query.easyccSessionId || '',
       cursor: query.cursor || '',
       timeZone: query.timeZone || 'UTC',
-      query: query.query || ''
+      query: query.query || '',
+      refresh: query.refresh === '1' || query.refresh === true
     });
   }
 

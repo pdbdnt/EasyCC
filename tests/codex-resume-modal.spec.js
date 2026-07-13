@@ -141,6 +141,144 @@ test('History action opens the exact-thread chooser and search stays server-back
   await expect(dialog.getByText('Fix session recovery')).toBeVisible();
 });
 
+test('global History selects visible conversations and clears selections retained across pages', async ({ page }) => {
+  const SECOND_ID = '019f49d3-a29a-72e1-9c67-d7046b6f8a40';
+  const THIRD_ID = '019f4972-2155-7d33-9755-3beb3589323e';
+  await mockRecoverySummary(page, { candidate: false });
+  await page.route('**/api/codex/resume-catalog?**', async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const older = !!params.get('cursor');
+    const threads = older ? [{
+      codexSessionId: THIRD_ID,
+      threadName: 'Older available conversation',
+      workingDir: '/mnt/c/work/easycc',
+      lastActivity: '2026-07-08T06:30:00.000Z',
+      preview: '',
+      groupKey: '/mnt/c/work/easycc',
+      linkedEasyccSessionId: null,
+      live: false,
+      selectable: true,
+      disabledReason: null
+    }] : [{
+      ...catalogFixture().threads[0],
+      linkedEasyccSessionId: null
+    }, {
+      ...catalogFixture().threads[0],
+      codexSessionId: SECOND_ID,
+      threadName: 'Second available conversation',
+      linkedEasyccSessionId: null
+    }, {
+      ...catalogFixture().threads[0],
+      codexSessionId: THIRD_ID,
+      threadName: 'Already live conversation',
+      linkedEasyccSessionId: null,
+      live: true,
+      selectable: false,
+      disabledReason: 'Already open outside EasyCC'
+    }];
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        savedSessions: [],
+        threads,
+        page: older
+          ? { dates: ['2026-07-08'], nextCursor: null, hasOlder: false }
+          : { dates: ['2026-07-10'], nextCursor: 'older-page', hasOlder: true },
+        cache: { historyStale: false, generatedAt: '2026-07-10T07:00:00.000Z' }
+      })
+    });
+  });
+
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'History' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
+  await dialog.getByRole('button', { name: 'Select visible' }).click();
+  await expect(dialog.getByText('2 selected')).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: /Already live conversation/ })).not.toBeChecked();
+
+  await dialog.getByRole('button', { name: 'Older' }).click();
+  await expect(dialog.getByText('Older available conversation')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Select visible' }).click();
+  await expect(dialog.getByText('3 selected')).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Unselect all' }).click();
+  await expect(dialog.getByText('0 selected')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Resume', exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Unselect all' })).toHaveCount(0);
+});
+
+test('Select visible stops at the 100-conversation API limit', async ({ page }) => {
+  await mockRecoverySummary(page, { candidate: false });
+  const threads = Array.from({ length: 101 }, (_, index) => ({
+    codexSessionId: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    threadName: `Available conversation ${index + 1}`,
+    workingDir: '/mnt/c/work/easycc',
+    lastActivity: '2026-07-10T06:30:00.000Z',
+    preview: '',
+    groupKey: '/mnt/c/work/easycc',
+    linkedEasyccSessionId: null,
+    live: false,
+    selectable: true,
+    disabledReason: null
+  }));
+  await page.route('**/api/codex/resume-catalog?**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      savedSessions: [],
+      threads,
+      page: { dates: ['2026-07-10'], nextCursor: null, hasOlder: false },
+      cache: { historyStale: false, generatedAt: '2026-07-10T07:00:00.000Z' }
+    })
+  }));
+
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'History' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
+  await dialog.getByRole('button', { name: 'Select visible' }).click();
+
+  await expect(dialog.getByText('100 selected')).toBeVisible();
+  await expect(dialog.getByText('A maximum of 100 conversations can be selected.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Select visible' })).toBeDisabled();
+});
+
+test('reopening History renders cached conversations while stale history refreshes', async ({ page }) => {
+  await mockRecoverySummary(page, { candidate: false });
+  let normalRequests = 0;
+  await page.route('**/api/codex/resume-catalog?**', async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const fixture = catalogFixture();
+    fixture.savedSessions = [];
+    if (params.get('refresh') === '1') {
+      fixture.threads[0].threadName = 'Fresh conversation title';
+      fixture.cache = { historyStale: false, generatedAt: '2026-07-10T07:02:00.000Z' };
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
+      return;
+    }
+    normalRequests += 1;
+    if (normalRequests > 1) await new Promise((resolve) => setTimeout(resolve, 250));
+    fixture.cache = {
+      historyStale: normalRequests > 1,
+      generatedAt: '2026-07-10T07:00:00.000Z'
+    };
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
+  });
+
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'History' }).click();
+  let dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
+  await expect(dialog.getByText('Fix session recovery')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close resume dialog' }).click();
+
+  await page.getByRole('button', { name: 'History' }).click();
+  dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
+  await expect(dialog.getByText('Fix session recovery')).toBeVisible();
+  await expect(dialog.getByText('Refreshing…')).toBeVisible();
+  await expect(dialog.getByText('Fresh conversation title')).toBeVisible();
+  await expect(dialog.getByText('Refreshing…')).toBeHidden();
+});
+
 test('unresolved cards cannot choose a thread owned by another paused card', async ({ page }) => {
   await mockRecoverySummary(page);
   const fixture = catalogFixture();
@@ -250,10 +388,15 @@ test('card Resume scopes history and binds the chosen conversation to the same p
   const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('Choose the saved threads that should return in EasyCC.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Select visible' })).toHaveCount(0);
   expect(catalogParams.get('easyccSessionId')).toBe(target.id);
   expect(catalogParams.get('groupKey')).toBe(target.groupKey);
   expect(rawResumeCalled).toBe(false);
 
+  await dialog.getByRole('checkbox').click();
+  await expect(dialog.getByRole('button', { name: 'Unselect all' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Unselect all' }).click();
+  await expect(dialog.getByText('0 selected')).toBeVisible();
   await dialog.getByRole('checkbox').click();
   await dialog.getByRole('button', { name: 'Resume 1' }).click();
   await expect(dialog).toBeHidden();

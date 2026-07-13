@@ -90,7 +90,7 @@ function Dashboard({
   const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups || new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
   const [showGroupNameInput, setShowGroupNameInput] = useState(false);
-  const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds }
+  const [killGroupTarget, setKillGroupTarget] = useState(null); // { dirName, sessionIds, pausedOnly }
   const [savedPlansTarget, setSavedPlansTarget] = useState(null); // { dirName, workingDir }
   const [editingAlias, setEditingAlias] = useState(null); // workingDir being edited
   const [aliasInput, setAliasInput] = useState('');
@@ -268,6 +268,17 @@ function Dashboard({
       totals.set(groupKey, (totals.get(groupKey) || 0) + 1);
     });
     return totals;
+  }, [sessions]);
+
+  const pausedSessionIdsByGroup = useMemo(() => {
+    const pausedIds = new Map();
+    sessions.forEach(session => {
+      if (session.status !== 'paused') return;
+      const groupKey = getSessionGroupKey(session);
+      if (!pausedIds.has(groupKey)) pausedIds.set(groupKey, []);
+      pausedIds.get(groupKey).push(session.id);
+    });
+    return pausedIds;
   }, [sessions]);
 
   // Count in-progress sessions per group (unfiltered)
@@ -730,6 +741,7 @@ function Dashboard({
             const displayName = groupMeta?.displayName || getProjectDisplayName(groupSession, projectAliases);
             const aliasKey = groupSession?.repoRoot || groupKey;
             const isEditingThis = editingAlias === aliasKey;
+            const pausedSessionIds = pausedSessionIdsByGroup.get(groupKey) || [];
             const branchCounts = new Map();
             sessionsInGroup.forEach(({ session }) => {
               const branchKey = `${session.repoRoot || ''}::${session.gitBranch || ''}`;
@@ -847,15 +859,34 @@ function Dashboard({
                       </button>
                     </>
                   )}
-                  {onKillSession && (
+                  {onKillSession && pausedSessionIds.length > 0 && (
                     <button
                       className="group-kill-btn"
-                      title={`Kill all sessions in ${displayName}`}
+                      title={`Kill all paused sessions in ${displayName}`}
+                      aria-label={`Kill all paused sessions in ${displayName}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         setKillGroupTarget({
                           dirName: displayName,
-                          sessionIds: sessionsInGroup.map(s => s.session.id)
+                          sessionIds: pausedSessionIds,
+                          pausedOnly: true
+                        });
+                      }}
+                    >
+                      ⏸️🗑️
+                    </button>
+                  )}
+                  {onKillSession && (
+                    <button
+                      className="group-kill-btn"
+                      title={`Kill all sessions in ${displayName}`}
+                      aria-label={`Kill all sessions in ${displayName}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setKillGroupTarget({
+                          dirName: displayName,
+                          sessionIds: sessionsInGroup.map(s => s.session.id),
+                          pausedOnly: false
                         });
                       }}
                     >
@@ -948,9 +979,9 @@ function Dashboard({
       {killGroupTarget && (
         <div className="modal-overlay" onClick={() => setKillGroupTarget(null)} onKeyDown={e => { if (e.key === 'Escape') setKillGroupTarget(null); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2>Kill All Sessions?</h2>
+            <h2>{killGroupTarget.pausedOnly ? 'Kill All Paused Sessions?' : 'Kill All Sessions?'}</h2>
             <p className="settings-description">
-              This will kill <strong>{killGroupTarget.sessionIds.length}</strong> session{killGroupTarget.sessionIds.length > 1 ? 's' : ''} in <strong>{killGroupTarget.dirName}</strong>.
+              This will kill <strong>{killGroupTarget.sessionIds.length}</strong> {killGroupTarget.pausedOnly ? 'paused ' : ''}session{killGroupTarget.sessionIds.length > 1 ? 's' : ''} in <strong>{killGroupTarget.dirName}</strong>.
             </p>
             <div className="modal-actions">
               <button className="btn btn-secondary" onClick={() => setKillGroupTarget(null)} autoFocus>
@@ -959,13 +990,11 @@ function Dashboard({
               <button
                 className="btn btn-danger"
                 onClick={async () => {
-                  for (const id of killGroupTarget.sessionIds) {
-                    await onKillSession(id, { skipConfirm: true });
-                  }
+                  await Promise.all(killGroupTarget.sessionIds.map(id => onKillSession(id, { skipConfirm: true })));
                   setKillGroupTarget(null);
                 }}
               >
-                Kill {killGroupTarget.sessionIds.length} Session{killGroupTarget.sessionIds.length > 1 ? 's' : ''}
+                Kill {killGroupTarget.sessionIds.length} {killGroupTarget.pausedOnly ? 'Paused ' : ''}Session{killGroupTarget.sessionIds.length > 1 ? 's' : ''}
               </button>
             </div>
           </div>

@@ -399,6 +399,94 @@ test('batch thread lookup scans index and rollout history only once', async () =
   assert.equal(rolloutScans, 1);
 });
 
+test('expired history is served stale while one background refresh is shared', async () => {
+  let now = 0;
+  let indexScans = 0;
+  let rolloutScans = 0;
+  const baseRunner = makeCatalogRunner();
+  const service = new CodexSessionService({
+    platform: 'linux',
+    codexHome: '/home/test/.codex',
+    historyCacheTtlMs: 100,
+    clock: () => now,
+    commandRunner: async (command) => {
+      if (command.includes('session_index.jsonl')) indexScans += 1;
+      if (command.includes('modifiedAtMs')) rolloutScans += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return baseRunner(command);
+    }
+  });
+
+  const fresh = await service.getHistorySnapshot();
+  assert.equal(fresh.stale, false);
+  now = 200;
+  const [firstStale, secondStale] = await Promise.all([
+    service.getHistorySnapshot({ allowStale: true }),
+    service.getHistorySnapshot({ allowStale: true })
+  ]);
+  assert.equal(firstStale.stale, true);
+  assert.equal(secondStale.stale, true);
+  await service.historyLoadPromise;
+  assert.equal(indexScans, 2);
+  assert.equal(rolloutScans, 2);
+});
+
+test('preview cache rereads only rollout files whose modification time changed', async () => {
+  let previewReads = 0;
+  const service = new CodexSessionService({
+    platform: 'linux',
+    commandRunner: (command) => {
+      if (!command.includes('2097152')) return '';
+      previewReads += 1;
+      return `${IDS.first}\t${b64(`Preview ${previewReads}`)}`;
+    }
+  });
+  const item = {
+    id: IDS.first,
+    filePath: `/home/test/rollout-${IDS.first}.jsonl`,
+    modifiedAtMs: 100
+  };
+
+  assert.equal((await service.readPreviews([item])).get(IDS.first), 'Preview 1');
+  assert.equal((await service.readPreviews([item])).get(IDS.first), 'Preview 1');
+  assert.equal(previewReads, 1);
+  assert.equal((await service.readPreviews([{ ...item, modifiedAtMs: 101 }])).get(IDS.first), 'Preview 2');
+  assert.equal(previewReads, 2);
+});
+
+test('repository and process snapshots use their bounded caches', async () => {
+  let now = 0;
+  let contextReads = 0;
+  let processReads = 0;
+  const service = new CodexSessionService({
+    platform: 'linux',
+    contextCacheTtlMs: 100,
+    processCacheTtlMs: 100,
+    clock: () => now,
+    commandRunner: (command) => {
+      if (command.includes('git -C')) {
+        contextReads += 1;
+        return `${b64('/mnt/c/work/project-a')}\t${b64('/mnt/c/work/project-a')}\t${b64('main')}`;
+      }
+      if (command.includes('/proc') && command.includes('readlinkSync')) processReads += 1;
+      return '';
+    }
+  });
+
+  await service.resolveRepoContexts(['/mnt/c/work/project-a']);
+  await service.resolveRepoContexts(['/mnt/c/work/project-a']);
+  await service.getProcessSnapshot();
+  await service.getProcessSnapshot();
+  assert.equal(contextReads, 1);
+  assert.equal(processReads, 1);
+
+  now = 101;
+  await service.resolveRepoContexts(['/mnt/c/work/project-a']);
+  await service.getProcessSnapshot();
+  assert.equal(contextReads, 2);
+  assert.equal(processReads, 2);
+});
+
 test('identity monitor requires two stable scans before verification', async () => {
   let now = 0;
   const observations = [];
@@ -455,10 +543,11 @@ test('Codex resume API validates selections and returns accepted work', async ()
   });
 
   const catalog = await routes.get('GET /api/codex/resume-catalog')(
-    { query: { groupKey: '/work/repo' } },
+    { query: { groupKey: '/work/repo', refresh: '1' } },
     makeReply()
   );
   assert.equal(catalog.query.groupKey, '/work/repo');
+  assert.equal(catalog.query.refresh, '1');
 
   const invalidReply = makeReply();
   await routes.get('POST /api/codex/resume-selection')({ body: { selections: [] } }, invalidReply);

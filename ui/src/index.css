@@ -1140,6 +1140,19 @@ body {
   font-size: 13px;
 }
 
+.codex-resume-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 28px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent-yellow) 55%, transparent);
+  border-radius: 6px;
+  color: var(--accent-yellow);
+  font-size: 13px;
+}
+
 .codex-resume-body {
   flex: 1;
   min-height: 180px;
@@ -1284,10 +1297,23 @@ body {
   gap: 8px;
 }
 
+.codex-resume-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .codex-resume-actions > span {
   margin-right: 4px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.codex-resume-limit {
+  padding: 0 28px 10px;
+  background: var(--bg-secondary);
+  color: var(--accent-yellow);
+  font-size: 11px;
+  text-align: right;
 }
 
 @media (max-width: 680px) {
@@ -1296,6 +1322,8 @@ body {
   .codex-resume-heading,
   .codex-resume-search,
   .codex-resume-footer { padding-left: 16px; padding-right: 16px; }
+  .codex-resume-warning { margin-left: 16px; margin-right: 16px; }
+  .codex-resume-limit { padding-left: 16px; padding-right: 16px; }
   .codex-resume-body { padding-left: 16px; padding-right: 16px; }
   .codex-resume-footer { align-items: stretch; flex-direction: column; }
   .codex-resume-actions { justify-content: flex-end; }

@@ -7,6 +7,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const DEFAULT_SCAN_INTERVAL_MS = 2000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 10000;
 const DEFAULT_WSL_RETRY_DELAY_MS = 150;
+const DEFAULT_HISTORY_CACHE_TTL_MS = 60_000;
+const DEFAULT_CONTEXT_CACHE_TTL_MS = 60_000;
+const DEFAULT_PROCESS_CACHE_TTL_MS = 2_000;
+const dateFormatters = new Map();
 
 function quoteForPosixShell(value = '') {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -77,17 +81,27 @@ function getLocalDate(value, timeZone = 'UTC') {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
   let zone = timeZone || 'UTC';
-  try {
-    new Intl.DateTimeFormat('en-CA', { timeZone: zone }).format(date);
-  } catch {
-    zone = 'UTC';
+  let formatter = dateFormatters.get(zone);
+  if (!formatter) {
+    try {
+      formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+    } catch {
+      zone = 'UTC';
+      formatter = dateFormatters.get(zone) || new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+    }
+    dateFormatters.set(zone, formatter);
   }
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: zone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(date);
+  const parts = formatter.formatToParts(date);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
 }
@@ -187,9 +201,15 @@ class CodexSessionService {
     this.scanRunning = false;
     this.scanQueued = false;
     this.shuttingDown = false;
-    this.historyCacheTtlMs = options.historyCacheTtlMs || 10_000;
+    this.historyCacheTtlMs = options.historyCacheTtlMs ?? DEFAULT_HISTORY_CACHE_TTL_MS;
+    this.contextCacheTtlMs = options.contextCacheTtlMs ?? DEFAULT_CONTEXT_CACHE_TTL_MS;
+    this.processCacheTtlMs = options.processCacheTtlMs ?? DEFAULT_PROCESS_CACHE_TTL_MS;
     this.historyCache = null;
     this.historyLoadPromise = null;
+    this.contextCache = new Map();
+    this.previewCache = new Map();
+    this.processCache = null;
+    this.processLoadPromise = null;
   }
 
   resolveShellCodexHome() {
@@ -344,7 +364,20 @@ class CodexSessionService {
   async resolveRepoContexts(workingDirs) {
     const unique = [...new Set((workingDirs || []).map(normalizePath).filter(Boolean))];
     if (unique.length === 0) return new Map();
-    const cases = unique.map((cwd) => {
+    const now = this.clock();
+    const contexts = new Map();
+    const missing = [];
+    for (const cwd of unique) {
+      const cached = this.contextCache.get(cwd);
+      if (cached && now - cached.loadedAt < this.contextCacheTtlMs) {
+        contexts.set(cwd, cached.context);
+      } else {
+        missing.push(cwd);
+      }
+    }
+    if (missing.length === 0) return contexts;
+
+    const cases = missing.map((cwd) => {
       const cwd64 = Buffer.from(cwd, 'utf8').toString('base64');
       return [
         `cwd=${quoteForPosixShell(cwd)};`,
@@ -357,23 +390,26 @@ class CodexSessionService {
       ].join(' ');
     }).join(' ');
     const output = await this.runShell(cases);
-    const contexts = new Map();
     for (const line of output.split('\n')) {
       const [cwd64, root64, branch64] = line.split('\t');
       const cwd = normalizePath(decodeBase64(cwd64));
       if (!cwd) continue;
       const repoRoot = normalizePath(decodeBase64(root64)) || null;
       const gitBranch = decodeBase64(branch64).trim() || null;
-      contexts.set(cwd, {
+      const context = {
         repoRoot,
         repoName: repoRoot ? path.posix.basename(repoRoot) : null,
         gitBranch,
         groupKey: repoRoot || cwd
-      });
+      };
+      contexts.set(cwd, context);
+      this.contextCache.set(cwd, { context, loadedAt: this.clock() });
     }
-    for (const cwd of unique) {
+    for (const cwd of missing) {
       if (!contexts.has(cwd)) {
-        contexts.set(cwd, { repoRoot: null, repoName: null, gitBranch: null, groupKey: cwd });
+        const context = { repoRoot: null, repoName: null, gitBranch: null, groupKey: cwd };
+        contexts.set(cwd, context);
+        this.contextCache.set(cwd, { context, loadedAt: this.clock() });
       }
     }
     return contexts;
@@ -381,6 +417,18 @@ class CodexSessionService {
 
   async readPreviews(items) {
     if (!Array.isArray(items) || items.length === 0) return new Map();
+    const previews = new Map();
+    const missing = [];
+    for (const item of items) {
+      const cached = this.previewCache.get(item.filePath);
+      if (cached && cached.modifiedAtMs === Number(item.modifiedAtMs || 0)) {
+        previews.set(item.id, cached.preview);
+      } else {
+        missing.push(item);
+      }
+    }
+    if (missing.length === 0) return previews;
+
     const probe = [
       "const fs=require('fs'),path=require('path');",
       'for(const file of process.argv.slice(1)){let fd;try{fd=fs.openSync(file,\'r\');const stat=fs.fstatSync(fd);const size=Math.min(stat.size,2097152);const buffer=Buffer.alloc(size);fs.readSync(fd,buffer,0,size,Math.max(0,stat.size-size));fs.closeSync(fd);fd=undefined;',
@@ -388,21 +436,30 @@ class CodexSessionService {
       "const id=path.basename(file).match(/([0-9a-f-]{36})\\.jsonl$/i)?.[1]||'';console.log(id+'\\t'+Buffer.from(message).toString('base64'));",
       '}catch{if(fd!==undefined)try{fs.closeSync(fd)}catch{}}}'
     ].join('');
-    const args = items.map((item) => quoteForPosixShell(item.filePath)).join(' ');
+    const args = missing.map((item) => quoteForPosixShell(item.filePath)).join(' ');
     const output = await this.runShell(`node -e ${quoteForPosixShell(probe)} ${args}`);
-    const previews = new Map();
     for (const line of output.split('\n')) {
       const tab = line.indexOf('\t');
       if (tab < 0) continue;
       const id = line.slice(0, tab).toLowerCase();
       previews.set(id, normalizePreview(decodeBase64(line.slice(tab + 1))));
     }
+    for (const item of missing) {
+      const preview = previews.get(item.id) || '';
+      previews.set(item.id, preview);
+      this.previewCache.set(item.filePath, {
+        modifiedAtMs: Number(item.modifiedAtMs || 0),
+        preview
+      });
+    }
     return previews;
   }
 
   async scanProcesses() {
     if (this.platform === 'darwin') {
-      return { roots: [], liveRootIds: new Set() };
+      const result = { roots: [], liveRootIds: new Set() };
+      this.processCache = { result, loadedAt: this.clock() };
+      return result;
     }
     const probe = buildProcessScanProbe();
     const output = await this.runShell(`${this.getRootAssignment()} node -e ${quoteForPosixShell(probe)} "$codex_root"`);
@@ -429,17 +486,26 @@ class CodexSessionService {
         // Process exited or FD changed during the scan.
       }
     }
-    return {
+    const result = {
       roots,
       liveRootIds: new Set(roots.map((root) => root.id))
     };
+    this.processCache = { result, loadedAt: this.clock() };
+    return result;
   }
 
-  async getHistorySnapshot({ force = false } = {}) {
-    const now = this.clock();
-    if (!force && this.historyCache && now - this.historyCache.loadedAt < this.historyCacheTtlMs) {
-      return this.historyCache;
+  async getProcessSnapshot() {
+    if (this.processCache && this.clock() - this.processCache.loadedAt < this.processCacheTtlMs) {
+      return this.processCache.result;
     }
+    if (this.processLoadPromise) return this.processLoadPromise;
+    this.processLoadPromise = this.scanProcesses().finally(() => {
+      this.processLoadPromise = null;
+    });
+    return this.processLoadPromise;
+  }
+
+  async loadHistorySnapshot() {
     if (this.historyLoadPromise) return this.historyLoadPromise;
 
     this.historyLoadPromise = Promise.all([this.loadIndex(), this.scanRolloutMetadata()])
@@ -451,6 +517,27 @@ class CodexSessionService {
         this.historyLoadPromise = null;
       });
     return this.historyLoadPromise;
+  }
+
+  async getHistorySnapshot({ force = false, allowStale = false } = {}) {
+    const now = this.clock();
+    if (!force && this.historyCache && now - this.historyCache.loadedAt < this.historyCacheTtlMs) {
+      return { ...this.historyCache, stale: false };
+    }
+    if (!force && allowStale && this.historyCache) {
+      void this.loadHistorySnapshot().catch((error) => {
+        console.error(`[CodexSessionService] background history refresh failed: ${error.message}`);
+      });
+      return { ...this.historyCache, stale: true };
+    }
+    const snapshot = await this.loadHistorySnapshot();
+    return { ...snapshot, stale: false };
+  }
+
+  warmHistoryCache() {
+    void this.getHistorySnapshot({ force: true }).catch((error) => {
+      console.error(`[CodexSessionService] history prewarm failed: ${error.message}`);
+    });
   }
 
   invalidateHistoryCache() {
@@ -494,11 +581,12 @@ class CodexSessionService {
     return (await this.getThreadsByIds([normalizedId])).get(normalizedId) || null;
   }
 
-  async getResumeCatalog({ sessions = [], groupKey = '', easyccSessionId = '', cursor = '', timeZone = 'UTC', query = '' } = {}) {
-    const [{ index, rollouts }, processState] = await Promise.all([
-      this.getHistorySnapshot(),
-      this.scanProcesses()
+  async getResumeCatalog({ sessions = [], groupKey = '', easyccSessionId = '', cursor = '', timeZone = 'UTC', query = '', refresh = false } = {}) {
+    const [history, processState] = await Promise.all([
+      this.getHistorySnapshot({ force: refresh, allowStale: !refresh }),
+      this.getProcessSnapshot()
     ]);
+    const { index, rollouts } = history;
     const sessionList = sessions instanceof Map ? [...sessions.values()] : sessions;
     const targetSession = easyccSessionId
       ? sessionList.find((session) => session?.id === easyccSessionId && session.cliType === 'codex' && session.status === 'paused') || null
@@ -525,6 +613,7 @@ class CodexSessionService {
       validated.push({
         id,
         filePath: rollout.filePath,
+        modifiedAtMs: rollout.modifiedAtMs,
         threadName: indexEntry.threadName || '',
         workingDir: rollout.workingDir,
         createdAt: rollout.createdAt,
@@ -606,7 +695,7 @@ class CodexSessionService {
       .map((session) => {
         const codexId = String(session.codexSessionId || '').toLowerCase();
         const thread = codexId ? rollouts.get(codexId) : null;
-        const exact = !!thread && normalizePath(thread.workingDir) === normalizePath(session.workingDir);
+        const exact = !!thread && pathsEqual(thread.workingDir, session.workingDir);
         const live = exact && processState.liveRootIds.has(codexId);
         return {
           easyccSessionId: session.id,
@@ -629,6 +718,10 @@ class CodexSessionService {
           ? encodeCursor({ beforeDate: pageDates[pageDates.length - 1] })
           : null,
         hasOlder: dates.length > pageDates.length
+      },
+      cache: {
+        historyStale: !!history.stale,
+        generatedAt: new Date(history.loadedAt).toISOString()
       }
     };
   }
