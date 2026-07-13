@@ -55,6 +55,7 @@ function Dashboard({
   onResetPlacement,
   onKillSession,
   onResumeSession,
+  onOpenCodexResume,
   connectionStatus,
   hintModeActive = false,
   typedChars = '',
@@ -267,6 +268,17 @@ function Dashboard({
       totals.set(groupKey, (totals.get(groupKey) || 0) + 1);
     });
     return totals;
+  }, [sessions]);
+
+  const pausedSessionIdsByGroup = useMemo(() => {
+    const pausedIds = new Map();
+    sessions.forEach(session => {
+      if (session.status !== 'paused') return;
+      const groupKey = getSessionGroupKey(session);
+      if (!pausedIds.has(groupKey)) pausedIds.set(groupKey, []);
+      pausedIds.get(groupKey).push(session.id);
+    });
+    return pausedIds;
   }, [sessions]);
 
   // Count in-progress sessions per group (unfiltered)
@@ -553,6 +565,11 @@ function Dashboard({
             />
             ⚙️
           </button>
+          {onOpenCodexResume && (
+            <button className="btn btn-secondary btn-small" onClick={() => onOpenCodexResume({})} title="Browse Codex conversation history">
+              History
+            </button>
+          )}
           <button className="btn btn-primary btn-small" onClick={onNewSession}>
             <HintBadge
               code={newSessionHint}
@@ -724,6 +741,7 @@ function Dashboard({
             const displayName = groupMeta?.displayName || getProjectDisplayName(groupSession, projectAliases);
             const aliasKey = groupSession?.repoRoot || groupKey;
             const isEditingThis = editingAlias === aliasKey;
+            const pausedSessionIds = pausedSessionIdsByGroup.get(groupKey) || [];
             const branchCounts = new Map();
             sessionsInGroup.forEach(({ session }) => {
               const branchKey = `${session.repoRoot || ''}::${session.gitBranch || ''}`;
@@ -800,14 +818,25 @@ function Dashboard({
                     <>
                       <button
                         className="group-resume-btn"
-                        title={`Resume all paused sessions in ${displayName}`}
+                        title={`Choose exact conversations to resume in ${displayName}`}
                         onClick={async (e) => {
                           e.stopPropagation();
-                          const pausedIds = sessionsInGroup
+                          const pausedSessions = sessionsInGroup
                             .filter(s => s.session.status === 'paused')
-                            .map(s => s.session.id);
-                          for (const id of pausedIds) {
-                            await onResumeSession(id);
+                            .map(s => s.session);
+                          const hasPausedCodex = pausedSessions.some(session => session.cliType === 'codex');
+                          if (hasPausedCodex && onOpenCodexResume) {
+                            for (const session of pausedSessions.filter(item => item.cliType !== 'codex')) {
+                              await onResumeSession(session.id);
+                            }
+                            onOpenCodexResume({
+                              groupKey,
+                              displayName
+                            });
+                            return;
+                          }
+                          for (const session of pausedSessions) {
+                            await onResumeSession(session.id);
                           }
                         }}
                       >
@@ -832,17 +861,16 @@ function Dashboard({
                   )}
                   {onKillSession && (
                     <>
-                      {sessionsInGroup.some(s => s.session.status === 'paused') && (
+                      {pausedSessionIds.length > 0 && (
                         <button
                           className="group-kill-paused-btn"
                           title={`Kill all paused sessions in ${displayName}`}
+                          aria-label={`Kill all paused sessions in ${displayName}`}
                           onClick={(e) => {
                             e.stopPropagation();
                             setKillGroupTarget({
                               dirName: displayName,
-                              sessionIds: sessionsInGroup
-                                .filter(s => s.session.status === 'paused')
-                                .map(s => s.session.id),
+                              sessionIds: pausedSessionIds,
                               titleLabel: 'Paused Sessions',
                               itemLabel: 'paused session'
                             });
@@ -854,6 +882,7 @@ function Dashboard({
                       <button
                         className="group-kill-btn"
                         title={`Kill all sessions in ${displayName}`}
+                        aria-label={`Kill all sessions in ${displayName}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           setKillGroupTarget({
@@ -965,9 +994,7 @@ function Dashboard({
               <button
                 className="btn btn-danger"
                 onClick={async () => {
-                  for (const id of killGroupTarget.sessionIds) {
-                    await onKillSession(id, { skipConfirm: true });
-                  }
+                  await Promise.all(killGroupTarget.sessionIds.map(id => onKillSession(id, { skipConfirm: true })));
                   setKillGroupTarget(null);
                 }}
               >

@@ -5,7 +5,7 @@ const path = require('path');
  * Handles persistent storage of session and stage data to disk
  */
 class DataStore {
-  constructor(dataDir = path.join(__dirname, '..', 'data')) {
+  constructor(dataDir = process.env.EASYCC_DATA_DIR || path.join(__dirname, '..', 'data')) {
     this.dataDir = dataDir;
     this.sessionsFile = path.join(dataDir, 'sessions.json');
     this.stagesFile = path.join(dataDir, 'stages.json');
@@ -71,6 +71,12 @@ class DataStore {
         codexSessionId: session.codexSessionId || null,
         codexThreadName: session.codexThreadName || null,
         codexLaunchStartedAt: session.codexLaunchStartedAt || null,
+        codexIdentityState: session.cliType === 'codex'
+          ? (session.codexIdentityState || 'unverified')
+          : null,
+        codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
+        codexIdentityError: session.codexIdentityError || null,
+        recoveryError: session.recoveryError || null,
         notes: session.notes || '',
         role: session.role || '',
         agentId: session.agentId || null,
@@ -144,7 +150,7 @@ class DataStore {
       }
 
       // Update allowed metadata fields
-      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'codexSessionId', 'codexThreadName', 'codexLaunchStartedAt', 'status', 'lastActivity',
+      const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'codexSessionId', 'codexThreadName', 'codexLaunchStartedAt', 'codexIdentityState', 'codexIdentityVerifiedAt', 'codexIdentityError', 'recoveryError', 'status', 'lastActivity',
         'repoRoot', 'repoName', 'gitBranch', 'groupKey',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt', 'placementLocked',
         'rejectionHistory', 'completedAt', 'updatedAt', 'comments', 'messageQueue',

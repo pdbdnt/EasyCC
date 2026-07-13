@@ -63,7 +63,7 @@ const defaultSettings = {
   },
   session: {
     defaultWorkingDir: '',
-    autoResumeOnStart: true
+    startupRecoveryMode: 'ask'
   },
   general: {
     clearTerminalWhenSessionListEmpty: false
@@ -84,9 +84,15 @@ export function useSettings() {
         const response = await fetch(`${API_BASE}/api/settings`, { signal: controller.signal });
         if (response.ok) {
           const data = await response.json();
-          setSettings(deepMerge(defaultSettings, data.settings));
+          const merged = deepMerge(defaultSettings, data.settings);
+          if (!['ask', 'auto-resume', 'restore-paused'].includes(merged.session?.startupRecoveryMode)) {
+            merged.session.startupRecoveryMode = 'ask';
+          }
+          if (merged.session) delete merged.session.autoResumeOnStart;
+          setSettings(merged);
         } else {
           console.error('Failed to load settings');
+          setError('Failed to load settings');
         }
       } catch (err) {
         if (err.name !== 'AbortError') {

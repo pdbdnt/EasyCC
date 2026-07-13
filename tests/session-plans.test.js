@@ -630,7 +630,7 @@ test('getSessionPlans backfills Codex plans from EasyCC terminal transcript with
   });
 });
 
-test('ensureCodexSessionLinked recovers Codex ID from old resume hint title', () => {
+test('ensureCodexSessionLinked does not infer Codex ID from old resume hint title', () => {
   const sessionId = 'session-codex-title-backfill';
   const codexSessionId = '019e43b8-5674-7002-8ff3-b301c72d3c04';
   const sessionManager = Object.create(SessionManager.prototype);
@@ -667,12 +667,12 @@ test('ensureCodexSessionLinked recovers Codex ID from old resume hint title', ()
   sessionManager.emit = () => {};
   sessionManager.getSessionSnapshot = (requestedSession) => requestedSession;
 
-  assert.equal(sessionManager.ensureCodexSessionLinked(session), true);
-  assert.equal(session.codexSessionId, codexSessionId);
-  assert.equal(session.codexThreadName, 'cutsheetfont-etc');
+  assert.equal(sessionManager.ensureCodexSessionLinked(session), false);
+  assert.equal(session.codexSessionId, null);
+  assert.equal(session.codexThreadName || null, null);
 });
 
-test('ensureCodexSessionLinked recovers Codex ID from session resume hint title', () => {
+test('ensureCodexSessionLinked does not infer Codex ID from session resume hint title', () => {
   const sessionId = 'session-codex-title-backfill-session-wording';
   const codexSessionId = '019e95bd-9c65-7313-b0f1-5e58a16617bb';
   const sessionManager = Object.create(SessionManager.prototype);
@@ -707,7 +707,7 @@ test('ensureCodexSessionLinked recovers Codex ID from session resume hint title'
   sessionManager.emit = () => {};
   sessionManager.getSessionSnapshot = () => session;
 
-  assert.equal(sessionManager.ensureCodexSessionLinked(session), true);
-  assert.equal(session.codexSessionId, codexSessionId);
-  assert.equal(session.codexThreadName, 'cutsheetdesignerhorizontaalscrollbar');
+  assert.equal(sessionManager.ensureCodexSessionLinked(session), false);
+  assert.equal(session.codexSessionId, null);
+  assert.equal(session.codexThreadName || null, null);
 });

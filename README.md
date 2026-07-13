@@ -109,6 +109,35 @@ easycc/
 | /socket/dashboard | Streams all session/agent/task status changes |
 | /socket/sessions/:id/terminal | Real-time terminal I/O for xterm.js |
 
+## Independent X Search CLI
+
+EasyCC includes an independent X/Twitter search wrapper backed by xAI's Responses API
+and built-in `x_search` tool. It authenticates through the xAI device-code OAuth flow,
+so SuperGrok and eligible X Premium+ accounts do not need an API key.
+
+The WSL-global command is named `x_search`:
+
+```bash
+# Requests a one-time xAI verification link and opens it in your browser
+x_search auth login
+
+# Search X after login
+x_search search "What are developers saying about Codex?"
+
+# Optional filters and machine-readable output
+x_search search "latest release" --allow openai --from 2026-07-01 --json
+
+x_search auth status
+x_search auth logout
+```
+
+OAuth tokens are stored outside the repository at `~/.easycc/xai-auth.json`. The CLI
+refreshes short-lived access tokens automatically and never prints token values.
+
+Some xAI subscriptions may not be entitled to OAuth API access. If xAI returns a 403
+during refresh or search, verify that the account has SuperGrok or an eligible X
+Premium+ subscription.
+
 ## Troubleshooting
 
 ### CLI not found

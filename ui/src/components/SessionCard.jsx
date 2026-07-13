@@ -296,7 +296,9 @@ function SessionCard({
 
       {isPaused && (
         <div className="paused-overlay">
-          <span className="paused-badge">PAUSED</span>
+          <span className="paused-badge" title={session.recoveryError || undefined}>
+            {session.recoveryError ? 'RECOVERY FAILED' : 'PAUSED'}
+          </span>
         </div>
       )}
     </div>

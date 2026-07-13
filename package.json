@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Cross-platform CLI session manager with web UI for managing multiple Claude Code CLI sessions",
   "main": "electron/main.js",
+  "bin": {
+    "x_search": "bin/easycc-x.js"
+  },
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:ui\"",
     "dev:backend": "cross-env PORT=5010 nodemon",
@@ -17,7 +20,9 @@
     "install:all": "npm install && cd backend && npm install && cd ../ui && npm install",
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty",
-    "create-shortcut": "powershell -ExecutionPolicy Bypass -File ./create-shortcut.ps1"
+    "create-shortcut": "powershell -ExecutionPolicy Bypass -File ./create-shortcut.ps1",
+    "x_search": "node bin/easycc-x.js",
+    "test:x-search": "node --test tests/xai-oauth-client.test.js"
   },
   "keywords": [
     "claude",
