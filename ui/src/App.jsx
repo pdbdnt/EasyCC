@@ -257,6 +257,7 @@ function App() {
     const session = sessions.find((candidate) => candidate.id === id);
     if (session?.cliType === 'codex' && !options.fresh && !session.codexSessionId) {
       setCodexResumeScope({
+        easyccSessionId: session.id,
         groupKey: session.groupKey || session.workingDir,
         displayName: session.repoName || session.name
       });
@@ -1522,10 +1523,15 @@ function App() {
   };
 
   const handleResumeFromDetails = async (id) => {
-    const success = await resumeSession(id);
+    const success = await handleResumeSession(id);
     if (success) {
       // Update details modal
       setDetailsSession(prev => prev ? { ...prev, status: 'active' } : null);
+    } else {
+      const session = sessions.find((candidate) => candidate.id === id);
+      if (session?.cliType === 'codex' && !session.codexSessionId) {
+        setDetailsSession(null);
+      }
     }
     return success;
   };

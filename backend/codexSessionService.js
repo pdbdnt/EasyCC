@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_SCAN_INTERVAL_MS = 2000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 10000;
+const DEFAULT_WSL_RETRY_DELAY_MS = 150;
 
 function quoteForPosixShell(value = '') {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -22,6 +23,19 @@ function windowsPathToWsl(value) {
   const driveMatch = normalized.match(/^([a-z]):(\/.*)?$/i);
   if (driveMatch) return `/mnt/${driveMatch[1].toLowerCase()}${driveMatch[2] || ''}`;
   return normalized;
+}
+
+function comparablePath(value) {
+  const normalized = normalizePath(windowsPathToWsl(value));
+  return /^\/mnt\/[a-z](?:\/|$)/i.test(normalized)
+    ? normalized.toLowerCase()
+    : normalized;
+}
+
+function pathsEqual(left, right) {
+  const normalizedLeft = comparablePath(left);
+  const normalizedRight = comparablePath(right);
+  return !!normalizedLeft && normalizedLeft === normalizedRight;
 }
 
 function decodeBase64(value) {
@@ -159,6 +173,7 @@ class CodexSessionService {
     this.fs = options.fs || fs;
     this.clock = options.clock || (() => Date.now());
     this.commandTimeoutMs = options.commandTimeoutMs || DEFAULT_COMMAND_TIMEOUT_MS;
+    this.wslRetryDelayMs = options.wslRetryDelayMs ?? DEFAULT_WSL_RETRY_DELAY_MS;
     this.scanIntervalMs = options.scanIntervalMs || DEFAULT_SCAN_INTERVAL_MS;
     this.codexHomeOverride = options.codexHome !== undefined
       ? options.codexHome
@@ -210,20 +225,45 @@ class CodexSessionService {
     const args = this.platform === 'win32'
       ? ['--exec', 'bash', '--noprofile', '--norc', '-lc', command]
       : ['-lc', command];
-    return new Promise((resolve, reject) => {
-      this.execFile(executable, args, {
-        encoding: 'utf8',
-        timeout: this.commandTimeoutMs,
-        windowsHide: true,
-        maxBuffer: 32 * 1024 * 1024
-      }, (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
+    const attempts = this.platform === 'win32' ? 2 : 1;
+    let attemptsMade = 0;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      attemptsMade = attempt;
+      try {
+        return await new Promise((resolve, reject) => {
+          this.execFile(executable, args, {
+            encoding: 'utf8',
+            timeout: this.commandTimeoutMs,
+            windowsHide: true,
+            maxBuffer: 32 * 1024 * 1024
+          }, (error, stdout) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve(String(stdout || ''));
+          });
+        });
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts && error?.code !== 'ENOENT') {
+          await new Promise((resolve) => setTimeout(resolve, this.wslRetryDelayMs));
+          continue;
         }
-        resolve(String(stdout || ''));
-      });
-    });
+      }
+    }
+
+    const code = lastError?.code || 'unknown';
+    const signal = lastError?.signal || 'none';
+    console.error(`[CodexSessionService] shell helper failed after ${attemptsMade} attempt${attemptsMade === 1 ? '' : 's'} (code=${code}, signal=${signal})`);
+    const publicError = new Error(this.platform === 'win32'
+      ? 'Could not read Codex data from WSL. Please retry.'
+      : 'Could not read Codex data. Please retry.');
+    publicError.code = lastError?.code || 'CODEX_SHELL_FAILED';
+    publicError.cause = lastError;
+    throw publicError;
   }
 
   async loadIndex() {
@@ -454,12 +494,18 @@ class CodexSessionService {
     return (await this.getThreadsByIds([normalizedId])).get(normalizedId) || null;
   }
 
-  async getResumeCatalog({ sessions = [], groupKey = '', cursor = '', timeZone = 'UTC', query = '' } = {}) {
+  async getResumeCatalog({ sessions = [], groupKey = '', easyccSessionId = '', cursor = '', timeZone = 'UTC', query = '' } = {}) {
     const [{ index, rollouts }, processState] = await Promise.all([
       this.getHistorySnapshot(),
       this.scanProcesses()
     ]);
     const sessionList = sessions instanceof Map ? [...sessions.values()] : sessions;
+    const targetSession = easyccSessionId
+      ? sessionList.find((session) => session?.id === easyccSessionId && session.cliType === 'codex' && session.status === 'paused') || null
+      : null;
+    const effectiveGroupKey = targetSession
+      ? (targetSession.groupKey || targetSession.workingDir)
+      : groupKey;
     const linkedById = new Map();
     for (const session of sessionList || []) {
       if (session?.codexSessionId) linkedById.set(String(session.codexSessionId).toLowerCase(), session);
@@ -490,14 +536,26 @@ class CodexSessionService {
       });
     }
 
-    if (groupKey) {
+    if (targetSession) {
+      validated = validated
+        .filter((item) => pathsEqual(item.workingDir, targetSession.workingDir))
+        .map((item) => ({
+          ...item,
+          repoContext: {
+            repoRoot: targetSession.repoRoot || null,
+            repoName: targetSession.repoName || null,
+            gitBranch: targetSession.gitBranch || null,
+            groupKey: effectiveGroupKey || targetSession.workingDir
+          }
+        }));
+    } else if (effectiveGroupKey) {
       const scopedContexts = await this.resolveRepoContexts(validated.map((item) => item.workingDir));
       validated = validated
         .map((item) => ({
           ...item,
           repoContext: scopedContexts.get(item.workingDir) || { groupKey: item.workingDir }
         }))
-        .filter((item) => item.repoContext.groupKey === groupKey);
+        .filter((item) => pathsEqual(item.repoContext.groupKey, effectiveGroupKey));
     }
 
     const cursorData = decodeCursor(cursor);
@@ -508,7 +566,7 @@ class CodexSessionService {
     const pageItems = validated
       .filter((item) => pageDates.includes(item.localDate))
       .sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity) || a.id.localeCompare(b.id));
-    const pageContexts = groupKey
+    const pageContexts = effectiveGroupKey
       ? null
       : await this.resolveRepoContexts(pageItems.map((item) => item.workingDir));
     for (const item of pageItems) {
@@ -519,7 +577,9 @@ class CodexSessionService {
     const previews = await this.readPreviews(pageItems);
     const threads = pageItems.map((item) => {
       let disabledReason = null;
-      if (item.linked && item.linked.status !== 'paused') disabledReason = 'Already open in EasyCC';
+      if (targetSession && item.linked && item.linked.id !== targetSession.id) {
+        disabledReason = 'Already linked to another EasyCC card';
+      } else if (item.linked && item.linked.status !== 'paused') disabledReason = 'Already open in EasyCC';
       else if (item.live) disabledReason = item.linked
         ? 'The linked conversation is still running'
         : 'Already open outside EasyCC';
@@ -540,7 +600,9 @@ class CodexSessionService {
 
     const savedSessions = (sessionList || [])
       .filter((session) => session?.cliType === 'codex' && session.status === 'paused')
-      .filter((session) => !groupKey || session.groupKey === groupKey)
+      .filter((session) => targetSession
+        ? session.id === targetSession.id
+        : (!effectiveGroupKey || pathsEqual(session.groupKey || session.workingDir, effectiveGroupKey)))
       .map((session) => {
         const codexId = String(session.codexSessionId || '').toLowerCase();
         const thread = codexId ? rollouts.get(codexId) : null;
@@ -718,5 +780,6 @@ module.exports = {
   getLocalDate,
   normalizePath,
   normalizePreview,
+  pathsEqual,
   quoteForPosixShell
 };

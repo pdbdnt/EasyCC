@@ -123,6 +123,10 @@ test('working-directory validation distinguishes unavailable WSL from probe fail
   assert.equal((await manager.validateRecoveryWorkingDir({ cliType: 'codex', workingDir: '/home/project' })).code, 'directory_check_failed');
   manager.codexSessionService = { runShell: async () => { throw new Error('WSL_E_DEFAULT_DISTRO_NOT_FOUND: no installed distributions'); } };
   assert.equal((await manager.validateRecoveryWorkingDir({ cliType: 'codex', workingDir: '/home/project' })).code, 'wsl_unavailable');
+  const wrappedNoDistro = new Error('Could not read Codex data from WSL. Please retry.');
+  wrappedNoDistro.cause = new Error('WSL_E_DEFAULT_DISTRO_NOT_FOUND: no installed distributions');
+  manager.codexSessionService = { runShell: async () => { throw wrappedNoDistro; } };
+  assert.equal((await manager.validateRecoveryWorkingDir({ cliType: 'codex', workingDir: '/home/project' })).code, 'wsl_unavailable');
 });
 
 test('host working-directory validation distinguishes missing paths', async () => {

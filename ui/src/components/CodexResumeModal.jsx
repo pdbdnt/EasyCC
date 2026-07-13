@@ -15,6 +15,20 @@ function selectionKey(easyccSessionId, codexSessionId) {
   return easyccSessionId ? `saved:${easyccSessionId}` : `thread:${codexSessionId}`;
 }
 
+function comparableFolder(value) {
+  let normalized = String(value || '').trim().replace(/\\/g, '/').replace(/\/$/, '');
+  const uncMatch = normalized.match(/^\/\/wsl(?:\$|\.localhost)?\/[^/]+(\/.*)?$/i);
+  if (uncMatch) normalized = uncMatch[1] || '/';
+  const driveMatch = normalized.match(/^([a-z]):(\/.*)?$/i);
+  if (driveMatch) normalized = `/mnt/${driveMatch[1].toLowerCase()}${driveMatch[2] || ''}`;
+  return /^\/mnt\/[a-z](?:\/|$)/i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function sameFolder(left, right) {
+  const normalizedLeft = comparableFolder(left);
+  return !!normalizedLeft && normalizedLeft === comparableFolder(right);
+}
+
 export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
   const [catalog, setCatalog] = useState(scope.initialCatalog || null);
   const [loading, setLoading] = useState(!scope.initialCatalog);
@@ -35,6 +49,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
     try {
       const params = new URLSearchParams({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
       if (scope.groupKey) params.set('groupKey', scope.groupKey);
+      if (scope.easyccSessionId) params.set('easyccSessionId', scope.easyccSessionId);
       if (cursor) params.set('cursor', cursor);
       if (query) params.set('query', query);
       const response = await fetch(`/api/codex/resume-catalog?${params}`);
@@ -46,7 +61,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
     } finally {
       setLoading(false);
     }
-  }, [cursor, query, scope.groupKey]);
+  }, [cursor, query, scope.easyccSessionId, scope.groupKey]);
 
   useEffect(() => {
     if (initialCatalogPendingRef.current && !cursor && !query) {
@@ -110,7 +125,10 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
       const response = await fetch('/api/codex/resume-selection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ selections: [...selections.values()] })
+        body: JSON.stringify({
+          selections: [...selections.values()],
+          ...(scope.easyccSessionId ? { easyccSessionId: scope.easyccSessionId } : {})
+        })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Could not resume Codex conversations');
@@ -204,6 +222,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
                           >
                             <option value="">Choose conversation…</option>
                             {eligibleThreads
+                              .filter((thread) => sameFolder(thread.workingDir, saved.workingDir))
                               .filter((thread) => !thread.linkedEasyccSessionId || thread.linkedEasyccSessionId === saved.easyccSessionId)
                               .map((thread) => (
                               <option key={thread.codexSessionId} value={thread.codexSessionId}>{thread.threadName}</option>
@@ -235,7 +254,11 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
                       type="checkbox"
                       checked={selectedCodexIds.has(thread.codexSessionId)}
                       disabled={!thread.selectable}
-                      onChange={(event) => choose(thread.codexSessionId, thread.linkedEasyccSessionId || undefined, event.target.checked)}
+                      onChange={(event) => choose(
+                        thread.codexSessionId,
+                        scope.easyccSessionId || thread.linkedEasyccSessionId || undefined,
+                        event.target.checked
+                      )}
                     />
                     <span className="codex-resume-copy">
                       <span className="codex-resume-row-heading">

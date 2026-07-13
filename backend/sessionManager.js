@@ -12,14 +12,11 @@ const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInp
 const { createComment, addReactionToComment } = require('./commentUtils');
 const { readTranscriptWindow } = require('./terminalTranscriptUtils');
 const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
-const { CodexSessionService, normalizePath: normalizeCodexPath } = require('./codexSessionService');
+const { CodexSessionService, pathsEqual: codexPathsEqual } = require('./codexSessionService');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
 const MEDIUM_OUTPUT_BUFFER_CHUNKS = 12000;
-const CODEX_CAPTURE_INITIAL_DELAY_MS = 1500;
-const CODEX_CAPTURE_MAX_ATTEMPTS = 6;
-const CODEX_CAPTURE_INITIAL_WINDOW_MS = 5 * 60 * 1000;
 const CODEX_CAPTURE_MAX_WINDOW_MS = 30 * 60 * 1000;
 const CODEX_CAPTURE_MAX_INDEX_CANDIDATES = 12;
 const CODEX_PLAN_PATH_PATTERN = /(?:~|\/home\/[^/\s"'`<>]+)\/\.codex\/plans\/[^\s"'`<>]+\.md/gi;
@@ -979,32 +976,10 @@ class SessionManager extends EventEmitter {
     if (!session || session.cliType !== 'codex') {
       return false;
     }
-    if (session.codexSessionId) {
-      return true;
-    }
-
-    const textWithHints = [
-      session.name,
-      session.currentTask,
-      ...(session.outputBuffer?.getAll?.() || [])
-    ].filter(Boolean).join('\n');
-
-    for (const codexSessionId of this.extractCodexSessionIdsFromText(textWithHints)) {
-      if (this.linkCodexSessionById(session, codexSessionId)) {
-        return true;
-      }
-    }
-
-    if (this.syncWithCodexSession(session, { attemptNum: CODEX_CAPTURE_MAX_ATTEMPTS })) {
-      return true;
-    }
-
-    const recentIds = this.getRecentCodexSessionIdsForSession(session);
-    if (recentIds.length === 1) {
-      return this.linkCodexSessionById(session, recentIds[0]);
-    }
-
-    return false;
+    // Never infer a conversation identity from folder, title, transcript text,
+    // or recency. Missing IDs are established only by the process monitor's
+    // EASYCC_SESSION_ID observation or by an explicit picker selection.
+    return !!session.codexSessionId;
   }
 
   backfillCodexPlansForSession(session) {
@@ -1069,82 +1044,17 @@ class SessionManager extends EventEmitter {
     return attachedPlanPaths;
   }
 
-  getCodexCaptureWindowMs(attemptNum = 1) {
-    return Math.min(CODEX_CAPTURE_INITIAL_WINDOW_MS * Math.max(attemptNum, 1), CODEX_CAPTURE_MAX_WINDOW_MS);
-  }
-
   selectCodexResumeTarget(session) {
     if (!session) return null;
     return session.codexSessionId || null;
   }
 
-  syncWithCodexSession(session, { attemptNum = 1 } = {}) {
-    if (!session || session.cliType !== 'codex' || !session.workingDir) {
-      return false;
+  syncWithCodexSession(session) {
+    // Identity synchronization is asynchronous and process-owned. Do not use
+    // launch time, folder, or title heuristics to mutate codexSessionId.
+    if (session?.cliType === 'codex' && !session.codexSessionId) {
+      this.codexSessionService?.kickMonitor?.();
     }
-
-    const launchTimestamp = session.codexLaunchStartedAt || session.lastActivity || session.createdAt;
-    const launchMs = Date.parse(launchTimestamp);
-    if (!launchMs) {
-      return false;
-    }
-
-    const ownedIds = new Set();
-    for (const [id, candidate] of this.sessions) {
-      if (id !== session.id && candidate.codexSessionId) {
-        ownedIds.add(candidate.codexSessionId);
-      }
-    }
-
-    const indexEntries = this.loadCodexSessionIndex();
-    if (indexEntries.length === 0) {
-      return false;
-    }
-
-    const captureWindowMs = this.getCodexCaptureWindowMs(attemptNum);
-    const recentCandidates = indexEntries
-      .filter((entry) => {
-        if (!entry?.id || !entry.updatedAtMs || ownedIds.has(entry.id)) {
-          return false;
-        }
-        return Math.abs(entry.updatedAtMs - launchMs) <= captureWindowMs;
-      })
-      .sort((a, b) => {
-        const deltaA = Math.abs(a.updatedAtMs - launchMs);
-        const deltaB = Math.abs(b.updatedAtMs - launchMs);
-        if (deltaA !== deltaB) {
-          return deltaA - deltaB;
-        }
-        return (b.updatedAtMs || 0) - (a.updatedAtMs || 0);
-      })
-      .slice(0, CODEX_CAPTURE_MAX_INDEX_CANDIDATES);
-
-    for (const candidate of recentCandidates) {
-      const meta = this.readCodexSessionMetaById(candidate.id);
-      if (!meta) {
-        continue;
-      }
-      if (meta.cwd !== this.normalizeGroupPath(session.workingDir)) {
-        continue;
-      }
-
-      let changed = false;
-      if (session.codexSessionId !== candidate.id) {
-        session.codexSessionId = candidate.id;
-        changed = true;
-      }
-      if (candidate.threadName && session.codexThreadName !== candidate.threadName) {
-        session.codexThreadName = candidate.threadName;
-        changed = true;
-      }
-
-      if (changed) {
-        this.dataStore.saveSession(session);
-        this.emit('sessionUpdated', this.getSessionSnapshot(session));
-      }
-      return true;
-    }
-
     return false;
   }
 
@@ -1157,41 +1067,12 @@ class SessionManager extends EventEmitter {
     session.codexCaptureAttempts = 0;
   }
 
-  scheduleCodexSessionCapture(session, { initialDelayMs = CODEX_CAPTURE_INITIAL_DELAY_MS, resetAttempts = false } = {}) {
+  scheduleCodexSessionCapture(session) {
     if (!session || session.cliType !== 'codex') {
       return;
     }
-
-    if (resetAttempts) {
-      session.codexCaptureAttempts = 0;
-    }
-
-    if (session.codexCaptureTimer) {
-      clearTimeout(session.codexCaptureTimer);
-      session.codexCaptureTimer = null;
-    }
-
-    const attemptCapture = () => {
-      session.codexCaptureTimer = null;
-
-      if (!this.sessions.has(session.id) || session.status === 'completed' || session.status === 'killed') {
-        return;
-      }
-      if (session.codexSessionId || (session.codexCaptureAttempts || 0) >= CODEX_CAPTURE_MAX_ATTEMPTS) {
-        return;
-      }
-
-      session.codexCaptureAttempts = (session.codexCaptureAttempts || 0) + 1;
-      const matched = this.syncWithCodexSession(session, { attemptNum: session.codexCaptureAttempts });
-      if (matched || session.codexCaptureAttempts >= CODEX_CAPTURE_MAX_ATTEMPTS) {
-        return;
-      }
-
-      const delay = Math.min(CODEX_CAPTURE_INITIAL_DELAY_MS * (session.codexCaptureAttempts + 1), 8000);
-      session.codexCaptureTimer = setTimeout(attemptCapture, delay);
-    };
-
-    session.codexCaptureTimer = setTimeout(attemptCapture, initialDelayMs);
+    this.clearCodexSessionCapture(session);
+    this.codexSessionService?.kickMonitor?.();
   }
 
   applyCodexIdentityObservation(observation) {
@@ -1231,8 +1112,7 @@ class SessionManager extends EventEmitter {
       return true;
     }
 
-    if (observation.workingDir &&
-      normalizeCodexPath(observation.workingDir) !== normalizeCodexPath(session.workingDir)) {
+    if (observation.workingDir && !codexPathsEqual(observation.workingDir, session.workingDir)) {
       session.codexIdentityState = 'unresolved';
       session.codexIdentityError = 'Codex conversation belongs to a different folder';
       this.dataStore.saveSession(session);
@@ -1306,9 +1186,16 @@ class SessionManager extends EventEmitter {
   }
 
   async getCodexResumeCatalog(query = {}) {
+    if (query.easyccSessionId) {
+      const target = this.sessions.get(query.easyccSessionId);
+      if (!target || target.cliType !== 'codex' || target.status !== 'paused') {
+        throw new Error('The paused Codex card is no longer available');
+      }
+    }
     return this.codexSessionService.getResumeCatalog({
       sessions: this.sessions,
       groupKey: query.groupKey || '',
+      easyccSessionId: query.easyccSessionId || '',
       cursor: query.cursor || '',
       timeZone: query.timeZone || 'UTC',
       query: query.query || ''
@@ -1330,8 +1217,9 @@ class SessionManager extends EventEmitter {
           ? { ok: true }
           : { ok: false, code: 'missing_working_dir', message: 'Working directory is not available in WSL' };
       } catch (error) {
-        const message = error.message || '';
-        const unavailable = error.code === 'ENOENT' ||
+        const sourceError = error.cause || error;
+        const message = [error.message, sourceError.message, sourceError.stderr].filter(Boolean).join(' ');
+        const unavailable = sourceError.code === 'ENOENT' ||
           /wsl(?:\.exe)?.*(?:not found|cannot find|not recognized)/i.test(message) ||
           /WSL_E_DEFAULT_DISTRO_NOT_FOUND|no installed distributions|no distribution.*installed|specified distribution.*does not exist/i.test(message);
         return {
@@ -1391,7 +1279,7 @@ class SessionManager extends EventEmitter {
         const thread = codexId ? threadsById.get(codexId) : null;
         if (!thread) {
           Object.assign(row, { category: 'requiresSelection', code: 'requires_selection', message: 'Choose an exact Codex conversation' });
-        } else if (normalizeCodexPath(thread.workingDir) !== normalizeCodexPath(session.workingDir)) {
+        } else if (!codexPathsEqual(thread.workingDir, session.workingDir)) {
           Object.assign(row, { category: 'disabled', code: 'cwd_mismatch', message: 'Codex conversation belongs to a different folder' });
         } else {
           if (thread.threadName && thread.threadName !== session.name) {
@@ -1588,7 +1476,7 @@ class SessionManager extends EventEmitter {
     return session;
   }
 
-  async resumeCodexSelections(selections = []) {
+  async resumeCodexSelections(selections = [], { targetEasyccSessionId = '' } = {}) {
     const accepted = [];
     const skipped = [];
     const seen = new Set();
@@ -1612,12 +1500,17 @@ class SessionManager extends EventEmitter {
         continue;
       }
 
-      let session = selection.easyccSessionId ? this.sessions.get(selection.easyccSessionId) : null;
-      if (selection.easyccSessionId && (!session || session.cliType !== 'codex' || session.status !== 'paused')) {
+      const requestedEasyccSessionId = targetEasyccSessionId || selection.easyccSessionId || '';
+      if (targetEasyccSessionId && selection.easyccSessionId && selection.easyccSessionId !== targetEasyccSessionId) {
+        skipped.push({ ...selection, code: 'invalid_card', message: 'Selection does not match the requested EasyCC card' });
+        continue;
+      }
+      let session = requestedEasyccSessionId ? this.sessions.get(requestedEasyccSessionId) : null;
+      if (requestedEasyccSessionId && (!session || session.cliType !== 'codex' || session.status !== 'paused')) {
         skipped.push({ ...selection, code: 'invalid_card', message: 'EasyCC card is not a paused Codex session' });
         continue;
       }
-      if (session && normalizeCodexPath(session.workingDir) !== normalizeCodexPath(thread.workingDir)) {
+      if (session && !codexPathsEqual(session.workingDir, thread.workingDir)) {
         skipped.push({ ...selection, code: 'cwd_mismatch', message: 'Codex conversation belongs to a different folder' });
         continue;
       }

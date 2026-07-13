@@ -65,6 +65,33 @@ async function mockRecoverySummary(page, { candidate = true } = {}) {
   });
 }
 
+async function mockDashboardSocket(page, sessions) {
+  await page.addInitScript((initialSessions) => {
+    class MockWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor() {
+        this.readyState = MockWebSocket.CONNECTING;
+        setTimeout(() => {
+          this.readyState = MockWebSocket.OPEN;
+          this.onopen?.();
+          this.onmessage?.({
+            data: JSON.stringify({ type: 'init', sessions: initialSessions, agents: [], tasks: [] })
+          });
+        }, 0);
+      }
+
+      send() {}
+      close() { this.readyState = MockWebSocket.CLOSED; }
+    }
+
+    window.WebSocket = MockWebSocket;
+  }, sessions);
+}
+
 test('paused recovery choice selects and submits the exact saved Codex thread', async ({ page }) => {
   let submittedBody = null;
   await mockRecoverySummary(page);
@@ -152,4 +179,86 @@ test('unresolved cards cannot choose a thread owned by another paused card', asy
   await expect(mappingSelect.getByRole('option', { name: 'Available conversation' })).toHaveCount(1);
   await mappingSelect.selectOption({ label: 'Available conversation' });
   await expect(mappingSelect).toHaveValue('019f49d3-a29a-72e1-9c67-d7046b6f8a40');
+});
+
+test('card Resume scopes history and binds the chosen conversation to the same paused card', async ({ page }) => {
+  const target = {
+    id: 'easycc-target',
+    name: 'resumepicker',
+    cliType: 'codex',
+    status: 'paused',
+    workingDir: '/mnt/c/Users/denni/apps/EasyCC',
+    groupKey: 'C:\\Users\\denni\\apps\\EasyCC',
+    repoName: 'EasyCC',
+    codexSessionId: null,
+    stage: 'todo',
+    createdAt: '2026-07-12T13:27:36.853Z',
+    lastActivity: '2026-07-12T15:33:58.973Z'
+  };
+  await mockDashboardSocket(page, [target]);
+  await mockRecoverySummary(page, { candidate: false });
+
+  let catalogParams = null;
+  let submittedBody = null;
+  let rawResumeCalled = false;
+  await page.route('**/api/codex/resume-catalog?**', async (route) => {
+    catalogParams = new URL(route.request().url()).searchParams;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        savedSessions: [{
+          easyccSessionId: target.id,
+          name: target.name,
+          workingDir: target.workingDir,
+          codexSessionId: null,
+          mappingState: 'unresolved',
+          selectedByDefault: false
+        }],
+        threads: [{
+          codexSessionId: THREAD_ID,
+          threadName: 'resumepicker',
+          workingDir: target.workingDir,
+          lastActivity: '2026-07-12T16:26:21.894Z',
+          preview: 'Continue the EasyCC recovery work.',
+          groupKey: target.workingDir,
+          linkedEasyccSessionId: null,
+          live: false,
+          selectable: true,
+          disabledReason: null
+        }],
+        page: { dates: ['2026-07-12'], nextCursor: null, hasOlder: false }
+      })
+    });
+  });
+  await page.route('**/api/sessions/easycc-target/resume', async (route) => {
+    rawResumeCalled = true;
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'should not be called' }) });
+  });
+  await page.route('**/api/codex/resume-selection', async (route) => {
+    submittedBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ accepted: [{ id: target.id }], skipped: [] })
+    });
+  });
+
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'Resume', exact: true }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('Choose the saved threads that should return in EasyCC.')).toBeVisible();
+  expect(catalogParams.get('easyccSessionId')).toBe(target.id);
+  expect(catalogParams.get('groupKey')).toBe(target.groupKey);
+  expect(rawResumeCalled).toBe(false);
+
+  await dialog.getByRole('checkbox').click();
+  await dialog.getByRole('button', { name: 'Resume 1' }).click();
+  await expect(dialog).toBeHidden();
+  expect(submittedBody).toEqual({
+    easyccSessionId: target.id,
+    selections: [{ easyccSessionId: target.id, codexSessionId: THREAD_ID }]
+  });
 });

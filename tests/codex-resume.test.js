@@ -6,7 +6,8 @@ const {
   decodeCursor,
   encodeCursor,
   getLocalDate,
-  normalizePreview
+  normalizePreview,
+  pathsEqual
 } = require('../backend/codexSessionService');
 const registerCodexResumeRoutes = require('../backend/codexResumeRoutes');
 const SessionManager = require('../backend/sessionManager');
@@ -148,6 +149,48 @@ test('Windows shell execution bypasses WSL command re-parsing', async () => {
   ]);
 });
 
+test('Windows shell execution retries once and does not expose generated commands', async () => {
+  let attempts = 0;
+  const service = new CodexSessionService({
+    platform: 'win32',
+    wslRetryDelayMs: 0,
+    execFile(executable, args, options, callback) {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error(`Command failed: ${args.join(' ')}`);
+        error.code = 1;
+        callback(error, '');
+        return;
+      }
+      callback(null, 'recovered');
+    }
+  });
+
+  assert.equal(await service.runShell('node -e generated-history-probe'), 'recovered');
+  assert.equal(attempts, 2);
+
+  attempts = 0;
+  service.execFile = (executable, args, options, callback) => {
+    attempts += 1;
+    const error = new Error(`Command failed: ${args.join(' ')}`);
+    error.code = 1;
+    callback(error, '');
+  };
+  await assert.rejects(
+    service.runShell('node -e generated-history-probe'),
+    (error) => error.message === 'Could not read Codex data from WSL. Please retry.' &&
+      !error.message.includes('generated-history-probe')
+  );
+  assert.equal(attempts, 2);
+});
+
+test('path equality normalizes Windows, WSL mount, and WSL UNC forms without folding Linux paths', () => {
+  assert.equal(pathsEqual('C:\\Users\\denni\\apps\\EasyCC', '/mnt/c/Users/denni/apps/EasyCC'), true);
+  assert.equal(pathsEqual('c:/users/DENNI/apps/easycc/', '/mnt/c/Users/denni/apps/EasyCC'), true);
+  assert.equal(pathsEqual('\\\\wsl.localhost\\Ubuntu\\home\\denni\\apps\\EasyCC', '/home/denni/apps/EasyCC'), true);
+  assert.equal(pathsEqual('/home/denni/apps/EasyCC', '/home/denni/apps/easycc'), false);
+});
+
 test('resume catalog deduplicates titles, excludes subagents, pages by two complete dates, and uses direct prompt events', async () => {
   const service = new CodexSessionService({
     platform: 'linux',
@@ -196,6 +239,42 @@ test('resume catalog applies server-side title/id/cwd search before date bucketi
 
   const byCwd = await service.getResumeCatalog({ query: '/mnt/c/work/project-a', timeZone: 'UTC' });
   assert.deepEqual(byCwd.threads.map((item) => item.codexSessionId), [IDS.first, IDS.second]);
+});
+
+test('card-scoped resume catalog returns only the requested paused card and its exact folder', async () => {
+  const service = new CodexSessionService({
+    platform: 'linux',
+    codexHome: '/home/test/.codex',
+    commandRunner: makeCatalogRunner()
+  });
+  const catalog = await service.getResumeCatalog({
+    easyccSessionId: 'easycc-target',
+    sessions: [{
+      id: 'easycc-target',
+      name: 'Needs mapping',
+      cliType: 'codex',
+      status: 'paused',
+      workingDir: 'C:\\work\\project-a',
+      groupKey: 'C:\\work\\project-a',
+      codexSessionId: null
+    }, {
+      id: 'easycc-other',
+      name: 'Other paused card',
+      cliType: 'codex',
+      status: 'paused',
+      workingDir: '/mnt/c/work/project-a',
+      groupKey: '/mnt/c/work/project-a',
+      codexSessionId: IDS.first
+    }],
+    timeZone: 'UTC'
+  });
+
+  assert.deepEqual(catalog.savedSessions.map((item) => item.easyccSessionId), ['easycc-target']);
+  assert.deepEqual(catalog.threads.map((item) => item.codexSessionId), [IDS.first, IDS.second]);
+  assert.equal(catalog.threads.every((item) => pathsEqual(item.workingDir, 'C:\\work\\project-a')), true);
+  assert.equal(catalog.threads[0].selectable, false);
+  assert.equal(catalog.threads[0].disabledReason, 'Already linked to another EasyCC card');
+  assert.equal(catalog.threads[1].selectable, true);
 });
 
 test('resume catalog does not offer a paused card whose Codex thread is still live', async () => {
@@ -393,6 +472,41 @@ test('Codex resume API validates selections and returns accepted work', async ()
   assert.deepEqual(acceptedReply.payload.accepted, [{ codexSessionId: IDS.first, easyccSessionId: 'easycc-one' }]);
 });
 
+test('card-scoped resume API binds the choice to the requested EasyCC card', async () => {
+  const routes = new Map();
+  let observedSelections = null;
+  let observedOptions = null;
+  const app = {
+    get: (url, handler) => routes.set(`GET ${url}`, handler),
+    post: (url, handler) => routes.set(`POST ${url}`, handler)
+  };
+  registerCodexResumeRoutes(app, {
+    sessionManager: {
+      resumeCodexSelections(selections, options) {
+        observedSelections = selections;
+        observedOptions = options;
+        return { accepted: [{ id: 'easycc-target' }], skipped: [] };
+      }
+    }
+  });
+  const reply = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    send(payload) { this.payload = payload; return payload; }
+  };
+
+  await routes.get('POST /api/codex/resume-selection')({
+    body: {
+      easyccSessionId: 'easycc-target',
+      selections: [{ codexSessionId: IDS.first }]
+    }
+  }, reply);
+
+  assert.equal(reply.statusCode, 202);
+  assert.deepEqual(observedSelections, [{ codexSessionId: IDS.first, easyccSessionId: 'easycc-target' }]);
+  assert.deepEqual(observedOptions, { targetEasyccSessionId: 'easycc-target' });
+});
+
 test('batch resume asks the service for all selected threads once', async () => {
   let batchLookups = 0;
   const manager = {
@@ -414,6 +528,61 @@ test('batch resume asks the service for all selected threads once', async () => 
   assert.equal(batchLookups, 1);
   assert.deepEqual(result.accepted, []);
   assert.deepEqual(result.skipped.map((item) => item.code), ['not_found', 'not_found']);
+});
+
+test('card-scoped resume reuses the paused card and never creates a duplicate', async () => {
+  const target = {
+    id: 'easycc-target',
+    name: 'Needs mapping',
+    cliType: 'codex',
+    status: 'paused',
+    workingDir: 'C:\\work\\project-a',
+    groupKey: 'C:\\work\\project-a',
+    codexSessionId: null
+  };
+  let created = false;
+  const manager = {
+    sessions: new Map([[target.id, target]]),
+    codexSessionService: {
+      scanProcesses: async () => ({ roots: [], liveRootIds: new Set() }),
+      getThreadsByIds: async () => new Map([[IDS.first, {
+        codexSessionId: IDS.first,
+        threadName: 'Chosen conversation',
+        workingDir: '/mnt/c/work/project-a'
+      }]])
+    },
+    dataStore: { saveSession() {} },
+    createBoundCodexSession() { created = true; throw new Error('must not create a card'); },
+    resumeSession(id) { this.sessions.get(id).status = 'active'; return true; },
+    getSessionSnapshot: (session) => ({ id: session.id, status: session.status, codexSessionId: session.codexSessionId })
+  };
+
+  const result = await SessionManager.prototype.resumeCodexSelections.call(
+    manager,
+    [{ codexSessionId: IDS.first, easyccSessionId: target.id }],
+    { targetEasyccSessionId: target.id }
+  );
+
+  assert.equal(created, false);
+  assert.equal(manager.sessions.size, 1);
+  assert.equal(target.codexSessionId, IDS.first);
+  assert.equal(target.name, 'Chosen conversation');
+  assert.equal(target.status, 'active');
+  assert.deepEqual(result.accepted.map((item) => item.id), [target.id]);
+});
+
+test('missing Codex identity is never inferred from folder, title, transcript, or recency', () => {
+  const session = {
+    id: 'easycc-target',
+    name: 'Only matching title',
+    cliType: 'codex',
+    workingDir: '/mnt/c/work/project-a',
+    codexSessionId: null,
+    outputBuffer: { getAll: () => [IDS.first] }
+  };
+  const linked = SessionManager.prototype.ensureCodexSessionLinked.call({}, session);
+  assert.equal(linked, false);
+  assert.equal(session.codexSessionId, null);
 });
 
 test('verified Codex thread switch updates the saved ID and EasyCC card name', () => {
