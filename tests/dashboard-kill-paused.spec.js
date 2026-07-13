@@ -78,3 +78,23 @@ test('kills only paused sessions in the selected project', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Collapse easycc (1 sessions)' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Collapse tools (1 sessions)' })).toBeVisible();
 });
+
+test('paused sessions checkbox shows paused cards by default and filters every project', async ({ page }) => {
+  await mockDashboard(page);
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+
+  const pausedSessions = page.getByRole('checkbox', { name: 'Paused Sessions' });
+  await expect(pausedSessions).toBeChecked();
+  await expect(page.getByText('Paused one', { exact: true })).toBeVisible();
+  await expect(page.getByText('Paused two').first()).toBeVisible();
+  await expect(page.getByText('Other project paused', { exact: true })).toBeVisible();
+
+  await pausedSessions.uncheck();
+
+  await expect(page.getByText('Paused one', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Paused two')).toHaveCount(0);
+  await expect(page.getByText('Other project paused', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Active session', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Collapse easycc/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Collapse tools/ })).toHaveCount(0);
+});

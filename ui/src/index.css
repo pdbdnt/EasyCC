@@ -2980,6 +2980,25 @@ textarea::placeholder {
   gap: 4px;
 }
 
+.show-paused-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.show-paused-toggle input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
 .session-group-hint {
   background: var(--accent-primary);
   color: #000;
@@ -4789,32 +4808,6 @@ textarea::placeholder {
 
 .project-filter-item input[type="checkbox"] {
   accent-color: var(--accent-blue);
-}
-
-.active-only-toggle {
-  flex: 0 0 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-  padding: 0;
-}
-
-.active-only-toggle:hover {
-  background: var(--bg-active);
-  color: var(--text-primary);
-}
-
-.active-only-toggle--on {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
-  color: #fff;
 }
 
 /* Kanban Columns Container */

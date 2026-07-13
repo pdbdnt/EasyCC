@@ -100,7 +100,7 @@ function Dashboard({
   const [stageFilter, setStageFilter] = useState('');
   const [projectFilters, setProjectFilters] = useState(new Set());
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
-  const [hidePaused, setHidePaused] = useState(false);
+  const [showPaused, setShowPaused] = useState(true);
   const projectDropdownRef = useRef(null);
 
   // Sync project filter from Kanban view when switching back via Ctrl+O
@@ -235,9 +235,9 @@ function Dashboard({
     // Local sidebar filters
     if (stageFilter) result = result.filter(s => s.stage === stageFilter);
     if (projectFilters.size > 0) result = result.filter(s => projectFilters.has(getSessionGroupKey(s)));
-    if (hidePaused) result = result.filter(s => s.status !== 'paused');
+    if (!showPaused) result = result.filter(s => s.status !== 'paused');
     return result;
-  }, [sessions, kanbanColumnFilter, kanbanProjectFilter, stageFilter, projectFilters, hidePaused]);
+  }, [sessions, kanbanColumnFilter, kanbanProjectFilter, stageFilter, projectFilters, showPaused]);
 
   // Build child sessions map: parentSessionId -> [child sessions]
   const childSessionsMap = useMemo(() => {
@@ -635,16 +635,6 @@ function Dashboard({
             </div>
           )}
         </div>
-        <button
-          className={`active-only-toggle${hidePaused ? ' active-only-toggle--on' : ''}`}
-          onClick={() => setHidePaused(v => !v)}
-          title="Hide paused sessions"
-          aria-label="Hide paused sessions"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M13 2L4.5 13.5H11L10 22L19.5 10.5H13L14 2z"/>
-          </svg>
-        </button>
       </div>
       {(stageFilter || projectFilters.size > 0) && (
         <div className="kanban-filter-chip">
@@ -717,16 +707,26 @@ function Dashboard({
           )}
         </div>
       )}
-      {(globalStageCounts.inProgress > 0 || globalStageCounts.inReview > 0) && (
-        <div className="session-stage-summary">
+      <div className="session-stage-summary">
+        {globalStageCounts.inProgress > 0 && (
           <span className="stage-summary-item in-progress" title="In Progress">
             <span className="stage-dot"></span> {globalStageCounts.inProgress}
           </span>
+        )}
+        {globalStageCounts.inReview > 0 && (
           <span className="stage-summary-item in-review" title="In Review">
             <span className="stage-dot"></span> {globalStageCounts.inReview}
           </span>
-        </div>
-      )}
+        )}
+        <label className="show-paused-toggle">
+          <input
+            type="checkbox"
+            checked={showPaused}
+            onChange={(event) => setShowPaused(event.target.checked)}
+          />
+          <span>Paused Sessions</span>
+        </label>
+      </div>
       <div className="sessions-list">
         {filteredSessions.length === 0 ? (
           <div className="empty-state">
