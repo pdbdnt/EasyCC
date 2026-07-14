@@ -241,6 +241,61 @@ test('resume catalog applies server-side title/id/cwd search before date bucketi
   assert.deepEqual(byCwd.threads.map((item) => item.codexSessionId), [IDS.first, IDS.second]);
 });
 
+test('sorted resume catalog globally orders groups and conversations with stable cursors', async () => {
+  const service = new CodexSessionService({
+    platform: 'linux',
+    codexHome: '/home/test/.codex',
+    commandRunner: makeCatalogRunner()
+  });
+
+  const byFolder = await service.getResumeCatalog({
+    groupBy: 'folder',
+    groupSort: 'folder-asc',
+    threadSort: 'updated-asc',
+    timeZone: 'UTC'
+  });
+  assert.deepEqual(byFolder.groups.map((group) => group.name), ['project-a', 'project-b']);
+  assert.deepEqual(byFolder.threads.map((thread) => thread.threadName), ['resume-two', 'resume-one', 'resume-three']);
+  assert.deepEqual(byFolder.sort, {
+    groupBy: 'folder',
+    groupSort: 'folder-asc',
+    threadSort: 'updated-asc'
+  });
+  assert.equal(byFolder.page.total, 3);
+  assert.equal(byFolder.groups[0].selectableSelections.length, 2);
+
+  const flatNewest = await service.getResumeCatalog({
+    groupBy: 'none',
+    groupSort: 'count-desc',
+    threadSort: 'updated-desc',
+    timeZone: 'UTC'
+  });
+  assert.deepEqual(flatNewest.threads.map((thread) => thread.threadName), ['resume-one', 'resume-two', 'resume-three']);
+  assert.equal(flatNewest.sort.groupBy, 'none');
+});
+
+test('an empty Windows cold-start history scan retries and remains stale when still empty', async () => {
+  let indexReads = 0;
+  let rolloutReads = 0;
+  const service = new CodexSessionService({
+    platform: 'win32',
+    codexHome: '/home/test/.codex',
+    emptyHistoryRetryDelayMs: 0,
+    commandRunner: (command) => {
+      if (command.includes('session_index.jsonl')) indexReads += 1;
+      if (command.includes('modifiedAtMs')) rolloutReads += 1;
+      return '';
+    }
+  });
+
+  const history = await service.getHistorySnapshot();
+  assert.equal(indexReads, 2);
+  assert.equal(rolloutReads, 2);
+  assert.equal(history.empty, true);
+  const cached = await service.getHistorySnapshot({ allowStale: true });
+  assert.equal(cached.stale, true);
+});
+
 test('card-scoped resume catalog returns only the requested paused card and its exact folder', async () => {
   const service = new CodexSessionService({
     platform: 'linux',

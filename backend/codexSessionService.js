@@ -10,6 +10,10 @@ const DEFAULT_WSL_RETRY_DELAY_MS = 150;
 const DEFAULT_HISTORY_CACHE_TTL_MS = 60_000;
 const DEFAULT_CONTEXT_CACHE_TTL_MS = 60_000;
 const DEFAULT_PROCESS_CACHE_TTL_MS = 2_000;
+const DEFAULT_HISTORY_PAGE_SIZE = 100;
+const DEFAULT_EMPTY_HISTORY_RETRY_DELAY_MS = 250;
+const GROUP_SORTS = new Set(['recent', 'oldest', 'folder-asc', 'folder-desc', 'count-desc', 'count-asc']);
+const THREAD_SORTS = new Set(['updated-desc', 'updated-asc', 'created-desc', 'created-asc', 'title-asc', 'title-desc']);
 const dateFormatters = new Map();
 
 function quoteForPosixShell(value = '') {
@@ -62,6 +66,54 @@ function decodeCursor(cursor) {
   } catch {
     return null;
   }
+}
+
+function decodeSortedCursor(cursor, signature) {
+  if (!cursor) return 0;
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    return value?.v === 2 && value.signature === signature && Number.isInteger(value.offset) && value.offset >= 0
+      ? value.offset
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function compareText(left, right) {
+  return String(left || '').localeCompare(String(right || ''), undefined, { sensitivity: 'base', numeric: true });
+}
+
+function compareTimestamp(left, right, direction = 'desc') {
+  const leftTime = Date.parse(left || '');
+  const rightTime = Date.parse(right || '');
+  const leftValid = Number.isFinite(leftTime);
+  const rightValid = Number.isFinite(rightTime);
+  if (leftValid !== rightValid) return leftValid ? -1 : 1;
+  if (!leftValid) return 0;
+  return direction === 'asc' ? leftTime - rightTime : rightTime - leftTime;
+}
+
+function compareThreads(left, right, sort = 'updated-desc') {
+  let result = 0;
+  if (sort === 'updated-asc') result = compareTimestamp(left.lastActivity, right.lastActivity, 'asc');
+  else if (sort === 'created-desc') result = compareTimestamp(left.createdAt, right.createdAt, 'desc');
+  else if (sort === 'created-asc') result = compareTimestamp(left.createdAt, right.createdAt, 'asc');
+  else if (sort === 'title-asc') result = compareText(left.threadName, right.threadName);
+  else if (sort === 'title-desc') result = compareText(right.threadName, left.threadName);
+  else result = compareTimestamp(left.lastActivity, right.lastActivity, 'desc');
+  return result || left.id.localeCompare(right.id);
+}
+
+function compareGroups(left, right, sort = 'recent') {
+  let result = 0;
+  if (sort === 'oldest') result = compareTimestamp(left.lastActivity, right.lastActivity, 'asc');
+  else if (sort === 'folder-asc') result = compareText(left.name, right.name) || compareText(left.path, right.path);
+  else if (sort === 'folder-desc') result = compareText(right.name, left.name) || compareText(right.path, left.path);
+  else if (sort === 'count-desc') result = right.count - left.count;
+  else if (sort === 'count-asc') result = left.count - right.count;
+  else result = compareTimestamp(left.lastActivity, right.lastActivity, 'desc');
+  return result || comparablePath(left.key).localeCompare(comparablePath(right.key));
 }
 
 function normalizePreview(value, maxCodePoints = 160) {
@@ -204,6 +256,7 @@ class CodexSessionService {
     this.historyCacheTtlMs = options.historyCacheTtlMs ?? DEFAULT_HISTORY_CACHE_TTL_MS;
     this.contextCacheTtlMs = options.contextCacheTtlMs ?? DEFAULT_CONTEXT_CACHE_TTL_MS;
     this.processCacheTtlMs = options.processCacheTtlMs ?? DEFAULT_PROCESS_CACHE_TTL_MS;
+    this.emptyHistoryRetryDelayMs = options.emptyHistoryRetryDelayMs ?? DEFAULT_EMPTY_HISTORY_RETRY_DELAY_MS;
     this.historyCache = null;
     this.historyLoadPromise = null;
     this.contextCache = new Map();
@@ -508,9 +561,22 @@ class CodexSessionService {
   async loadHistorySnapshot() {
     if (this.historyLoadPromise) return this.historyLoadPromise;
 
-    this.historyLoadPromise = Promise.all([this.loadIndex(), this.scanRolloutMetadata()])
-      .then(([index, rollouts]) => {
-        this.historyCache = { index, rollouts, loadedAt: this.clock() };
+    const scan = () => Promise.all([this.loadIndex(), this.scanRolloutMetadata()]);
+    this.historyLoadPromise = scan()
+      .then(async ([index, rollouts]) => {
+        let nextIndex = index;
+        let nextRollouts = rollouts;
+        const joinedCount = () => [...nextRollouts.keys()].filter((id) => nextIndex.has(id)).length;
+        if (this.platform === 'win32' && joinedCount() === 0 && this.emptyHistoryRetryDelayMs >= 0) {
+          await new Promise((resolve) => setTimeout(resolve, this.emptyHistoryRetryDelayMs));
+          [nextIndex, nextRollouts] = await scan();
+        }
+        this.historyCache = {
+          index: nextIndex,
+          rollouts: nextRollouts,
+          loadedAt: this.clock(),
+          empty: joinedCount() === 0
+        };
         return this.historyCache;
       })
       .finally(() => {
@@ -522,6 +588,10 @@ class CodexSessionService {
   async getHistorySnapshot({ force = false, allowStale = false } = {}) {
     const now = this.clock();
     if (!force && this.historyCache && now - this.historyCache.loadedAt < this.historyCacheTtlMs) {
+      if (this.historyCache.empty) {
+        if (allowStale) void this.loadHistorySnapshot().catch(() => {});
+        return { ...this.historyCache, stale: true };
+      }
       return { ...this.historyCache, stale: false };
     }
     if (!force && allowStale && this.historyCache) {
@@ -531,7 +601,7 @@ class CodexSessionService {
       return { ...this.historyCache, stale: true };
     }
     const snapshot = await this.loadHistorySnapshot();
-    return { ...snapshot, stale: false };
+    return { ...snapshot, stale: !!snapshot.empty };
   }
 
   warmHistoryCache() {
@@ -581,7 +651,7 @@ class CodexSessionService {
     return (await this.getThreadsByIds([normalizedId])).get(normalizedId) || null;
   }
 
-  async getResumeCatalog({ sessions = [], groupKey = '', easyccSessionId = '', cursor = '', timeZone = 'UTC', query = '', refresh = false } = {}) {
+  async getResumeCatalog({ sessions = [], groupKey = '', easyccSessionId = '', cursor = '', timeZone = 'UTC', query = '', refresh = false, groupBy = '', groupSort = '', threadSort = '' } = {}) {
     const [history, processState] = await Promise.all([
       this.getHistorySnapshot({ force: refresh, allowStale: !refresh }),
       this.getProcessSnapshot()
@@ -647,21 +717,77 @@ class CodexSessionService {
         .filter((item) => pathsEqual(item.repoContext.groupKey, effectiveGroupKey));
     }
 
-    const cursorData = decodeCursor(cursor);
-    const dates = [...new Set(validated.map((item) => item.localDate).filter(Boolean))]
-      .filter((date) => !cursorData || date < cursorData.beforeDate)
-      .sort((a, b) => b.localeCompare(a));
-    const pageDates = dates.slice(0, 2);
-    const pageItems = validated
-      .filter((item) => pageDates.includes(item.localDate))
-      .sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity) || a.id.localeCompare(b.id));
-    const pageContexts = effectiveGroupKey
+    const sortedMode = ['folder', 'none'].includes(groupBy) || GROUP_SORTS.has(groupSort) || THREAD_SORTS.has(threadSort);
+    const normalizedGroupBy = groupBy === 'none' ? 'none' : 'folder';
+    const normalizedGroupSort = GROUP_SORTS.has(groupSort) ? groupSort : 'recent';
+    const normalizedThreadSort = THREAD_SORTS.has(threadSort) ? threadSort : 'updated-desc';
+    const allContexts = effectiveGroupKey
       ? null
-      : await this.resolveRepoContexts(pageItems.map((item) => item.workingDir));
-    for (const item of pageItems) {
+      : await this.resolveRepoContexts(validated.map((item) => item.workingDir));
+    for (const item of validated) {
       if (!item.repoContext) {
-        item.repoContext = pageContexts.get(item.workingDir) || { groupKey: item.workingDir };
+        item.repoContext = allContexts.get(item.workingDir) || { groupKey: item.workingDir };
       }
+    }
+    const groupMap = new Map();
+    for (const item of validated) {
+      const key = item.repoContext.groupKey || item.workingDir;
+      if (!groupMap.has(key)) {
+        const repoName = item.repoContext.repoName || '';
+        groupMap.set(key, {
+          key,
+          name: repoName || path.posix.basename(normalizePath(key)) || key,
+          path: key,
+          items: [],
+          lastActivity: null,
+          count: 0,
+          selectableCount: 0,
+          selectableSelections: []
+        });
+      }
+      const group = groupMap.get(key);
+      group.items.push(item);
+      group.count += 1;
+      if (compareTimestamp(group.lastActivity, item.lastActivity, 'desc') > 0 || !group.lastActivity) {
+        group.lastActivity = item.lastActivity;
+      }
+    }
+    let orderedItems;
+    let orderedGroups = [...groupMap.values()];
+    if (sortedMode) {
+      for (const group of orderedGroups) group.items.sort((left, right) => compareThreads(left, right, normalizedThreadSort));
+      orderedGroups.sort((left, right) => compareGroups(left, right, normalizedGroupSort));
+      orderedItems = normalizedGroupBy === 'none'
+        ? [...validated].sort((left, right) => compareThreads(left, right, normalizedThreadSort))
+        : orderedGroups.flatMap((group) => group.items);
+    } else {
+      orderedItems = validated;
+    }
+
+    let pageItems;
+    let pageDates;
+    let nextCursor = null;
+    let hasOlder = false;
+    if (sortedMode) {
+      const signature = `${normalizedGroupBy}:${normalizedGroupSort}:${normalizedThreadSort}:${loweredQuery}:${effectiveGroupKey || ''}`;
+      const offset = decodeSortedCursor(cursor, signature);
+      pageItems = orderedItems.slice(offset, offset + DEFAULT_HISTORY_PAGE_SIZE);
+      pageDates = [...new Set(pageItems.map((item) => item.localDate).filter(Boolean))];
+      hasOlder = offset + pageItems.length < orderedItems.length;
+      nextCursor = hasOlder ? encodeCursor({ v: 2, signature, offset: offset + pageItems.length }) : null;
+    } else {
+      const cursorData = decodeCursor(cursor);
+      const dates = [...new Set(validated.map((item) => item.localDate).filter(Boolean))]
+        .filter((date) => !cursorData || date < cursorData.beforeDate)
+        .sort((a, b) => b.localeCompare(a));
+      pageDates = dates.slice(0, 2);
+      pageItems = validated
+        .filter((item) => pageDates.includes(item.localDate))
+        .sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity) || a.id.localeCompare(b.id));
+      hasOlder = dates.length > pageDates.length;
+      nextCursor = hasOlder && pageDates.length
+        ? encodeCursor({ beforeDate: pageDates[pageDates.length - 1] })
+        : null;
     }
     const previews = await this.readPreviews(pageItems);
     const threads = pageItems.map((item) => {
@@ -686,6 +812,24 @@ class CodexSessionService {
         disabledReason
       };
     });
+
+    const threadById = new Map(threads.map((thread) => [thread.codexSessionId, thread]));
+    for (const group of orderedGroups) {
+      const selectableIds = [];
+      for (const item of group.items) {
+        const linked = item.linked;
+        const disabled = (targetSession && linked && linked.id !== targetSession.id) ||
+          (linked && linked.status !== 'paused') || item.live;
+        if (!disabled) selectableIds.push(item.id);
+      }
+      group.selectableCount = selectableIds.length;
+      group.selectableSelections = selectableIds.map((codexSessionId) => ({
+        codexSessionId,
+        easyccSessionId: linkedById.get(codexSessionId)?.status === 'paused'
+          ? linkedById.get(codexSessionId).id
+          : undefined
+      }));
+    }
 
     const savedSessions = (sessionList || [])
       .filter((session) => session?.cliType === 'codex' && session.status === 'paused')
@@ -712,16 +856,31 @@ class CodexSessionService {
     return {
       savedSessions,
       threads,
+      groups: orderedGroups.map(({ items, ...group }) => ({
+        ...group,
+        loadedCount: items.filter((item) => threadById.has(item.id)).length
+      })),
+      sort: {
+        groupBy: normalizedGroupBy,
+        groupSort: normalizedGroupSort,
+        threadSort: normalizedThreadSort
+      },
       page: {
         dates: pageDates,
-        nextCursor: dates.length > pageDates.length && pageDates.length
-          ? encodeCursor({ beforeDate: pageDates[pageDates.length - 1] })
-          : null,
-        hasOlder: dates.length > pageDates.length
+        nextCursor,
+        hasOlder,
+        total: orderedItems.length
       },
       cache: {
         historyStale: !!history.stale,
-        generatedAt: new Date(history.loadedAt).toISOString()
+        historyEmpty: !!history.empty,
+        generatedAt: new Date(history.loadedAt).toISOString(),
+        diagnostics: {
+          codexHome: this.resolveShellCodexHome(),
+          indexCount: index.size,
+          rolloutCount: rollouts.size,
+          joinedCount: [...rollouts.keys()].filter((id) => index.has(id)).length
+        }
       }
     };
   }

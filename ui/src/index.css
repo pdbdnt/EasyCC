@@ -1127,8 +1127,49 @@ body {
 }
 
 .codex-resume-search input:focus,
-.codex-resume-unresolved select:focus {
+.codex-resume-unresolved select:focus,
+.codex-resume-sortbar select:focus {
   border-color: var(--accent-blue);
+}
+
+.codex-resume-sortbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 28px;
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-secondary) 58%, transparent);
+}
+
+.codex-resume-sortbar label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.codex-resume-sortbar label > span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.codex-resume-sortbar select {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  outline: none;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.codex-resume-sortbar select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .codex-resume-error {
@@ -1192,6 +1233,64 @@ body {
 .codex-resume-list {
   border-top: 1px solid var(--border-color);
 }
+
+.codex-resume-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.codex-resume-group {
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  content-visibility: auto;
+  contain-intrinsic-size: 74px;
+}
+
+.codex-resume-group-heading {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  background: var(--bg-secondary);
+}
+
+.codex-resume-group-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.codex-resume-group-toggle > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.codex-resume-group-toggle strong,
+.codex-resume-group-toggle small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-resume-group-toggle strong { font-size: 13px; }
+.codex-resume-group-toggle small,
+.codex-resume-group-meta,
+.codex-resume-group-empty { color: var(--text-muted); font-size: 11px; }
+.codex-resume-group-meta { white-space: nowrap; }
+.codex-resume-group .codex-resume-list { padding: 0 10px; }
+.codex-resume-group-empty { padding: 14px 12px; border-top: 1px solid var(--border-color); }
 
 .codex-resume-row {
   display: block;
@@ -1272,6 +1371,10 @@ body {
 }
 
 .codex-resume-empty {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 8px;
   padding: 28px 4px;
   border-top: 1px solid var(--border-color);
   border-bottom: 1px solid var(--border-color);
@@ -1321,6 +1424,7 @@ body {
   .codex-resume-modal { max-height: calc(100vh - 16px); }
   .codex-resume-heading,
   .codex-resume-search,
+  .codex-resume-sortbar,
   .codex-resume-footer { padding-left: 16px; padding-right: 16px; }
   .codex-resume-warning { margin-left: 16px; margin-right: 16px; }
   .codex-resume-limit { padding-left: 16px; padding-right: 16px; }
@@ -1329,6 +1433,9 @@ body {
   .codex-resume-actions { justify-content: flex-end; }
   .codex-resume-unresolved { align-items: stretch; flex-direction: column; }
   .codex-resume-unresolved select { max-width: none; width: 100%; }
+  .codex-resume-sortbar { grid-template-columns: 1fr; }
+  .codex-resume-group-heading { grid-template-columns: minmax(0, 1fr) auto; }
+  .codex-resume-group-meta { grid-column: 1 / -1; grid-row: 2; white-space: normal; }
 }
 
 /* Empty state */

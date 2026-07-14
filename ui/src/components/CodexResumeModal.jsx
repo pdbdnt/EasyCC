@@ -3,6 +3,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 const MAX_RESUME_SELECTIONS = 100;
 const catalogCache = new Map();
 const catalogRequests = new Map();
+const HISTORY_PREFERENCES_KEY = 'easycc.codexHistoryPreferences.v1';
+const DEFAULT_HISTORY_PREFERENCES = {
+  groupBy: 'folder',
+  groupSort: 'recent',
+  threadSort: 'updated-desc'
+};
+
+function readHistoryPreferences() {
+  try {
+    return { ...DEFAULT_HISTORY_PREFERENCES, ...JSON.parse(localStorage.getItem(HISTORY_PREFERENCES_KEY) || '{}') };
+  } catch {
+    return DEFAULT_HISTORY_PREFERENCES;
+  }
+}
 
 async function requestCatalog(url) {
   if (catalogRequests.has(url)) return catalogRequests.get(url);
@@ -18,9 +32,9 @@ async function requestCatalog(url) {
 }
 
 function formatActivity(value) {
-  if (!value) return '';
+  if (!value) return 'Unknown';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString([], {
+  return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString([], {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -46,7 +60,37 @@ function sameFolder(left, right) {
   return !!normalizedLeft && normalizedLeft === comparableFolder(right);
 }
 
+function fallbackGroups(threads) {
+  const groups = new Map();
+  for (const thread of threads) {
+    const key = thread.groupKey || thread.workingDir;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        name: String(key || 'Unknown folder').split('/').filter(Boolean).at(-1) || key,
+        path: key,
+        count: 0,
+        selectableCount: 0,
+        selectableSelections: [],
+        lastActivity: thread.lastActivity
+      });
+    }
+    const group = groups.get(key);
+    group.count += 1;
+    if (thread.selectable) {
+      group.selectableCount += 1;
+      group.selectableSelections.push({
+        codexSessionId: thread.codexSessionId,
+        easyccSessionId: thread.linkedEasyccSessionId || undefined
+      });
+    }
+  }
+  return [...groups.values()];
+}
+
 export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
+  const [historyPreferences, setHistoryPreferences] = useState(readHistoryPreferences);
+  const { groupBy, groupSort, threadSort } = historyPreferences;
   const [catalog, setCatalog] = useState(scope.initialCatalog || null);
   const [loading, setLoading] = useState(!scope.initialCatalog);
   const [refreshing, setRefreshing] = useState(false);
@@ -60,6 +104,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
   const [cursorStack, setCursorStack] = useState([]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [selections, setSelections] = useState(() => new Map());
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const dialogRef = useRef(null);
   const initialCatalogPendingRef = useRef(!!scope.initialCatalog);
   const defaultsInitializedRef = useRef(false);
@@ -71,6 +116,9 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
     const params = new URLSearchParams({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
     if (scope.groupKey) params.set('groupKey', scope.groupKey);
     if (scope.easyccSessionId) params.set('easyccSessionId', scope.easyccSessionId);
+    params.set('groupBy', groupBy);
+    params.set('groupSort', groupSort);
+    params.set('threadSort', threadSort);
     if (cursor) params.set('cursor', cursor);
     if (query) params.set('query', query);
     const cacheKey = params.toString();
@@ -122,7 +170,15 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
         setRefreshing(false);
       }
     }
-  }, [cursor, query, reloadNonce, scope.easyccSessionId, scope.groupKey]);
+  }, [cursor, groupBy, groupSort, query, reloadNonce, scope.easyccSessionId, scope.groupKey, threadSort]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HISTORY_PREFERENCES_KEY, JSON.stringify(historyPreferences));
+    } catch {
+      // Session preferences are optional.
+    }
+  }, [historyPreferences]);
 
   useEffect(() => {
     if (initialCatalogPendingRef.current && !cursor && !query) {
@@ -179,6 +235,21 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
     [selections]
   );
 
+  const threadsByGroup = useMemo(() => {
+    const result = new Map();
+    for (const thread of catalog?.threads || []) {
+      const key = thread.groupKey || thread.workingDir;
+      if (!result.has(key)) result.set(key, []);
+      result.get(key).push(thread);
+    }
+    return result;
+  }, [catalog]);
+
+  const groups = useMemo(() => {
+    const rows = catalog?.groups?.length ? catalog.groups : fallbackGroups(catalog?.threads || []);
+    return rows.map((group) => ({ ...group, threads: threadsByGroup.get(group.key) || [] }));
+  }, [catalog, threadsByGroup]);
+
   const choose = useCallback((codexSessionId, easyccSessionId, checked) => {
     setSelections((current) => {
       const next = new Map(current);
@@ -197,6 +268,35 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
       setBulkMessage('');
       return next;
     });
+  }, []);
+
+  const chooseMany = useCallback((items, checked) => {
+    setSelections((current) => {
+      const next = new Map(current);
+      let limited = false;
+      for (const item of items) {
+        const codexSessionId = item?.codexSessionId;
+        if (!codexSessionId) continue;
+        for (const [key, value] of next) {
+          if (value.codexSessionId === codexSessionId) next.delete(key);
+        }
+        if (!checked) continue;
+        if (next.size >= MAX_RESUME_SELECTIONS) {
+          limited = true;
+          break;
+        }
+        const easyccSessionId = item.easyccSessionId || undefined;
+        next.set(selectionKey(easyccSessionId, codexSessionId), { codexSessionId, easyccSessionId });
+      }
+      setBulkMessage(limited ? `A maximum of ${MAX_RESUME_SELECTIONS} conversations can be selected.` : '');
+      return next;
+    });
+  }, []);
+
+  const updateHistoryPreference = useCallback((field, value) => {
+    setHistoryPreferences((current) => ({ ...current, [field]: value }));
+    setCursor('');
+    setCursorStack([]);
   }, []);
 
   const submit = async () => {
@@ -296,6 +396,51 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
           <button className="btn btn-secondary btn-small" type="submit">Search</button>
         </form>
 
+        <div className="codex-resume-sortbar" aria-label="History organization">
+          <label>
+            <span>Group by</span>
+            <select
+              aria-label="Group conversations by"
+              value={groupBy}
+              onChange={(event) => updateHistoryPreference('groupBy', event.target.value)}
+            >
+              <option value="folder">Project / folder</option>
+              <option value="none">None (all conversations)</option>
+            </select>
+          </label>
+          <label>
+            <span>Sort groups</span>
+            <select
+              aria-label="Sort folder groups"
+              value={groupSort}
+              disabled={groupBy === 'none'}
+              onChange={(event) => updateHistoryPreference('groupSort', event.target.value)}
+            >
+              <option value="recent">Recently active</option>
+              <option value="oldest">Oldest activity</option>
+              <option value="folder-asc">Folder A–Z</option>
+              <option value="folder-desc">Folder Z–A</option>
+              <option value="count-desc">Most conversations</option>
+              <option value="count-asc">Fewest conversations</option>
+            </select>
+          </label>
+          <label>
+            <span>Sort conversations</span>
+            <select
+              aria-label="Sort conversations"
+              value={threadSort}
+              onChange={(event) => updateHistoryPreference('threadSort', event.target.value)}
+            >
+              <option value="updated-desc">Last updated (newest)</option>
+              <option value="updated-asc">Last updated (oldest)</option>
+              <option value="created-desc">Created (newest)</option>
+              <option value="created-asc">Created (oldest)</option>
+              <option value="title-asc">Title A–Z</option>
+              <option value="title-desc">Title Z–A</option>
+            </select>
+          </label>
+        </div>
+
         {error && <div className="codex-resume-error" role="alert">{error}</div>}
         {warning && (
           <div className="codex-resume-warning" role="status">
@@ -366,8 +511,16 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
             {loading && !catalog ? (
               <div className="codex-resume-empty">Loading Codex history…</div>
             ) : threads.length === 0 ? (
-              <div className="codex-resume-empty">No matching conversations found.</div>
-            ) : (
+              <div className="codex-resume-empty">
+                <strong>No matching conversations found.</strong>
+                {catalog?.cache?.diagnostics && (
+                  <small>
+                    Codex home: {catalog.cache.diagnostics.codexHome} · Indexed {catalog.cache.diagnostics.indexCount} · Rollouts {catalog.cache.diagnostics.rolloutCount}
+                  </small>
+                )}
+                <button className="btn btn-secondary btn-small" type="button" onClick={() => setReloadNonce((value) => value + 1)}>Retry</button>
+              </div>
+            ) : groupBy === 'none' ? (
               <div className="codex-resume-list">
                 {threads.map((thread) => (
                   <label className={`codex-resume-row codex-resume-check${thread.selectable ? '' : ' is-disabled'}`} key={thread.codexSessionId}>
@@ -375,23 +528,76 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
                       type="checkbox"
                       checked={selectedCodexIds.has(thread.codexSessionId)}
                       disabled={!thread.selectable}
-                      onChange={(event) => choose(
-                        thread.codexSessionId,
-                        scope.easyccSessionId || thread.linkedEasyccSessionId || undefined,
-                        event.target.checked
-                      )}
+                      onChange={(event) => choose(thread.codexSessionId, scope.easyccSessionId || thread.linkedEasyccSessionId || undefined, event.target.checked)}
                     />
                     <span className="codex-resume-copy">
-                      <span className="codex-resume-row-heading">
-                        <strong>{thread.threadName}</strong>
-                        <time>{formatActivity(thread.lastActivity)}</time>
-                      </span>
+                      <span className="codex-resume-row-heading"><strong>{thread.threadName}</strong><time>Updated {formatActivity(thread.lastActivity)}</time></span>
                       {thread.preview && <span className="codex-resume-preview">{thread.preview}</span>}
-                      <small>{thread.workingDir} · {thread.codexSessionId}</small>
+                      <small>{thread.workingDir} · Created {formatActivity(thread.createdAt)} · {thread.codexSessionId}</small>
                       {thread.disabledReason && <em>{thread.disabledReason}</em>}
                     </span>
                   </label>
                 ))}
+              </div>
+            ) : (
+              <div className="codex-resume-groups">
+                {groups.map((group) => {
+                  const collapsed = collapsedGroups.has(group.key);
+                  const selectedInGroup = (group.selectableSelections || []).filter((item) => selectedCodexIds.has(item.codexSessionId)).length;
+                  const allSelected = group.selectableCount > 0 && selectedInGroup === group.selectableCount;
+                  return (
+                    <section className="codex-resume-group" key={group.key} aria-label={`${group.name} conversations`}>
+                      <div className="codex-resume-group-heading">
+                        <button
+                          type="button"
+                          className="codex-resume-group-toggle"
+                          aria-expanded={!collapsed}
+                          onClick={() => setCollapsedGroups((current) => {
+                            const next = new Set(current);
+                            if (next.has(group.key)) next.delete(group.key);
+                            else next.add(group.key);
+                            return next;
+                          })}
+                        >
+                          <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+                          <span><strong>{group.name}</strong><small>{group.path}</small></span>
+                        </button>
+                        <span className="codex-resume-group-meta">Updated {formatActivity(group.lastActivity)} · {group.count} conversation{group.count === 1 ? '' : 's'} · Selection {selectedInGroup}/{group.selectableCount}</span>
+                        {!scope.easyccSessionId && group.selectableCount > 0 && (
+                          <button
+                            className="btn btn-secondary btn-small"
+                            type="button"
+                            onClick={() => chooseMany(group.selectableSelections || [], !allSelected)}
+                          >
+                            {allSelected ? 'Unselect folder' : 'Select folder'}
+                          </button>
+                        )}
+                      </div>
+                      {!collapsed && (
+                        group.threads.length > 0 ? (
+                          <div className="codex-resume-list">
+                            {group.threads.map((thread) => (
+                              <label className={`codex-resume-row codex-resume-check${thread.selectable ? '' : ' is-disabled'}`} key={thread.codexSessionId}>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedCodexIds.has(thread.codexSessionId)}
+                                  disabled={!thread.selectable}
+                                  onChange={(event) => choose(thread.codexSessionId, scope.easyccSessionId || thread.linkedEasyccSessionId || undefined, event.target.checked)}
+                                />
+                                <span className="codex-resume-copy">
+                                  <span className="codex-resume-row-heading"><strong>{thread.threadName}</strong><time>Updated {formatActivity(thread.lastActivity)}</time></span>
+                                  {thread.preview && <span className="codex-resume-preview">{thread.preview}</span>}
+                                  <small>Created {formatActivity(thread.createdAt)} · {thread.codexSessionId}</small>
+                                  {thread.disabledReason && <em>{thread.disabledReason}</em>}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        ) : <div className="codex-resume-group-empty">Conversations in this folder are on another page.</div>
+                      )}
+                    </section>
+                  );
+                })}
               </div>
             )}
           </section>
@@ -409,7 +615,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
                 setCursorStack(nextStack);
               }}
             >
-              Newer
+              Previous
             </button>
             <button
               className="btn btn-secondary btn-small"
@@ -420,7 +626,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
                 setCursor(catalog.page.nextCursor);
               }}
             >
-              Older
+              Next
             </button>
           </div>
           <div className="codex-resume-actions">

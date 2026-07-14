@@ -1347,7 +1347,10 @@ class SessionManager extends EventEmitter {
       cursor: query.cursor || '',
       timeZone: query.timeZone || 'UTC',
       query: query.query || '',
-      refresh: query.refresh === '1' || query.refresh === true
+      refresh: query.refresh === '1' || query.refresh === true,
+      groupBy: query.groupBy || '',
+      groupSort: query.groupSort || '',
+      threadSort: query.threadSort || ''
     });
   }
 
