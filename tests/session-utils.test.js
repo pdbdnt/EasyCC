@@ -239,6 +239,62 @@ test('detectStatus: codex approval prompt is treated as waiting', () => {
   assert.equal(status, 'waiting');
 });
 
+test('detectStatus: cursor-positioned Codex questionnaire beats esc footer', () => {
+  const redraw = [
+    '\x1b[16;3HQuestion 1/3 (3 unanswered)',
+    '\x1b[17;3HWhen you send from the app, what should happen?',
+    '\x1b[19;3H› 1. Mirror everything',
+    '\x1b[27;3Htab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt'
+  ].join('');
+
+  const status = SessionManager.prototype.detectStatus.call(
+    {},
+    redraw,
+    'thinking',
+    'codex'
+  );
+
+  assert.equal(status, 'waiting');
+});
+
+test('detectStatus: scoped Codex action-required OSC titles are waiting', () => {
+  const titles = [
+    '\x1b]0;[ ! ] Action Required | timer\x07',
+    '\x1b]2;Action Required\x07',
+    '\x1b]0;[ . ] Action Required | timer\x1b\\',
+    '\x1b]2;Action Required\x1b\\'
+  ];
+
+  for (const title of titles) {
+    assert.equal(
+      SessionManager.prototype.detectStatus.call({}, title, 'thinking', 'codex'),
+      'waiting',
+      JSON.stringify(title)
+    );
+  }
+
+  assert.equal(
+    SessionManager.prototype.detectStatus.call({}, 'log: Action Required for deployment', 'thinking', 'codex'),
+    'active'
+  );
+  assert.equal(
+    SessionManager.prototype.detectStatus.call({}, '\x1b]0;Action Required without terminator', 'thinking', 'codex'),
+    'active'
+  );
+  assert.equal(
+    SessionManager.prototype.detectStatus.call({}, 'Question 1/3 describes the rollout history', 'thinking', 'codex'),
+    'active'
+  );
+});
+
+test('detectStatus: specific Codex work beats a stale action-required title', () => {
+  const output = '\x1b]0;[ ! ] Action Required | timer\x07• Working (5s · esc to interrupt)';
+  assert.equal(
+    SessionManager.prototype.detectStatus.call({}, output, 'waiting', 'codex'),
+    'thinking'
+  );
+});
+
 test('detectStatus: codex ready suggestion ending in question mark is idle', () => {
   const prompt = '\n› Ask why?\n';
   const promptStatus = SessionManager.prototype.detectStatus.call(
@@ -290,6 +346,26 @@ test('status transition: split codex prompt and footer settle active to idle', a
   assert.equal(session.status, 'idle');
   assert.equal(
     events.filter(event => event.type === 'statusChange' && event.payload.status === 'idle').length,
+    1
+  );
+});
+
+test('status transition: action-required redraws settle once to waiting', async () => {
+  const { manager, session, events } = createStatusHarness('thinking');
+  const questionnaire = '\x1b[16;3HQuestion 1/3 (3 unanswered)' +
+    '\x1b[27;3Henter to submit answer | esc to interrupt';
+  const titleRedraw = '\x1b]0;[ ! ] Action Required | timer\x07\x1b[16;30H\x1b[K';
+
+  manager.processSessionOutputState(session, questionnaire);
+  manager.processSessionOutputState(session, titleRedraw);
+  manager.processSessionOutputState(session, titleRedraw);
+  assert.equal(session.pendingStatus, 'waiting');
+
+  await waitForStatusDebounce();
+
+  assert.equal(session.status, 'waiting');
+  assert.equal(
+    events.filter(event => event.type === 'statusChange' && event.payload.status === 'waiting').length,
     1
   );
 });
@@ -800,6 +876,58 @@ test('decideKanbanAutoSync: mid-work codex approval clears review scheduling', (
     },
     status: 'waiting',
     recentOutput: 'Would you like to run this command?'
+  });
+
+  assert.deepEqual(decision, { action: 'clear' });
+});
+
+test('decideKanbanAutoSync: newer questionnaire overrides stale command approval', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_progress',
+      lastSubmittedInputAtMs: 1
+    },
+    status: 'waiting',
+    recentOutput: [
+      'Would you like to run this command?',
+      '\x1b]0;[ ! ] Action Required | timer\x07',
+      'Question 1/3 (3 unanswered)',
+      'enter to submit answer | ←/→ to navigate questions'
+    ].join('\n')
+  });
+
+  assert.deepEqual(decision, { action: 'schedule', targetStage: 'in_review' });
+});
+
+test('decideKanbanAutoSync: newer command approval overrides stale questionnaire', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_progress',
+      lastSubmittedInputAtMs: 1
+    },
+    status: 'waiting',
+    recentOutput: [
+      'Question 1/3 (3 unanswered)',
+      'enter to submit answer',
+      '\x1b]0;[ ! ] Action Required | timer\x07',
+      'Would you like to run this command?'
+    ].join('\n')
+  });
+
+  assert.deepEqual(decision, { action: 'clear' });
+});
+
+test('decideKanbanAutoSync: action-required title does not reclassify command approval', () => {
+  const decision = decideKanbanAutoSync({
+    session: {
+      cliType: 'codex',
+      stage: 'in_progress',
+      lastSubmittedInputAtMs: 1
+    },
+    status: 'waiting',
+    recentOutput: '\x1b]0;[ ! ] Action Required | timer\x07\nWould you like to run this command?'
   });
 
   assert.deepEqual(decision, { action: 'clear' });

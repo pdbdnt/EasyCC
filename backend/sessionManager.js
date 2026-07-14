@@ -3308,6 +3308,9 @@ class SessionManager extends EventEmitter {
       : cleanData;
     const stripped = cleanData.trim();
 
+    const hasCodexActionRequiredTitle = (value) =>
+      /\x1b\](?:0|2);[^\x07\x1b]*Action Required[^\x07\x1b]*(?:\x07|\x1b\\)/i.test(String(value || ''));
+
     const codexPromptReadyPatterns = [
       /Ask Codex to do anything/i,
       /^\s*›(?:\s*$|\s+(?!\d+\.)\S.*$)/m,
@@ -3338,6 +3341,12 @@ class SessionManager extends EventEmitter {
       /\[Y\/n\]/i,
       /\[y\/N\]/i,
       /Would you like to proceed/i
+    ];
+
+    const codexQuestionnairePatterns = [
+      /Question\s+\d+\s*\/\s*\d+\s*\(\s*\d+\s+unanswered\s*\)/i,
+      /enter to submit answer/i,
+      /navigate questions/i
     ];
 
     const thinkingPatterns = [
@@ -3380,6 +3389,8 @@ class SessionManager extends EventEmitter {
 
     if (cliType === 'codex') {
       const hasReadyPrompt = codexPromptReadyPatterns.some((pattern) => pattern.test(cleanData));
+      const hasActionRequiredTitle = hasCodexActionRequiredTitle(data);
+      const hasQuestionnairePrompt = codexQuestionnairePatterns.some((pattern) => pattern.test(cleanData));
       const activityData = cleanData
         .split('\n')
         .filter((line) => !codexPromptReadyPatterns.some((pattern) => pattern.test(line)))
@@ -3391,10 +3402,26 @@ class SessionManager extends EventEmitter {
         }
       }
 
+      if (hasQuestionnairePrompt) {
+        return 'waiting';
+      }
+
       for (const pattern of editingPatterns) {
         if (pattern.test(activityData)) {
           return 'editing';
         }
+      }
+
+      const hasSpecificWorkingSignal = thinkingPatterns.some((pattern) =>
+        pattern.source !== 'esc to interrupt' && pattern.test(activityData)
+      );
+
+      if (hasSpecificWorkingSignal) {
+        return 'thinking';
+      }
+
+      if (hasActionRequiredTitle) {
+        return 'waiting';
       }
 
       for (const pattern of thinkingPatterns) {

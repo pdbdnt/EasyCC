@@ -324,7 +324,27 @@ function isCodexMidWorkApprovalPrompt(terminalOutput) {
     return false;
   }
 
-  return /Would you like to run/i.test(terminalOutput);
+  const normalized = terminalOutput.toLowerCase();
+  const approvalIndex = normalized.lastIndexOf('would you like to run');
+  if (approvalIndex < 0) {
+    return false;
+  }
+
+  const questionnaireIndex = Math.max(
+    findLastPatternIndex(terminalOutput, /Question\s+\d+\s*\/\s*\d+\s*\(\s*\d+\s+unanswered\s*\)/gi),
+    normalized.lastIndexOf('enter to submit answer'),
+    normalized.lastIndexOf('navigate questions')
+  );
+
+  return approvalIndex > questionnaireIndex;
+}
+
+function findLastPatternIndex(text, pattern) {
+  let lastIndex = -1;
+  for (const match of text.matchAll(pattern)) {
+    lastIndex = match.index;
+  }
+  return lastIndex;
 }
 
 /**
