@@ -18,6 +18,7 @@ const TeamStore = require('./teamStore');
 const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
 const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
 const { stripAnsi } = require('./sessionInputUtils');
+const codexWindowsRuntime = require('./codexWindowsRuntime');
 const {
   getPlanSource,
   resolvePlanRefForHost
@@ -1417,7 +1418,7 @@ async function start() {
       });
       updateTeamInstanceMembership(null, teamInstance.id, orchestratorSession.id);
 
-      if (orchestratorTemplate.cliType === 'claude' || orchestratorTemplate.cliType === 'codex') {
+      if (orchestratorTemplate.cliType === 'claude' || ['codex', 'codex-windows'].includes(orchestratorTemplate.cliType)) {
         const port = process.env.PORT || 5010;
         const bootstrapPrompt = `${buildOrchestratorPrompt(port, orchestratorSession.id)}\n\nTeam goal: ${goal || 'No explicit goal provided.'}\nStrategy: ${team.strategy}\nRoster:\n${buildTeamRoster(team)}`;
         setTimeout(() => {
@@ -1433,7 +1434,7 @@ async function start() {
             .slice(1)
             .map((sessionId) => sessionManager.getSession(sessionId))
             .filter(Boolean);
-          const role = (template.cliType === 'claude' || template.cliType === 'codex')
+          const role = (template.cliType === 'claude' || ['codex', 'codex-windows'].includes(template.cliType))
             ? buildChildRoleContext(orchestratorSession, siblingSessions, template.role)
             : template.role;
           const memberName = ensureUniqueSessionName(`${team.name} - ${template.name}`, sessionManager.getAllSessions().map((session) => session.name));
@@ -1453,7 +1454,7 @@ async function start() {
           updateTeamInstanceMembership(null, teamInstance.id, childSession.id);
 
           const startupPrompt = buildTeamMemberStartupPrompt(team, member, goal, orchestratorSession);
-          if (startupPrompt && (template.cliType === 'claude' || template.cliType === 'codex')) {
+          if (startupPrompt && (template.cliType === 'claude' || ['codex', 'codex-windows'].includes(template.cliType))) {
             setTimeout(() => {
               sessionManager.sendInput(childSession.id, startupPrompt + '\r');
             }, 2000);
@@ -1569,8 +1570,16 @@ async function start() {
     }
 
     // Validate cliType
-    const validCliTypes = ['claude', 'codex', 'terminal', 'wsl'];
+    const validCliTypes = ['claude', 'codex', 'codex-windows', 'terminal', 'wsl'];
     const normalizedCliType = cliType && validCliTypes.includes(cliType) ? cliType : 'claude';
+    if (normalizedCliType === 'codex-windows') {
+      const integration = settingsManager.loadSettings().codexWindows || {};
+      if (!integration.enabled || !integration.hookTrustAcknowledged) {
+        return reply.status(400).send({ error: 'Enable Codex (W) and acknowledge its SessionStart hook in Settings first.' });
+      }
+      const capability = codexWindowsRuntime.getCapability();
+      if (!capability.available) return reply.status(400).send({ error: capability.reason });
+    }
     const normalizedName = typeof name === 'string' ? name.trim() : '';
     const existingNames = sessionManager.getAllSessions().map(s => s.name);
     const resolvedName = normalizedName || ensureUniqueSessionName(generateSessionName(new Date(), normalizedCliType), existingNames);
@@ -1639,7 +1648,7 @@ async function start() {
       }
 
       // Inject orchestrator prompt for AI sessions
-      if (resolvedIsOrchestrator && (normalizedCliType === 'claude' || normalizedCliType === 'codex')) {
+      if (resolvedIsOrchestrator && (normalizedCliType === 'claude' || ['codex', 'codex-windows'].includes(normalizedCliType))) {
         const port = process.env.PORT || 5010;
         const orchestratorPrompt = buildOrchestratorPrompt(port, session.id);
         setTimeout(() => {
@@ -1865,7 +1874,7 @@ async function start() {
       const liveSession = sessionManager.getSession(id);
       if (liveSession && liveSession.status !== 'completed' && liveSession.status !== 'paused') {
         const sessionCliType = liveSession.cliType || 'claude';
-        if (sessionCliType === 'claude' || sessionCliType === 'codex') {
+        if (sessionCliType === 'claude' || ['codex', 'codex-windows'].includes(sessionCliType)) {
           const port = process.env.PORT || 5010;
           const orchestratorPrompt = buildOrchestratorPrompt(port, id);
           sessionManager.sendInput(id, orchestratorPrompt + '\r');
@@ -1912,7 +1921,7 @@ async function start() {
     const { id } = request.params;
     const { fresh } = request.body || {};
     const existing = sessionManager.getSession(id);
-    if (existing?.cliType === 'codex' && !fresh && !existing.codexSessionId) {
+    if (['codex', 'codex-windows'].includes(existing?.cliType) && !fresh && !existing.codexSessionId) {
       return reply.status(409).send({
         error: 'Choose an exact Codex conversation before resuming',
         code: 'codex_target_required'
@@ -1925,7 +1934,7 @@ async function start() {
     }
 
     const payload = { success: true, session: sessionManager.getSession(id) };
-    return existing?.cliType === 'codex' ? reply.status(202).send(payload) : payload;
+    return ['codex', 'codex-windows'].includes(existing?.cliType) ? reply.status(202).send(payload) : payload;
   });
 
   // Get plans for a session
@@ -2296,7 +2305,7 @@ async function start() {
     const inheritedTeamInstanceId = parentSession.teamInstanceId || null;
     let enrichedRole = sessionRole;
 
-    if (sessionCliType === 'claude' || sessionCliType === 'codex') {
+    if (sessionCliType === 'claude' || ['codex', 'codex-windows'].includes(sessionCliType)) {
       const allSessions = sessionManager.getAllSessions();
       const siblings = allSessions.filter((s) =>
         s.parentSessionId === parentSessionId
@@ -2321,7 +2330,7 @@ async function start() {
 
       updateTeamInstanceMembership(null, inheritedTeamInstanceId, session.id);
 
-      if (sessionCliType === 'claude' || sessionCliType === 'codex') {
+      if (sessionCliType === 'claude' || ['codex', 'codex-windows'].includes(sessionCliType)) {
         const allSessions = sessionManager.getAllSessions();
         const existingSiblings = allSessions.filter((s) =>
           s.parentSessionId === parentSessionId &&
@@ -2383,7 +2392,7 @@ async function start() {
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     const useProjectPlans = Boolean(
       session &&
-      (session.cliType === 'codex' || session.cliType === 'terminal' || session.cliType === 'wsl') &&
+      (['codex', 'codex-windows'].includes(session.cliType) || session.cliType === 'terminal' || session.cliType === 'wsl') &&
       session.workingDir
     );
     const trimmedName = typeof name === 'string' ? name.trim() : '';
@@ -2441,7 +2450,7 @@ async function start() {
       plansByPath.set(normalizePathKey(resolvePlanRefForHost(plan.path)), plan);
     }
 
-    if ((session.cliType === 'codex' || session.cliType === 'terminal' || session.cliType === 'wsl') && session.workingDir) {
+    if ((['codex', 'codex-windows'].includes(session.cliType) || session.cliType === 'terminal' || session.cliType === 'wsl') && session.workingDir) {
       for (const plan of listProjectPlans(session.workingDir)) {
         plansByPath.set(normalizePathKey(resolvePlanRefForHost(plan.path)), plan);
       }
@@ -2941,6 +2950,17 @@ async function start() {
   // Get current settings
   app.get('/api/settings', async () => {
     return { settings: settingsManager.loadSettings() };
+  });
+
+  app.get('/api/codex-windows/capability', async () => codexWindowsRuntime.getCapability());
+
+  app.post('/api/codex-windows/session-start', async (request, reply) => {
+    const accepted = sessionManager.acceptCodexWindowsSessionStart(
+      request.headers['x-easycc-session-id'],
+      request.headers['x-easycc-hook-token'],
+      request.body || {}
+    );
+    return accepted ? { accepted: true } : reply.status(403).send({ accepted: false });
   });
 
   // Get default settings

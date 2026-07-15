@@ -372,7 +372,7 @@ const TerminalView = forwardRef(function TerminalView({
       } else if (command === '/ec-spawn') {
         const description = parts.slice(1).join(' ');
         // For AI sessions, send the description as a prompt to the AI
-        if (session && (session.cliType === 'claude' || session.cliType === 'codex') && description) {
+        if (session && (session.cliType === 'claude' || ['codex', 'codex-windows'].includes(session.cliType)) && description) {
           const spawnPrompt = `Prepare to spawn a child agent session. The user wants: "${description}". Gather relevant context from the codebase, prepare a detailed role/prompt, then call the spawn API using curl with parentSessionId="${session.id}".`;
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: 'input', data: spawnPrompt + '\r' }));
@@ -537,11 +537,10 @@ const TerminalView = forwardRef(function TerminalView({
         }
       }
 
-      // Ctrl+Enter sends newline directly to the session.
+      // Route soft newlines through xterm's paste path so TUI apps receive
+      // bracketed-paste input instead of WinPTY interpreting a bare LF.
       if (event.ctrlKey && event.key === 'Enter') {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'input', data: '\n' }));
-        }
+        term.paste('\n');
         return false;
       }
 
@@ -1014,7 +1013,7 @@ const TerminalView = forwardRef(function TerminalView({
 
   const isPaused = sessionStatus === 'paused';
   const isCompleted = sessionStatus === 'completed';
-  const canRestartFresh = session?.cliType === 'codex' && !isCompleted;
+  const canRestartFresh = ['codex', 'codex-windows'].includes(session?.cliType) && !isCompleted;
 
   // Compute filtered & grouped session list for @ picker
   const { pickerItems, pickerSelectableSessions } = useMemo(() => {

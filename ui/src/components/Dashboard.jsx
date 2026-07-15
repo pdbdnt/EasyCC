@@ -333,8 +333,8 @@ function Dashboard({
           const bTime = b.session.stageEnteredAt ? new Date(b.session.stageEnteredAt).getTime() : 0;
           if (aTime !== bTime) return bTime - aTime;
         }
-        const aCodex = a.session.cliType === 'codex' ? 1 : 0;
-        const bCodex = b.session.cliType === 'codex' ? 1 : 0;
+        const aCodex = ['codex', 'codex-windows'].includes(a.session.cliType) ? 1 : 0;
+        const bCodex = ['codex', 'codex-windows'].includes(b.session.cliType) ? 1 : 0;
         if (aCodex !== bCodex) {
           return aCodex - bCodex;
         }
@@ -824,9 +824,9 @@ function Dashboard({
                           const pausedSessions = sessionsInGroup
                             .filter(s => s.session.status === 'paused')
                             .map(s => s.session);
-                          const hasPausedCodex = pausedSessions.some(session => session.cliType === 'codex');
+                          const hasPausedCodex = pausedSessions.some(session => ['codex', 'codex-windows'].includes(session.cliType));
                           if (hasPausedCodex && onOpenCodexResume) {
-                            for (const session of pausedSessions.filter(item => item.cliType !== 'codex')) {
+                            for (const session of pausedSessions.filter(item => !['codex', 'codex-windows'].includes(item.cliType))) {
                               await onResumeSession(session.id);
                             }
                             onOpenCodexResume({

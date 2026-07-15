@@ -256,7 +256,7 @@ function decideKanbanAutoSync({
   const submittedAfterReview = session.lastSubmittedInputAtMs && session.stageEnteredAt &&
     session.lastSubmittedInputAtMs > new Date(session.stageEnteredAt).getTime();
 
-  if (session.cliType === 'codex' && status === 'waiting' && isCodexMidWorkApprovalPrompt(recentOutput)) {
+  if ((session.cliType === 'codex' || session.cliType === 'codex-windows') && status === 'waiting' && isCodexMidWorkApprovalPrompt(recentOutput)) {
     if (session.stage === 'in_review' && submittedAfterReview) {
       return existingTargetStage === 'in_progress'
         ? { action: 'keep', targetStage: 'in_progress' }
@@ -280,7 +280,7 @@ function decideKanbanAutoSync({
 
   if (
     targetStage === 'in_progress' &&
-    session.cliType === 'codex' &&
+    (session.cliType === 'codex' || session.cliType === 'codex-windows') &&
     session.stage === 'in_review' &&
     !submittedAfterReview &&
     isCodexFinalDecisionPrompt(recentOutput)

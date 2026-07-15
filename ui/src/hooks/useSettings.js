@@ -68,6 +68,10 @@ const defaultSettings = {
   general: {
     clearTerminalWhenSessionListEmpty: false
   },
+  codexWindows: {
+    enabled: false,
+    hookTrustAcknowledged: false
+  },
   projectAliases: {}
 };
 

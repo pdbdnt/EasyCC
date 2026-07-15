@@ -68,6 +68,10 @@ class SettingsManager {
       general: {
         clearTerminalWhenSessionListEmpty: false
       },
+      codexWindows: {
+        enabled: false,
+        hookTrustAcknowledged: false
+      },
       projectAliases: {},
       contextWidgetLayout: {
         rows: [
