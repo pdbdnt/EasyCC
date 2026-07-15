@@ -156,6 +156,9 @@ function SessionCard({
               {session.cliType === 'codex' && (
                 <span className="cli-type-badge codex">CDX</span>
               )}
+              {session.cliType === 'codex-windows' && (
+                <span className="cli-type-badge codex" title="Windows-native Codex">CDX-W</span>
+              )}
               {session.cliType === 'terminal' && (
                 <span className="cli-type-badge terminal">TRM</span>
               )}

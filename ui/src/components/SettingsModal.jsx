@@ -403,6 +403,35 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
 
           {activeTab === 'general' && (
             <div className="settings-section">
+              <h4 className="settings-subtitle">Codex (W) integration</h4>
+              <p className="settings-description">
+                Runs the Windows-native Codex CLI in Windows folders. EasyCC installs an owned Codex profile and uses a SessionStart hook to capture the exact conversation ID. The hook-trust bypass applies to this Codex invocation.
+              </p>
+              <div className="form-group checkbox-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={localSettings.codexWindows?.hookTrustAcknowledged || false}
+                    onChange={e => {
+                      updateSetting('codexWindows', 'hookTrustAcknowledged', e.target.checked);
+                      if (!e.target.checked) updateSetting('codexWindows', 'enabled', false);
+                    }}
+                  />
+                  I understand and trust the EasyCC SessionStart hook
+                </label>
+              </div>
+              <div className="form-group checkbox-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={localSettings.codexWindows?.enabled || false}
+                    disabled={!localSettings.codexWindows?.hookTrustAcknowledged}
+                    onChange={e => updateSetting('codexWindows', 'enabled', e.target.checked)}
+                  />
+                  Enable Codex (W) in CLI Type
+                </label>
+              </div>
+              <div className="settings-divider" />
               <div className="form-group">
                 <label>Default Working Directory</label>
                 <input

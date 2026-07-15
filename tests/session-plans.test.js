@@ -263,6 +263,74 @@ test('attachCodexPlansFromOutput associates WSL shell Codex plan path with only 
   });
 });
 
+test('filesystem plan watching is not used to infer session ownership', () => {
+  assert.equal(SessionManager.prototype.setupPlanWatcher, undefined);
+});
+
+test('exact Codex transcript attaches a plan only to its owning same-folder session', () => {
+  withCodexPlanFile(`easycc-exact-owner-plan-${process.pid}.md`, '# Exact Owner Plan\n', (planPath) => {
+    const owner = {
+      id: 'session-exact-owner',
+      cliType: 'codex',
+      codexSessionId: 'codex-owner-id',
+      workingDir: '/home/denni/apps/shared-project',
+      plans: [],
+      outputBuffer: { getAll: () => [] }
+    };
+    const other = {
+      id: 'session-same-folder-other',
+      cliType: 'codex',
+      codexSessionId: null,
+      workingDir: owner.workingDir,
+      plans: [],
+      outputBuffer: { getAll: () => [] }
+    };
+    const sessionManager = Object.create(SessionManager.prototype);
+    sessionManager.sessions = new Map([[owner.id, owner], [other.id, other]]);
+    sessionManager.readSessionTerminalTranscriptText = () => '';
+    sessionManager.extractCodexPlanPathsFromText = () => [];
+    sessionManager.getPlansForCodexSession = (codexSessionId) => {
+      assert.equal(codexSessionId, owner.codexSessionId);
+      return [planPath];
+    };
+    sessionManager.planMatchesSessionWorkingDir = () => true;
+    sessionManager.dataStore = { addPlanToSession() {} };
+    sessionManager.emit = () => {};
+
+    assert.deepEqual(sessionManager.backfillCodexPlansForSession(owner), [planPath]);
+    assert.deepEqual(sessionManager.backfillCodexPlansForSession(other), []);
+    assert.deepEqual(owner.plans, [planPath]);
+    assert.deepEqual(other.plans, []);
+  });
+});
+
+test('Codex session without an exact ID never scans recent conversations for plans', () => {
+  const session = {
+    id: 'session-without-exact-id',
+    cliType: 'codex',
+    codexSessionId: null,
+    workingDir: '/home/denni/apps/shared-project',
+    plans: [],
+    outputBuffer: { getAll: () => [] }
+  };
+  const sessionManager = Object.create(SessionManager.prototype);
+  sessionManager.sessions = new Map([[session.id, session]]);
+  sessionManager.readSessionTerminalTranscriptText = () => '';
+  sessionManager.extractCodexPlanPathsFromText = () => [];
+  sessionManager.loadCodexSessionIndex = () => {
+    throw new Error('Recent conversation history must not be scanned for plan ownership');
+  };
+  sessionManager.getPlansForCodexSession = () => {
+    throw new Error('A rollout transcript requires an exact Codex ID');
+  };
+  sessionManager.planMatchesSessionWorkingDir = () => true;
+  sessionManager.dataStore = { addPlanToSession() {} };
+  sessionManager.emit = () => {};
+
+  assert.deepEqual(sessionManager.backfillCodexPlansForSession(session), []);
+  assert.deepEqual(session.plans, []);
+});
+
 test('attachCodexPlansFromOutput ignores Codex plan paths from another working directory', () => {
   withCodexPlanFile(
     `easycc-cross-repo-output-plan-${process.pid}.md`,

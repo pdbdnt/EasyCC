@@ -3,7 +3,7 @@ import { AGENT_TEMPLATES } from '../utils/agentTemplates';
 import DirectoryBrowser, { normalizeWindowsPath } from './DirectoryBrowser';
 
 const LAST_CLI_TYPE_KEY = 'easycc:lastCliType';
-const VALID_CLI_TYPES = new Set(['claude', 'codex', 'terminal', 'wsl']);
+const VALID_CLI_TYPES = new Set(['claude', 'codex', 'codex-windows', 'terminal', 'wsl']);
 
 function generateDefaultSessionName() {
   const now = new Date();
@@ -30,7 +30,7 @@ function storeCliType(value) {
   }
 }
 
-function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = '', sessions = [], defaultParentSessionId = null, starredFolders = [], onToggleStar }) {
+function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = '', sessions = [], defaultParentSessionId = null, starredFolders = [], onToggleStar, settings = {} }) {
   const normalizedDefaultWorkingDir = normalizeWindowsPath(defaultWorkingDir);
   const cliTypeSelectRef = useRef(null);
   const createButtonRef = useRef(null);
@@ -67,6 +67,12 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
     setCliType(value);
     storeCliType(value);
   };
+
+  useEffect(() => {
+    if (cliType === 'codex-windows' && (!settings.codexWindows?.enabled || !settings.codexWindows?.hookTrustAcknowledged)) {
+      updateCliType('claude');
+    }
+  }, [cliType, settings.codexWindows?.enabled, settings.codexWindows?.hookTrustAcknowledged]);
 
   // Close on ESC key
   useEffect(() => {
@@ -438,6 +444,9 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
                     >
                       <option value="claude">Claude</option>
                       <option value="codex">Codex (WSL)</option>
+                      {settings.codexWindows?.enabled && settings.codexWindows?.hookTrustAcknowledged && (
+                        <option value="codex-windows">Codex (W)</option>
+                      )}
                       <option value="terminal">Terminal (PowerShell)</option>
                       <option value="wsl">WSL Shell</option>
                     </select>

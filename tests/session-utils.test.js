@@ -970,6 +970,7 @@ test('moveSession: auto-sync does not override manually placed sessions', () => 
 
 test('canTransitionToIdle: codex false, non-codex true', () => {
   assert.equal(SessionManager.prototype.canTransitionToIdle.call({}, { cliType: 'codex' }), false);
+  assert.equal(SessionManager.prototype.canTransitionToIdle.call({}, { cliType: 'codex-windows' }), false);
   assert.equal(SessionManager.prototype.canTransitionToIdle.call({}, { cliType: 'claude' }), true);
   assert.equal(SessionManager.prototype.canTransitionToIdle.call({}, { cliType: 'terminal' }), true);
 });
@@ -978,6 +979,7 @@ test('getOutputBufferSize: terminal/codex larger than claude', () => {
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'terminal'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'wsl'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex'), 12000);
+  assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'codex-windows'), 12000);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'claude'), 750);
   assert.equal(SessionManager.prototype.getOutputBufferSize.call({}, 'unknown'), 750);
 });

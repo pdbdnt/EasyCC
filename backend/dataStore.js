@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { isCodexType } = require('./codexCliTypes');
 
 /**
  * Handles persistent storage of session and stage data to disk
@@ -71,11 +72,12 @@ class DataStore {
         codexSessionId: session.codexSessionId || null,
         codexThreadName: session.codexThreadName || null,
         codexLaunchStartedAt: session.codexLaunchStartedAt || null,
-        codexIdentityState: session.cliType === 'codex'
+        codexIdentityState: isCodexType(session.cliType)
           ? (session.codexIdentityState || 'unverified')
           : null,
         codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
         codexIdentityError: session.codexIdentityError || null,
+        codexTranscriptPath: session.codexTranscriptPath || null,
         recoveryError: session.recoveryError || null,
         notes: session.notes || '',
         role: session.role || '',

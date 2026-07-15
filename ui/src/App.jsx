@@ -205,7 +205,7 @@ function App() {
 
   const needsCodexSelection = useCallback((summary) => (
     (summary?.sessions || []).some((session) =>
-      session.cliType === 'codex' && (
+      ['codex', 'codex-windows'].includes(session.cliType) && (
         session.category === 'requiresSelection' || ['cwd_mismatch', 'duplicate_owner'].includes(session.code)
       )
     )
@@ -255,7 +255,7 @@ function App() {
 
   const handleResumeSession = useCallback((id, options = {}) => {
     const session = sessions.find((candidate) => candidate.id === id);
-    if (session?.cliType === 'codex' && !options.fresh && !session.codexSessionId) {
+    if (['codex', 'codex-windows'].includes(session?.cliType) && !options.fresh && !session.codexSessionId) {
       setCodexResumeScope({
         easyccSessionId: session.id,
         groupKey: session.groupKey || session.workingDir,
@@ -1529,7 +1529,7 @@ function App() {
       setDetailsSession(prev => prev ? { ...prev, status: 'active' } : null);
     } else {
       const session = sessions.find((candidate) => candidate.id === id);
-      if (session?.cliType === 'codex' && !session.codexSessionId) {
+      if (['codex', 'codex-windows'].includes(session?.cliType) && !session.codexSessionId) {
         setDetailsSession(null);
       }
     }
@@ -1902,6 +1902,7 @@ function App() {
           defaultWorkingDir={selectedSession?.workingDir}
           sessions={sessions}
           starredFolders={settings?.starredFolders || []}
+          settings={settings}
           onToggleStar={(folderPath) => {
             const current = settings?.starredFolders || [];
             const newStarred = current.includes(folderPath)
@@ -2005,7 +2006,7 @@ function App() {
             <p className="settings-description">
               This will kill session <strong>{pendingCloseSession.name}</strong> and keep this browser tab open.
             </p>
-            {pendingCloseSession.cliType === 'codex' && pendingCloseSession.status !== 'completed' && (
+            {['codex', 'codex-windows'].includes(pendingCloseSession.cliType) && pendingCloseSession.status !== 'completed' && (
               <p className="settings-description">
                 You can also restart this Codex terminal in place and keep the same EasyCC session card.
               </p>
@@ -2014,7 +2015,7 @@ function App() {
               <button className="btn btn-secondary" onClick={handleCancelCloseCurrentSession} autoFocus>
                 Cancel
               </button>
-              {pendingCloseSession.cliType === 'codex' && pendingCloseSession.status !== 'completed' && (
+              {['codex', 'codex-windows'].includes(pendingCloseSession.cliType) && pendingCloseSession.status !== 'completed' && (
                 <button className="btn btn-secondary" onClick={handleRestartCurrentSession}>
                   Restart Session
                 </button>

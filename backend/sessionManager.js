@@ -13,13 +13,16 @@ const { createComment, addReactionToComment } = require('./commentUtils');
 const { readTranscriptWindow } = require('./terminalTranscriptUtils');
 const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
 const { CodexSessionService, pathsEqual: codexPathsEqual } = require('./codexSessionService');
+const codexWindowsRuntime = require('./codexWindowsRuntime');
+const { CODEX_WINDOWS, isCodexType } = require('./codexCliTypes');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
 const MEDIUM_OUTPUT_BUFFER_CHUNKS = 12000;
-const CODEX_CAPTURE_MAX_WINDOW_MS = 30 * 60 * 1000;
-const CODEX_CAPTURE_MAX_INDEX_CANDIDATES = 12;
-const CODEX_PLAN_PATH_PATTERN = /(?:~|\/home\/[^/\s"'`<>]+)\/\.codex\/plans\/[^\s"'`<>]+\.md/gi;
+const CODEX_PLAN_PATH_PATTERNS = [
+  /(?:~|\/home\/[^/\s"'`<>]+)\/\.codex\/plans\/[^\s"'`<>]+\.md/gi,
+  /[A-Za-z]:\\(?:[^\\\r\n"'`<>]+\\)*\.codex\\plans\\[^\\\r\n"'`<>]+?\.md/gi
+];
 const CODEX_STATUS_SAMPLE_INTERVAL_MS = 3000;
 const CODEX_STATUS_SAMPLE_MAX_CHARS = 8 * 1024;
 const CODEX_STATUS_SAMPLE_HOLD_MS = 1500;
@@ -241,6 +244,7 @@ class SessionManager extends EventEmitter {
     this.dataStore = new DataStore();
     this.planManager = new PlanManager();
     this.codexSessionService = new CodexSessionService();
+    this.codexWindowsHookTokens = new Map();
     this.recoveryInFlight = new Set();
     this.stages = [...DEFAULT_STAGES];
     this.isShuttingDown = false;  // Prevents onExit handlers from deleting sessions during shutdown
@@ -260,8 +264,6 @@ class SessionManager extends EventEmitter {
     });
     this.codexSessionService.warmHistoryCache();
 
-    // Start watching for new plans
-    this.setupPlanWatcher();
   }
 
   ensureTranscriptDir() {
@@ -328,11 +330,11 @@ class SessionManager extends EventEmitter {
       // - Terminal sessions (just re-launch a fresh shell)
       const cliType = sessionData.cliType || 'claude';
       const normalizedWorkingDir = this.normalizeWorkingDirForCli(sessionData.workingDir, cliType);
-      const canResume = cliType === 'codex' || cliType === 'terminal' || cliType === 'wsl' || sessionData.claudeSessionId;
+      const canResume = isCodexType(cliType) || cliType === 'terminal' || cliType === 'wsl' || sessionData.claudeSessionId;
 
       if (canResume) {
         const outputBufferSize = this.getOutputBufferSize(cliType);
-        const repoContext = cliType === 'codex'
+        const repoContext = isCodexType(cliType)
           ? {
               repoRoot: sessionData.repoRoot
                 ? this.normalizeWorkingDirForCli(sessionData.repoRoot, cliType)
@@ -342,7 +344,7 @@ class SessionManager extends EventEmitter {
               groupKey: this.normalizeWorkingDirForCli(sessionData.groupKey || normalizedWorkingDir, cliType)
             }
           : this.deriveRepoContext(normalizedWorkingDir, sessionData);
-        const restoredName = cliType === 'codex'
+        const restoredName = isCodexType(cliType)
           ? this.stripCodexResumeHint(sessionData.name) || sessionData.name
           : sessionData.name;
         const session = {
@@ -367,11 +369,12 @@ class SessionManager extends EventEmitter {
           codexSessionId: sessionData.codexSessionId || null,
           codexThreadName: sessionData.codexThreadName || null,
           codexLaunchStartedAt: sessionData.codexLaunchStartedAt || null,
-          codexIdentityState: cliType === 'codex'
+          codexIdentityState: isCodexType(cliType)
             ? (sessionData.codexIdentityState || 'unverified')
             : null,
           codexIdentityVerifiedAt: sessionData.codexIdentityVerifiedAt || null,
           codexIdentityError: sessionData.codexIdentityError || null,
+          codexTranscriptPath: sessionData.codexTranscriptPath || null,
           recoveryError: sessionData.recoveryError || null,
           notes: sessionData.notes || '',
           role: this.sanitizeRole(sessionData.role || ''),
@@ -415,7 +418,7 @@ class SessionManager extends EventEmitter {
         // Update persisted status to paused
         this.dataStore.saveSession(session);
         debugLog(`Session ${id} (${session.name}) marked PAUSED during server startup (loadSessions)`);
-        const resumeInfo = cliType === 'codex'
+        const resumeInfo = isCodexType(cliType)
           ? `Codex (${this.selectCodexResumeTarget(session) || 'exact target required'})`
           : `Claude session ${session.claudeSessionId}`;
         console.log(`Restored session: ${session.name} (${id}) - can be resumed with ${resumeInfo}`);
@@ -435,7 +438,7 @@ class SessionManager extends EventEmitter {
    * @returns {number}
    */
   getOutputBufferSize(cliType) {
-    if (cliType === 'terminal' || cliType === 'codex' || cliType === 'wsl') {
+    if (cliType === 'terminal' || isCodexType(cliType) || cliType === 'wsl') {
       return MEDIUM_OUTPUT_BUFFER_CHUNKS;
     }
     return DEFAULT_OUTPUT_BUFFER_CHUNKS;
@@ -561,34 +564,6 @@ class SessionManager extends EventEmitter {
   }
 
   /**
-   * Setup watcher for new and updated plan files
-   */
-  setupPlanWatcher() {
-    this.planManager.watchPlans((plan) => {
-      console.log('Plan change detected:', plan.filename);
-
-      // Try to match plan with active session - use Claude session ID for exact matching
-      const activeSessions = [...this.sessions.values()]
-        .filter(s => s.status !== 'paused' && s.status !== 'completed')
-        .sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity)); // Most recent first
-
-      for (const session of activeSessions) {
-        // Check if plan's working dir EXACTLY matches session's working dir
-        if (plan.workingDir && session.workingDir) {
-          const normalizedPlanDir = plan.workingDir.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
-          const normalizedSessionDir = session.workingDir.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
-
-          // Exact match only - don't allow parent/child directory matches
-          if (normalizedPlanDir === normalizedSessionDir) {
-            this.addOrUpdatePlanInSession(session.id, plan.path);
-            break;
-          }
-        }
-      }
-    });
-  }
-
-  /**
    * Add a plan to a session or notify of update if already exists
    * @param {string} sessionId - Session ID
    * @param {string} planPath - Path to plan file
@@ -640,7 +615,7 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    if (session.cliType === 'codex') {
+    if (isCodexType(session.cliType)) {
       const planPaths = this.backfillCodexPlansForSession(session);
       for (const planPath of planPaths) {
         this.addPlanToSession(sessionId, planPath);
@@ -854,6 +829,24 @@ class SessionManager extends EventEmitter {
     return null;
   }
 
+  findCodexWindowsSessionFileById(sessionId) {
+    if (!sessionId) return null;
+    const rootDir = path.join(codexWindowsRuntime.getCodexHome(), 'sessions');
+    if (!fs.existsSync(rootDir)) return null;
+    const stack = [rootDir];
+    while (stack.length) {
+      const current = stack.pop();
+      let entries = [];
+      try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) stack.push(fullPath);
+        else if (entry.isFile() && entry.name.endsWith(`${sessionId}.jsonl`)) return fullPath;
+      }
+    }
+    return null;
+  }
+
   readCodexSessionMetaById(sessionId) {
     const filePath = this.findCodexSessionFileById(sessionId);
     if (!filePath) {
@@ -939,17 +932,21 @@ class SessionManager extends EventEmitter {
   }
 
   extractCodexPlanPathsFromText(text) {
-    if (typeof text !== 'string' || !text || (!text.includes('.codex/plans') && !text.includes('.codex\\plans'))) {
+    if (typeof text !== 'string' || !text || !text.includes('.codex')) {
       return [];
     }
 
     const cleanText = this.cleanTerminalText(text);
     const paths = new Set();
-    const matches = cleanText.matchAll(CODEX_PLAN_PATH_PATTERN);
-    for (const match of matches) {
-      const normalized = this.normalizePlanPath(match[0]);
-      if (normalized && this.isAllowedSessionPlanPath(normalized)) {
-        paths.add(normalized);
+    for (const pattern of CODEX_PLAN_PATH_PATTERNS) {
+      const searchableText = pattern === CODEX_PLAN_PATH_PATTERNS[1]
+        ? cleanText.replace(/\\\\/g, '\\')
+        : cleanText;
+      for (const match of searchableText.matchAll(pattern)) {
+        const normalized = this.normalizePlanPath(match[0]);
+        if (normalized && this.isAllowedSessionPlanPath(normalized)) {
+          paths.add(normalized);
+        }
       }
     }
 
@@ -974,12 +971,18 @@ class SessionManager extends EventEmitter {
     }
   }
 
-  getPlansForCodexSession(codexSessionId) {
+  getPlansForCodexSession(codexSessionId, cliType = 'codex') {
     if (!codexSessionId) {
       return [];
     }
 
-    const transcript = this.readCodexSessionTranscriptText(codexSessionId);
+    let transcript = '';
+    if (cliType === CODEX_WINDOWS) {
+      const filePath = this.findCodexWindowsSessionFileById(codexSessionId);
+      try { transcript = filePath ? fs.readFileSync(filePath, 'utf8') : ''; } catch { transcript = ''; }
+    } else {
+      transcript = this.readCodexSessionTranscriptText(codexSessionId);
+    }
     return this.extractCodexPlanPathsFromText(transcript);
   }
 
@@ -1007,7 +1010,7 @@ class SessionManager extends EventEmitter {
   }
 
   linkCodexSessionById(session, codexSessionId) {
-    if (!session || session.cliType !== 'codex' || !codexSessionId) {
+    if (!session || !isCodexType(session.cliType) || !codexSessionId) {
       return false;
     }
 
@@ -1043,64 +1046,6 @@ class SessionManager extends EventEmitter {
     return true;
   }
 
-  getCodexThreadNameCandidates(session) {
-    const candidates = new Set();
-    if (session?.codexThreadName) {
-      candidates.add(session.codexThreadName.trim().toLowerCase());
-    }
-    if (session?.name) {
-      const cleaned = this.stripCodexResumeHint(session.name).trim().toLowerCase();
-      if (cleaned) {
-        candidates.add(cleaned);
-      }
-    }
-    return candidates;
-  }
-
-  getRecentCodexSessionIdsForSession(session) {
-    if (!session || session.cliType !== 'codex' || !session.workingDir) {
-      return [];
-    }
-
-    const ownedIds = this.getOwnedCodexSessionIds(session.id);
-    const threadNames = this.getCodexThreadNameCandidates(session);
-    const createdAtMs = Date.parse(session.createdAt) || 0;
-    const lastActivityMs = Date.parse(session.lastActivity) || Date.now();
-    const startMs = createdAtMs ? createdAtMs - CODEX_CAPTURE_MAX_WINDOW_MS : 0;
-    const endMs = Math.max(lastActivityMs, Date.now()) + CODEX_CAPTURE_MAX_WINDOW_MS;
-    const normalizedWorkingDir = this.normalizeGroupPath(session.workingDir);
-    const seen = new Set();
-    const matches = [];
-
-    for (const entry of this.loadCodexSessionIndex()) {
-      if (!entry?.id || seen.has(entry.id) || ownedIds.has(entry.id)) {
-        continue;
-      }
-      seen.add(entry.id);
-      if (entry.updatedAtMs && (entry.updatedAtMs < startMs || entry.updatedAtMs > endMs)) {
-        continue;
-      }
-      if (threadNames.size > 0) {
-        const entryThreadName = (entry.threadName || '').trim().toLowerCase();
-        if (!threadNames.has(entryThreadName)) {
-          continue;
-        }
-      }
-
-      const meta = this.readCodexSessionMetaById(entry.id);
-      if (!meta || meta.cwd !== normalizedWorkingDir) {
-        continue;
-      }
-
-      matches.push(entry);
-    }
-
-    return matches
-      .sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0))
-      .slice(0, CODEX_CAPTURE_MAX_INDEX_CANDIDATES)
-      .map((entry) => entry.id);
-  }
-
   readSessionTerminalTranscriptText(sessionId) {
     if (!sessionId) {
       return '';
@@ -1120,7 +1065,7 @@ class SessionManager extends EventEmitter {
   }
 
   ensureCodexSessionLinked(session) {
-    if (!session || session.cliType !== 'codex') {
+    if (!session || !isCodexType(session.cliType)) {
       return false;
     }
     // Never infer a conversation identity from folder, title, transcript text,
@@ -1130,11 +1075,11 @@ class SessionManager extends EventEmitter {
   }
 
   backfillCodexPlansForSession(session) {
-    if (!session || (session.cliType !== 'codex' && session.cliType !== 'wsl')) {
+    if (!session || (!isCodexType(session.cliType) && session.cliType !== 'wsl')) {
       return [];
     }
 
-    if (session.cliType === 'codex') {
+    if (isCodexType(session.cliType)) {
       this.ensureCodexSessionLinked(session);
     }
 
@@ -1149,17 +1094,11 @@ class SessionManager extends EventEmitter {
     }
 
     const codexSessionIds = new Set();
-    if (session.cliType === 'codex' && session.codexSessionId) {
+    if (isCodexType(session.cliType) && session.codexSessionId) {
       codexSessionIds.add(session.codexSessionId);
     }
-    if (session.cliType === 'codex') {
-      for (const codexSessionId of this.getRecentCodexSessionIdsForSession(session)) {
-        codexSessionIds.add(codexSessionId);
-      }
-    }
-
     for (const codexSessionId of codexSessionIds) {
-      for (const planPath of this.getPlansForCodexSession(codexSessionId)) {
+      for (const planPath of this.getPlansForCodexSession(codexSessionId, session.cliType)) {
         planPaths.add(planPath);
       }
     }
@@ -1176,7 +1115,7 @@ class SessionManager extends EventEmitter {
   }
 
   attachCodexPlansFromOutput(session, data) {
-    if (!session || (session.cliType !== 'codex' && session.cliType !== 'wsl')) {
+    if (!session || (!isCodexType(session.cliType) && session.cliType !== 'wsl')) {
       return [];
     }
 
@@ -1199,7 +1138,7 @@ class SessionManager extends EventEmitter {
   syncWithCodexSession(session) {
     // Identity synchronization is asynchronous and process-owned. Do not use
     // launch time, folder, or title heuristics to mutate codexSessionId.
-    if (session?.cliType === 'codex' && !session.codexSessionId) {
+    if (isCodexType(session?.cliType) && !session.codexSessionId) {
       this.codexSessionService?.kickMonitor?.();
     }
     return false;
@@ -1215,7 +1154,7 @@ class SessionManager extends EventEmitter {
   }
 
   scheduleCodexSessionCapture(session) {
-    if (!session || session.cliType !== 'codex') {
+    if (!session || !isCodexType(session.cliType)) {
       return;
     }
     this.clearCodexSessionCapture(session);
@@ -1224,7 +1163,7 @@ class SessionManager extends EventEmitter {
 
   applyCodexIdentityObservation(observation) {
     const session = this.sessions.get(observation?.sessionId);
-    if (!session || session.cliType !== 'codex') return false;
+    if (!session || !isCodexType(session.cliType)) return false;
 
     if (observation.state === 'conflict') {
       if (session.pty) {
@@ -1271,7 +1210,8 @@ class SessionManager extends EventEmitter {
     const candidateId = String(observation.candidateId).toLowerCase();
     const previousCodexSessionId = String(session.codexSessionId || '').toLowerCase();
     const owner = [...this.sessions.values()].find((candidate) =>
-      candidate.id !== session.id && String(candidate.codexSessionId || '').toLowerCase() === candidateId
+      candidate.id !== session.id && candidate.cliType === session.cliType &&
+      String(candidate.codexSessionId || '').toLowerCase() === candidateId
     );
     if (owner) {
       if (owner.status === 'paused' && !owner.pty) {
@@ -1895,6 +1835,37 @@ class SessionManager extends EventEmitter {
     });
   }
 
+  spawnCodexWindowsProcess(workingDir, { resume = false, resumeTarget = null, easyccSessionId = '', meta = {} } = {}) {
+    if (resume && !resumeTarget) throw new Error('Exact Codex resume target is required');
+    const token = uuidv4();
+    this.codexWindowsHookTokens.set(easyccSessionId, token);
+    const env = this.getEasyccEnv(easyccSessionId, meta);
+    env.EASYCC_CODEX_HOOK_TOKEN = token;
+    return codexWindowsRuntime.spawn(workingDir, {
+      resumeTarget: resume ? resumeTarget : null,
+      easyccSessionId,
+      env
+    });
+  }
+
+  acceptCodexWindowsSessionStart(easyccSessionId, token, payload = {}) {
+    const expected = this.codexWindowsHookTokens.get(easyccSessionId);
+    if (!expected || expected !== token) return false;
+    const session = this.sessions.get(easyccSessionId);
+    if (!session || session.cliType !== CODEX_WINDOWS) return false;
+    const candidateId = payload.session_id || payload.sessionId || payload.id;
+    if (!candidateId) return false;
+    this.codexWindowsHookTokens.delete(easyccSessionId);
+    session.codexTranscriptPath = payload.transcript_path || payload.transcriptPath || null;
+    return this.applyCodexIdentityObservation({
+      sessionId: easyccSessionId,
+      state: 'verified',
+      candidateId,
+      workingDir: payload.cwd || session.workingDir,
+      threadName: session.name
+    });
+  }
+
   spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '', easyccSessionId = '', meta = {}, startupPrompt = '', planMode = false } = {}) {
     const env = this.getEasyccEnv(easyccSessionId, meta);
     const args = ['--allow-dangerously-skip-permissions'];
@@ -2003,7 +1974,7 @@ class SessionManager extends EventEmitter {
       return;
     }
 
-    if (session.cliType === 'codex') {
+    if (isCodexType(session.cliType)) {
       session.roleInjection = {
         cliType: 'codex',
         phase,
@@ -2161,7 +2132,7 @@ class SessionManager extends EventEmitter {
       return false;
     }
 
-    if (session.cliType === 'codex') {
+    if (isCodexType(session.cliType)) {
       this.markSemanticSubmission(session, { source: 'automation' });
     }
     session.pty.write(`${nextCommand}\r`);
@@ -2224,7 +2195,7 @@ class SessionManager extends EventEmitter {
   }
 
   collectCodexStatusSample(session, data) {
-    if (!session || session.cliType !== 'codex') return null;
+    if (!session || !isCodexType(session.cliType)) return null;
     const sample = String(data || '');
     if (!sample) return this.getCodexStatusSampler(session);
 
@@ -2290,7 +2261,7 @@ class SessionManager extends EventEmitter {
   }
 
   observeCodexStatusSample(session, data) {
-    if (!session || session.cliType !== 'codex') return;
+    if (!session || !isCodexType(session.cliType)) return;
     if (session.status !== 'idle' && session.stage !== 'in_review') return;
     this.collectCodexStatusSample(session, data);
     this.scheduleCodexStatusSample(session);
@@ -2323,7 +2294,7 @@ class SessionManager extends EventEmitter {
   processSessionOutputState(session, data) {
     const roleSubmitted = this.tryRoleInjectionOnOutput(session, data);
     const startupSubmitted = this.processStartupSequenceOnOutput(session, data);
-    const automatedCodexSubmission = session?.cliType === 'codex' &&
+    const automatedCodexSubmission = isCodexType(session?.cliType) &&
       (roleSubmitted || startupSubmitted);
 
     // The ready prompt that triggered automatic input is stale immediately after
@@ -2345,10 +2316,10 @@ class SessionManager extends EventEmitter {
       session.pendingStatus
     );
 
-    const hasSampledWorkingSignal = session.cliType === 'codex' &&
+    const hasSampledWorkingSignal = isCodexType(session.cliType) &&
       session.codexSampledWorkingUntil &&
       Date.now() < session.codexSampledWorkingUntil;
-    const hasExplicitReadySignal = session.cliType === 'codex' &&
+    const hasExplicitReadySignal = isCodexType(session.cliType) &&
       newStatus === 'idle' &&
       this.isCodexReadyForInput(data);
     const effectiveStatus = hasSampledWorkingSignal && newStatus === 'idle' && !hasExplicitReadySignal
@@ -2368,7 +2339,7 @@ class SessionManager extends EventEmitter {
     const hasPendingTransition = !!(session.pendingStatus || session.statusDebounceTimer);
     if (
       effectiveStatus !== session.status ||
-      (session.cliType === 'codex' && hasPendingTransition)
+      (isCodexType(session.cliType) && hasPendingTransition)
     ) {
       this.updateSessionStatus(session, effectiveStatus);
     }
@@ -2420,7 +2391,7 @@ class SessionManager extends EventEmitter {
     const now = new Date();
     const sanitizedRole = this.sanitizeRole(role);
     const normalizedWorkingDir = this.normalizeWorkingDirForCli(workingDir, cliType);
-    const repoContext = cliType === 'codex'
+    const repoContext = isCodexType(cliType)
       ? { repoRoot: null, repoName: null, gitBranch: null, groupKey: normalizedWorkingDir }
       : this.deriveRepoContext(normalizedWorkingDir);
 
@@ -2438,6 +2409,10 @@ class SessionManager extends EventEmitter {
           easyccSessionId: id,
           meta: sessionMeta
         });
+      } else if (cliType === CODEX_WINDOWS) {
+        ptyProcess = this.spawnCodexWindowsProcess(normalizedWorkingDir, {
+          resume: false, easyccSessionId: id, meta: sessionMeta
+        });
       } else {
         ptyProcess = this.spawnClaudeProcess(normalizedWorkingDir, {
           sessionId: claudeSessionId,
@@ -2449,7 +2424,7 @@ class SessionManager extends EventEmitter {
         });
       }
     } catch (error) {
-      const cliName = cliType === 'codex'
+      const cliName = isCodexType(cliType)
         ? 'Codex'
         : cliType === 'terminal'
           ? 'Terminal'
@@ -2478,8 +2453,8 @@ class SessionManager extends EventEmitter {
       previousClaudeSessionIds: [],
       codexSessionId: null,
       codexThreadName: null,
-      codexLaunchStartedAt: cliType === 'codex' ? now.toISOString() : null,
-      codexIdentityState: cliType === 'codex' ? 'verifying' : null,
+      codexLaunchStartedAt: isCodexType(cliType) ? now.toISOString() : null,
+      codexIdentityState: isCodexType(cliType) ? 'verifying' : null,
       codexIdentityVerifiedAt: null,
       codexIdentityError: null,
       recoveryError: null,
@@ -2572,7 +2547,7 @@ class SessionManager extends EventEmitter {
       const newName = this.extractSessionRename(data);
       if (newName && newName !== session.name) {
         session.name = newName;
-        if (cliType === 'codex') session.codexThreadName = newName;
+        if (isCodexType(cliType)) session.codexThreadName = newName;
         this.dataStore.saveSession(session);
         this.emit('sessionUpdated', this.getSessionSnapshot(session));
       }
@@ -2635,7 +2610,7 @@ class SessionManager extends EventEmitter {
 
     this.sessions.set(id, session);
     this.setupRoleInjectionWorkflow(session, 'create');
-    if (cliType === 'codex') {
+    if (isCodexType(cliType)) {
       this.codexSessionService.kickMonitor();
     }
 
@@ -2876,10 +2851,10 @@ class SessionManager extends EventEmitter {
 
     const cliType = session.cliType || 'claude';
     session.recoveryError = null;
-    if (cliType !== 'codex') {
+    if (!isCodexType(cliType)) {
       this.applyRepoContext(session);
     }
-    if (cliType === 'codex' && !fresh && !session.codexSessionId) {
+    if (isCodexType(cliType) && !fresh && !session.codexSessionId) {
       session.codexIdentityState = 'unresolved';
       session.codexIdentityError = 'Choose an exact Codex conversation before resuming';
       this.dataStore.saveSession(session);
@@ -2985,7 +2960,7 @@ class SessionManager extends EventEmitter {
         const newName = this.extractSessionRename(data);
         if (newName && newName !== session.name) {
           session.name = newName;
-          if (cliType === 'codex') session.codexThreadName = newName;
+          if (isCodexType(cliType)) session.codexThreadName = newName;
           this.dataStore.saveSession(session);
           this.emit('sessionUpdated', this.getSessionSnapshot(session));
         }
@@ -3036,7 +3011,7 @@ class SessionManager extends EventEmitter {
           session.pty = null;
           this.clearCodexStatusSampler(session);
           this.clearCodexSessionCapture(session);
-          if (cliType === 'codex') {
+          if (isCodexType(cliType)) {
             session.codexIdentityState = 'unresolved';
             session.codexIdentityError = 'Exact Codex resume failed';
           }
@@ -3101,7 +3076,7 @@ class SessionManager extends EventEmitter {
         session.claudeSessionId = uuidv4();
         session.claudeSessionName = null;
         shouldResyncClaudeSession = true;
-      } else if (cliType === 'codex') {
+      } else if (isCodexType(cliType)) {
         session.codexSessionId = null;
         session.codexThreadName = null;
         session.codexIdentityState = 'verifying';
@@ -3119,6 +3094,13 @@ class SessionManager extends EventEmitter {
         // Resume Codex in the same working directory to avoid cross-project jumps.
         session.codexLaunchStartedAt = new Date().toISOString();
         ptyProcess = this.spawnCodexProcess(session.workingDir, {
+          resume: !fresh,
+          resumeTarget: fresh ? null : this.selectCodexResumeTarget(session),
+          easyccSessionId: session.id
+        });
+      } else if (cliType === CODEX_WINDOWS) {
+        session.codexLaunchStartedAt = new Date().toISOString();
+        ptyProcess = this.spawnCodexWindowsProcess(session.workingDir, {
           resume: !fresh,
           resumeTarget: fresh ? null : this.selectCodexResumeTarget(session),
           easyccSessionId: session.id
@@ -3150,10 +3132,10 @@ class SessionManager extends EventEmitter {
     session.status = 'active';
     session.lastActivity = new Date();
     session.statusDetectionContext = '';
-    if (cliType === 'codex' && !session.codexLaunchStartedAt) {
+    if (isCodexType(cliType) && !session.codexLaunchStartedAt) {
       session.codexLaunchStartedAt = new Date().toISOString();
     }
-    if (cliType === 'codex') {
+    if (isCodexType(cliType)) {
       session.codexIdentityState = 'verifying';
       session.codexIdentityError = null;
     }
@@ -3219,7 +3201,7 @@ class SessionManager extends EventEmitter {
     if (meta.role !== undefined) session.role = this.sanitizeRole(meta.role);
     if (meta.tags !== undefined) session.tags = meta.tags;
     if (meta.taskId !== undefined) session.taskId = meta.taskId || null;
-    if (meta.cliType !== undefined && ['claude', 'codex', 'terminal', 'wsl'].includes(meta.cliType)) {
+    if (meta.cliType !== undefined && ['claude', 'codex', 'codex-windows', 'terminal', 'wsl'].includes(meta.cliType)) {
       session.cliType = meta.cliType;
       this.applyRepoContext(session);
     }
@@ -3279,7 +3261,7 @@ class SessionManager extends EventEmitter {
    * @returns {boolean}
    */
   canTransitionToIdle(session) {
-    return (session?.cliType || 'claude') !== 'codex';
+    return !isCodexType(session?.cliType || 'claude');
   }
 
   /**
@@ -3387,7 +3369,7 @@ class SessionManager extends EventEmitter {
       /\u2714.*approved.*to run/i
     ];
 
-    if (cliType === 'codex') {
+    if (isCodexType(cliType)) {
       const hasReadyPrompt = codexPromptReadyPatterns.some((pattern) => pattern.test(cleanData));
       const hasActionRequiredTitle = hasCodexActionRequiredTitle(data);
       const hasQuestionnairePrompt = codexQuestionnairePatterns.some((pattern) => pattern.test(cleanData));
@@ -3481,7 +3463,7 @@ class SessionManager extends EventEmitter {
       return 'idle';
     }
 
-    if (cliType !== 'codex') {
+    if (!isCodexType(cliType)) {
       for (const pattern of thinkingPatterns) {
         if (pattern.test(cleanData)) {
           return 'thinking';
@@ -3498,7 +3480,7 @@ class SessionManager extends EventEmitter {
 
     // Detect waiting for input. Use the short rolling context window so Codex
     // menu redraws split across PTY chunks still count as waiting.
-    if (cliType !== 'codex') {
+    if (!isCodexType(cliType)) {
       for (const pattern of waitingPatterns) {
         if (pattern.test(contextText)) {
           return 'waiting';
@@ -4422,10 +4404,10 @@ class SessionManager extends EventEmitter {
       return plans;
     }
 
-    if (session.cliType === 'codex' || session.cliType === 'wsl') {
+    if (isCodexType(session.cliType) || session.cliType === 'wsl') {
       this.backfillCodexPlansForSession(session);
       const trackedPlanPaths = session.codexSessionId
-        ? this.getPlansForCodexSession(session.codexSessionId)
+        ? this.getPlansForCodexSession(session.codexSessionId, session.cliType)
         : [];
       const seen = new Set();
       const plans = [];

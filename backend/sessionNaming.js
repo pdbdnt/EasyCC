@@ -16,7 +16,7 @@ function generateSessionName(now = new Date(), cliType = 'claude') {
     ? 'WSL'
     : cliType === 'terminal'
       ? 'Terminal'
-      : cliType === 'codex'
+      : (cliType === 'codex' || cliType === 'codex-windows')
         ? 'Codex'
         : 'Session';
   return `${prefix} ${date}-${time}`;
