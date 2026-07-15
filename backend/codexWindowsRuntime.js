@@ -98,7 +98,7 @@ function ensureProfile() {
   }
   const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const command = `${powershell} -NoProfile -ExecutionPolicy Bypass -File \"${helperPath}\"`;
-  const contents = `${PROFILE_MARKER}\n[[hooks.SessionStart]]\nmatcher = \"startup|resume\"\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(command)}\ntimeout = 5\n`;
+  const contents = `${PROFILE_MARKER}\n[tui]\nstatus_line = [\"model-with-reasoning\", \"current-dir\", \"context-used\", \"thread-title\"]\n\n[[hooks.SessionStart]]\nmatcher = \"startup|resume\"\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(command)}\ntimeout = 5\n`;
   const tempPath = `${profilePath}.${process.pid}.tmp`;
   fs.writeFileSync(tempPath, contents, 'utf8');
   fs.renameSync(tempPath, profilePath);
