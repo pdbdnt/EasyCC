@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 
 // Fetched from server at runtime via /api/folders defaultRoot
 export const BASE_DIR = null;
+const folderResponseCache = new Map();
 
 export function normalizeWindowsPath(input) {
   if (!input || typeof input !== 'string') return '';
@@ -162,9 +163,45 @@ function DirectoryBrowser({
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const clickTimerRef = useRef(null);
+  const loadedRequestRef = useRef('');
 
   useEffect(() => {
+    const cacheKey = currentBase
+      ? `base:${normalizeWindowsPath(currentBase).toLowerCase()}`
+      : `root:${activeRootId}`;
+    const requestKey = `${cacheKey}|${refreshNonce}`;
+    if (loadedRequestRef.current === requestKey) return;
+
     let cancelled = false;
+    const applyFolderData = (data) => {
+      if (cancelled) return;
+      const nextRoots = (data.roots || []).map(root => ({ ...root, path: normalizeWindowsPath(root.path) }));
+      const nextBase = normalizeWindowsPath(data.base || data.root || data.defaultRoot || '');
+      const nextRootId = data.rootId || getRootIdForPath(nextBase, nextRoots) || activeRootId;
+      setFolderError('');
+      setFolders(data.folders || []);
+      setRoots(nextRoots);
+      setActiveRootId(nextRootId);
+      const serverRoot = normalizeWindowsPath(data.root || data.defaultRoot || '');
+      setBrowseRoot(serverRoot);
+      if (nextBase) {
+        loadedRequestRef.current = `base:${nextBase.toLowerCase()}|${refreshNonce}`;
+        setCurrentBase(nextBase);
+      } else if (!currentBase && serverRoot) {
+        loadedRequestRef.current = `base:${serverRoot.toLowerCase()}|${refreshNonce}`;
+        setCurrentBase(serverRoot);
+      } else {
+        loadedRequestRef.current = requestKey;
+      }
+      setLoadingFolders(false);
+    };
+
+    const cachedData = refreshNonce === 0 ? folderResponseCache.get(cacheKey) : null;
+    if (cachedData) {
+      applyFolderData(cachedData);
+      return;
+    }
+
     setLoadingFolders(true);
     setFolderError('');
 
@@ -182,29 +219,19 @@ function DirectoryBrowser({
         return res.json();
       })
       .then((data) => {
-        if (cancelled) return;
-        const nextRoots = (data.roots || []).map(root => ({ ...root, path: normalizeWindowsPath(root.path) }));
-        setFolders(data.folders || []);
-        setRoots(nextRoots);
-        setActiveRootId(data.rootId || getRootIdForPath(data.base || data.root, nextRoots) || activeRootId);
-        const serverRoot = normalizeWindowsPath(data.root || data.defaultRoot || '');
-        setBrowseRoot(serverRoot);
-        if (data.base) {
-          setCurrentBase(normalizeWindowsPath(data.base));
-        } else if (!currentBase && serverRoot) {
-          setCurrentBase(serverRoot);
+        folderResponseCache.set(cacheKey, data);
+        const responseBase = normalizeWindowsPath(data.base || '');
+        if (responseBase) {
+          folderResponseCache.set(`base:${responseBase.toLowerCase()}`, data);
         }
+        applyFolderData(data);
       })
       .catch((err) => {
         if (cancelled) return;
         console.error('Failed to load folders:', err);
         setFolderError(err.message || 'Failed to load folders');
         setFolders([]);
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoadingFolders(false);
-        }
+        setLoadingFolders(false);
       });
 
     return () => {
@@ -291,6 +318,7 @@ function DirectoryBrowser({
 
   const handleRefresh = () => {
     setFolderError('');
+    folderResponseCache.clear();
     setRefreshNonce(value => value + 1);
   };
 
@@ -317,6 +345,7 @@ function DirectoryBrowser({
       }
 
       const createdPath = normalizeWindowsPath(data.path);
+      folderResponseCache.clear();
       setNewFolderName('');
       setShowCreateFolder(false);
       setCurrentBase(createdPath);
