@@ -288,8 +288,8 @@ function NewSessionModal({ onClose, onCreate, onLaunchTeam, defaultWorkingDir = 
 
   return (
     <div className="modal-overlay" onClick={handleOverlayClick}>
-      <div className="modal modal-wide">
-        <h2>New Session</h2>
+      <div className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="new-session-title">
+        <h2 id="new-session-title">New Session</h2>
         <div className="modal-tabs">
           <button
             type="button"

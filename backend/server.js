@@ -139,12 +139,14 @@ function defaultWslBrowseRoot() {
 function getBrowseRoots() {
   const roots = [];
   const windowsRoot = normalizeWindowsPath(process.env.FOLDERS_BROWSE_ROOT || DEFAULT_FOLDERS_ROOT);
-  if (windowsRoot && fs.existsSync(windowsRoot) && fs.statSync(windowsRoot).isDirectory()) {
+  // Root metadata must stay I/O-free. Probing an offline/cold WSL UNC share here
+  // can block an otherwise local Windows folder request for many seconds.
+  if (windowsRoot) {
     roots.push({ id: 'windows', label: 'Windows', path: windowsRoot });
   }
 
   const wslRoot = normalizeWindowsPath(defaultWslBrowseRoot());
-  if (wslRoot && fs.existsSync(wslRoot) && fs.statSync(wslRoot).isDirectory()) {
+  if (wslRoot) {
     const duplicate = roots.some(root => normalizeWindowsPath(root.path).toLowerCase() === wslRoot.toLowerCase());
     if (!duplicate) roots.push({ id: 'wsl', label: 'WSL', path: wslRoot });
   }
@@ -1672,11 +1674,7 @@ async function start() {
     const root = normalizeWindowsPath(activeRoot.path);
 
     try {
-      if (!fs.existsSync(requestedBase) || !fs.statSync(requestedBase).isDirectory()) {
-        return reply.status(400).send({ error: 'Requested path is not a directory', roots, root, defaultRoot: defaultRoot.path });
-      }
-
-      const entries = fs.readdirSync(requestedBase, { withFileTypes: true });
+      const entries = await fs.promises.readdir(requestedBase, { withFileTypes: true });
       const folders = entries
         .filter(e => e.isDirectory())
         .map(e => e.name)
@@ -1690,6 +1688,9 @@ async function start() {
         defaultRoot: defaultRoot.path
       };
     } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+        return reply.status(400).send({ error: 'Requested path is not a directory', roots, root, defaultRoot: defaultRoot.path });
+      }
       return reply.status(500).send({ error: error.message, roots, root, defaultRoot: defaultRoot.path });
     }
   });
