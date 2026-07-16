@@ -11,6 +11,7 @@ const { DEFAULT_STAGES, TASK_STATUS, getNextStage, getPreviousStage, sessionStat
 const { hasSubmittedInput, shouldCountOutputAsActivity } = require('./sessionInputUtils');
 const { createComment, addReactionToComment } = require('./commentUtils');
 const { readTranscriptWindow } = require('./terminalTranscriptUtils');
+const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
 const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
 const { CodexSessionService, pathsEqual: codexPathsEqual } = require('./codexSessionService');
 const codexWindowsRuntime = require('./codexWindowsRuntime');
@@ -29,6 +30,8 @@ const CODEX_STATUS_SAMPLE_HOLD_MS = 1500;
 const CODEX_STATUS_SCREEN_MAX_ROWS = 32;
 const CODEX_STATUS_SCREEN_MAX_COORDINATE = 500;
 const SESSION_TRANSCRIPTS_DIR = path.join(__dirname, '..', 'data', 'transcripts');
+const TRANSCRIPT_FLUSH_INTERVAL_MS = 16;
+const TRANSCRIPT_FLUSH_MAX_BYTES = 64 * 1024;
 
 // Message queue constants
 const MAX_MESSAGE_QUEUE_SIZE = 20;
@@ -278,6 +281,7 @@ class SessionManager extends EventEmitter {
   }
 
   resetSessionTranscript(sessionId) {
+    this.discardPendingTranscript(sessionId);
     const transcriptPath = this.getTranscriptPath(sessionId);
     fs.writeFileSync(transcriptPath, '', 'utf8');
   }
@@ -287,14 +291,60 @@ class SessionManager extends EventEmitter {
       return;
     }
 
+    if (!this.transcriptWriteBuffers) {
+      this.transcriptWriteBuffers = new Map();
+    }
+
+    let state = this.transcriptWriteBuffers.get(sessionId);
+    if (!state) {
+      state = { data: '', bytes: 0, timer: null };
+      this.transcriptWriteBuffers.set(sessionId, state);
+    }
+
+    state.data += data;
+    state.bytes += Buffer.byteLength(data, 'utf8');
+
+    if (state.bytes >= TRANSCRIPT_FLUSH_MAX_BYTES) {
+      this.flushTranscript(sessionId);
+      return;
+    }
+
+    if (!state.timer) {
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        this.flushTranscript(sessionId);
+      }, TRANSCRIPT_FLUSH_INTERVAL_MS);
+    }
+  }
+
+  flushTranscript(sessionId) {
+    const state = this.transcriptWriteBuffers?.get(sessionId);
+    if (!state) return;
+
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    this.transcriptWriteBuffers.delete(sessionId);
+    if (!state.data) return;
+
     try {
-      fs.appendFileSync(this.getTranscriptPath(sessionId), data, 'utf8');
+      fs.appendFileSync(this.getTranscriptPath(sessionId), state.data, 'utf8');
     } catch (error) {
       console.error(`Error appending transcript for session ${sessionId}:`, error.message);
     }
   }
 
+  discardPendingTranscript(sessionId) {
+    const state = this.transcriptWriteBuffers?.get(sessionId);
+    if (state?.timer) {
+      clearTimeout(state.timer);
+    }
+    this.transcriptWriteBuffers?.delete(sessionId);
+  }
+
   deleteSessionTranscript(sessionId) {
+    this.discardPendingTranscript(sessionId);
     const transcriptPath = this.getTranscriptPath(sessionId);
     if (!fs.existsSync(transcriptPath)) {
       return;
@@ -4273,7 +4323,7 @@ class SessionManager extends EventEmitter {
     }
 
     const output = session.outputBuffer.getAll();
-    const liveReplayBytes = Buffer.byteLength(output.join(''), 'utf8');
+    const liveReplayBytes = prepareTerminalReplayPayload(output).replayBytes;
 
     return readTranscriptWindow(this.getTranscriptPath(id), {
       beforeBytes: options.beforeBytes,

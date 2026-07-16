@@ -1,4 +1,4 @@
-const DEFAULT_TERMINAL_REPLAY_MAX_BYTES = 12 * 1024 * 1024;
+const DEFAULT_TERMINAL_REPLAY_MAX_BYTES = 512 * 1024;
 
 function tailByBytes(text, maxBytes) {
   if (typeof text !== 'string' || text.length === 0) {
@@ -36,13 +36,14 @@ function tailByBytes(text, maxBytes) {
 function prepareTerminalReplayPayload(chunks, maxBytes = DEFAULT_TERMINAL_REPLAY_MAX_BYTES) {
   const joined = Array.isArray(chunks) ? chunks.join('') : '';
   const { text, truncated } = tailByBytes(joined, maxBytes);
+  const replayBytes = Buffer.byteLength(text, 'utf8');
   if (!truncated) {
-    return { data: text, truncated: false };
+    return { data: text, truncated: false, replayBytes };
   }
 
   const maxMb = (maxBytes / (1024 * 1024)).toFixed(1);
   const notice = `\r\n\x1b[33m[replay truncated to last ${maxMb}MB]\x1b[0m\r\n`;
-  return { data: notice + text, truncated: true };
+  return { data: notice + text, truncated: true, replayBytes };
 }
 
 module.exports = {
