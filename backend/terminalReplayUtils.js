@@ -1,4 +1,5 @@
 const DEFAULT_TERMINAL_REPLAY_MAX_BYTES = 512 * 1024;
+const { trimToUtf8Tail } = require('./byteRingBuffer');
 
 function tailByBytes(text, maxBytes) {
   if (typeof text !== 'string' || text.length === 0) {
@@ -14,23 +15,7 @@ function tailByBytes(text, maxBytes) {
     return { text, truncated: false };
   }
 
-  let low = 0;
-  let high = text.length;
-  let best = text.length;
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2);
-    const candidate = text.slice(mid);
-    const candidateBytes = Buffer.byteLength(candidate, 'utf8');
-    if (candidateBytes <= maxBytes) {
-      best = mid;
-      high = mid - 1;
-    } else {
-      low = mid + 1;
-    }
-  }
-
-  return { text: text.slice(best), truncated: true };
+  return { text: trimToUtf8Tail(text, maxBytes), truncated: true };
 }
 
 function prepareTerminalReplayPayload(chunks, maxBytes = DEFAULT_TERMINAL_REPLAY_MAX_BYTES) {

@@ -16,10 +16,10 @@ const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
 const { CodexSessionService, pathsEqual: codexPathsEqual } = require('./codexSessionService');
 const codexWindowsRuntime = require('./codexWindowsRuntime');
 const { CODEX_WINDOWS, getCodexRuntime, isCodexType } = require('./codexCliTypes');
+const { ByteRingBuffer } = require('./byteRingBuffer');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
-const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
-const MEDIUM_OUTPUT_BUFFER_CHUNKS = 12000;
+const OUTPUT_BUFFER_MAX_BYTES = 512 * 1024;
 const CODEX_PLAN_PATH_PATTERNS = [
   /(?:~|\/home\/[^/\s"'`<>]+)\/\.codex\/plans\/[^\s"'`<>]+\.md/gi,
   /[A-Za-z]:\\(?:[^\\\r\n"'`<>]+\\)*\.codex\\plans\\[^\\\r\n"'`<>]+?\.md/gi
@@ -212,31 +212,6 @@ function applyCodexStatusScreenSample(screen, data) {
 }
 
 /**
- * Ring buffer for storing terminal output with a maximum size
- */
-class RingBuffer {
-  constructor(maxSize = DEFAULT_OUTPUT_BUFFER_CHUNKS) {
-    this.buffer = [];
-    this.maxSize = maxSize;
-  }
-
-  push(item) {
-    this.buffer.push(item);
-    if (this.buffer.length > this.maxSize) {
-      this.buffer.shift();
-    }
-  }
-
-  getAll() {
-    return [...this.buffer];
-  }
-
-  clear() {
-    this.buffer = [];
-  }
-}
-
-/**
  * Manages multiple Claude CLI sessions using pseudo-terminals
  */
 class SessionManager extends EventEmitter {
@@ -249,6 +224,7 @@ class SessionManager extends EventEmitter {
     this.codexSessionService = new CodexSessionService();
     this.codexWindowsHookTokens = new Map();
     this.recoveryInFlight = new Set();
+    this.lifecycleTransitions = new Map();
     this.stages = [...DEFAULT_STAGES];
     this.isShuttingDown = false;  // Prevents onExit handlers from deleting sessions during shutdown
 
@@ -335,6 +311,19 @@ class SessionManager extends EventEmitter {
     }
   }
 
+  flushTranscriptStrict(sessionId) {
+    const state = this.transcriptWriteBuffers?.get(sessionId);
+    if (!state) return true;
+    if (state.timer) clearTimeout(state.timer);
+    if (!state.data) {
+      this.transcriptWriteBuffers.delete(sessionId);
+      return true;
+    }
+    fs.appendFileSync(this.getTranscriptPath(sessionId), state.data, 'utf8');
+    this.transcriptWriteBuffers.delete(sessionId);
+    return true;
+  }
+
   discardPendingTranscript(sessionId) {
     const state = this.transcriptWriteBuffers?.get(sessionId);
     if (state?.timer) {
@@ -405,7 +394,7 @@ class SessionManager extends EventEmitter {
           currentTask: sessionData.currentTask || '',
           createdAt: new Date(sessionData.createdAt),
           lastActivity: new Date(sessionData.lastActivity),
-          outputBuffer: new RingBuffer(outputBufferSize),
+          outputBuffer: new ByteRingBuffer(outputBufferSize),
           pty: null,
           workingDir: normalizedWorkingDir,
           repoRoot: repoContext.repoRoot,
@@ -463,6 +452,7 @@ class SessionManager extends EventEmitter {
 
         // Sweep expired queue messages on restart
         this._sweepExpiredQueueMessages(session);
+        this.ensureParkingFields(session, sessionData);
 
         this.sessions.set(id, session);
         // Update persisted status to paused
@@ -488,10 +478,74 @@ class SessionManager extends EventEmitter {
    * @returns {number}
    */
   getOutputBufferSize(cliType) {
-    if (cliType === 'terminal' || isCodexType(cliType) || cliType === 'wsl') {
-      return MEDIUM_OUTPUT_BUFFER_CHUNKS;
+    return OUTPUT_BUFFER_MAX_BYTES;
+  }
+
+  getLifecycleTransitions() {
+    if (!this.lifecycleTransitions) this.lifecycleTransitions = new Map();
+    return this.lifecycleTransitions;
+  }
+
+  ensureParkingFields(session, persisted = null) {
+    if (!session) return session;
+    const pauseReason = session.pauseReason || persisted?.pauseReason ||
+      (session.status === 'paused' ? 'startup_restore' : null);
+    session.pauseReason = pauseReason;
+    session.parkedAt = session.parkedAt || persisted?.parkedAt || null;
+    session.keepAwake = session.keepAwake ?? !!persisted?.keepAwake;
+    session.lastUserOrOrchestratorActivityAt =
+      session.lastUserOrOrchestratorActivityAt ||
+      persisted?.lastUserOrOrchestratorActivityAt ||
+      (session.lastActivity instanceof Date ? session.lastActivity.toISOString() : session.lastActivity) ||
+      new Date().toISOString();
+    if (!session.runtimeState) {
+      session.runtimeState = pauseReason === 'auto_park'
+        ? 'auto_parked'
+        : session.status === 'paused' || !session.pty
+          ? 'paused'
+          : 'live';
     }
-    return DEFAULT_OUTPUT_BUFFER_CHUNKS;
+    session.interactionPending = !!session.interactionPending;
+    session.interactionPendingSource = session.interactionPendingSource || null;
+    session.idleEvidence = session.idleEvidence || null;
+    session.readySince = session.readySince || null;
+    session.parkingProposalState = session.parkingProposalState || 'none';
+    session.parkingProposalReason = session.parkingProposalReason || null;
+    session.parkingDetectedAt = session.parkingDetectedAt || null;
+    session.parkingSnoozedUntil = session.parkingSnoozedUntil || null;
+    session.wakeError = session.wakeError || persisted?.wakeError || null;
+    session.ptyGeneration = Number(session.ptyGeneration) || (session.pty ? 1 : 0);
+    return session;
+  }
+
+  isParkingEligible(session) {
+    this.ensureParkingFields(session);
+    if (!session.pty || session.runtimeState !== 'live') return false;
+    if (!['claude', 'codex', CODEX_WINDOWS].includes(session.cliType || 'claude')) return false;
+    if (session.status !== 'idle' || !session.idleEvidence || !session.readySince) return false;
+    if (session.keepAwake || session.interactionPending || this.isShuttingDown) return false;
+    if (session.pendingStatus || session.statusDebounceTimer || session.startupSequence?.active ||
+        session.roleInjection?.active || session._writeDraining || session._queueDraining ||
+        (session.messageQueue || []).some(message => message.status === 'queued')) return false;
+    if (session.cliType === 'claude') return !!session.claudeSessionId;
+    return !!session.codexSessionId && session.codexIdentityState === 'verified' && !session.codexIdentityError;
+  }
+
+  setKeepAwake(id, keepAwake) {
+    const session = this.sessions.get(id);
+    if (!session) return null;
+    this.ensureParkingFields(session);
+    session.keepAwake = !!keepAwake;
+    if (session.keepAwake) {
+      session.parkingProposalState = 'none';
+      session.parkingProposalReason = null;
+      session.parkingDetectedAt = null;
+      session.parkingSnoozedUntil = null;
+    }
+    this.dataStore.saveSession(session);
+    const snapshot = this.getSessionSnapshot(session);
+    this.emit('sessionUpdated', snapshot);
+    return snapshot;
   }
 
   /**
@@ -1259,6 +1313,13 @@ class SessionManager extends EventEmitter {
 
     const candidateId = String(observation.candidateId).toLowerCase();
     const previousCodexSessionId = String(session.codexSessionId || '').toLowerCase();
+    const expectedWakeId = String(session.expectedCodexWakeId || '').toLowerCase();
+    if (session.runtimeState === 'resuming' && expectedWakeId && candidateId !== expectedWakeId) {
+      session.codexIdentityState = 'unresolved';
+      session.codexIdentityError = `Exact Codex wake expected ${expectedWakeId}, but resumed ${candidateId}`;
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      return true;
+    }
     const owner = [...this.sessions.values()].find((candidate) =>
       candidate.id !== session.id && candidate.cliType === session.cliType &&
       String(candidate.codexSessionId || '').toLowerCase() === candidateId
@@ -1382,7 +1443,9 @@ class SessionManager extends EventEmitter {
   }
 
   async prepareRecoverySummary() {
-    const paused = [...this.sessions.values()].filter((session) => session?.status === 'paused');
+    const paused = [...this.sessions.values()].filter((session) =>
+      session?.status === 'paused' && session.pauseReason !== 'auto_park'
+    );
     const codexIds = paused
       .filter((session) => session.cliType === 'codex' && session.codexSessionId)
       .map((session) => session.codexSessionId);
@@ -1557,7 +1620,7 @@ class SessionManager extends EventEmitter {
       currentTask: '',
       createdAt: now,
       lastActivity: new Date(thread.lastActivity || now),
-      outputBuffer: new RingBuffer(this.getOutputBufferSize('codex')),
+      outputBuffer: new ByteRingBuffer(this.getOutputBufferSize('codex')),
       pty: null,
       workingDir: thread.workingDir,
       repoRoot: repoContext.repoRoot,
@@ -1612,6 +1675,7 @@ class SessionManager extends EventEmitter {
       codexCaptureTimer: null,
       codexCaptureAttempts: 0
     };
+    this.ensureParkingFields(session);
     this.sessions.set(id, session);
     this.dataStore.saveSession(session);
     this.emit('sessionCreated', { id, session: this.getSessionSnapshot(session) });
@@ -2388,6 +2452,22 @@ class SessionManager extends EventEmitter {
 
     if (hasExplicitReadySignal) {
       this.clearCodexStatusSampler(session);
+      if (!session.interactionPending) {
+        const gainedReadyEvidence = session.idleEvidence !== 'codex_ready_prompt';
+        session.idleEvidence = 'codex_ready_prompt';
+        session.readySince = session.readySince || new Date().toISOString();
+        if (gainedReadyEvidence) this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      }
+    } else if (isCodexType(session.cliType) && effectiveStatus === 'waiting') {
+      const becameInteractionPending = !session.interactionPending;
+      session.interactionPending = true;
+      session.interactionPendingSource = 'codex_prompt';
+      session.idleEvidence = null;
+      session.readySince = null;
+      if (becameInteractionPending) this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    } else if (!['idle', 'waiting'].includes(effectiveStatus)) {
+      session.idleEvidence = null;
+      session.readySince = null;
     }
 
     if (effectiveStatus === 'paused') {
@@ -2501,7 +2581,7 @@ class SessionManager extends EventEmitter {
       currentTask: '',
       createdAt: now,
       lastActivity: now,
-      outputBuffer: new RingBuffer(this.getOutputBufferSize(cliType)),
+      outputBuffer: new ByteRingBuffer(this.getOutputBufferSize(cliType)),
       pty: ptyProcess,
       workingDir: normalizedWorkingDir,
       repoRoot: repoContext.repoRoot,
@@ -2557,8 +2637,10 @@ class SessionManager extends EventEmitter {
       codexCaptureTimer: null,
       codexCaptureAttempts: 0
     };
+    this.ensureParkingFields(session);
 
     this.resetSessionTranscript(id);
+    const ptyGeneration = session.ptyGeneration;
 
     // Queue startupPrompt via startupSequence (delivers via PTY stdin after idle)
     if (sessionMeta.startupPrompt) {
@@ -2574,6 +2656,7 @@ class SessionManager extends EventEmitter {
 
     // Handle PTY output
     ptyProcess.onData((data) => {
+      if (session.pty !== ptyProcess || session.ptyGeneration !== ptyGeneration) return;
       session.outputBuffer.push(data);
       this.emit('output', { sessionId: id, data });
       this.appendToTranscript(id, data);
@@ -2620,6 +2703,9 @@ class SessionManager extends EventEmitter {
 
     // Handle PTY exit
     ptyProcess.onExit(({ exitCode, signal }) => {
+      if (session.pty !== ptyProcess || session.ptyGeneration !== ptyGeneration) return;
+      session.lastPtyExitGeneration = ptyGeneration;
+      session.lastPtyExitEvent = { exitCode, signal };
       // Don't process if shutting down (cleanup handles this)
       if (this.isShuttingDown) return;
 
@@ -2630,6 +2716,7 @@ class SessionManager extends EventEmitter {
       if (session.status === 'paused') {
         return;
       }
+      if (['parking', 'parking_failed_live', 'resuming', 'wake_failed_live'].includes(session.runtimeState)) return;
 
       // If session just started and immediately exited with error, keep it paused (don't delete)
       // This preserves sessions that fail to start
@@ -2829,6 +2916,268 @@ class SessionManager extends EventEmitter {
     }
   }
 
+  waitForPtyExit(processRef, timeoutMs = 5000) {
+    return new Promise(resolve => {
+      let settled = false;
+      let timer = null;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve(result);
+      };
+      processRef.onExit(event => finish({ exited: true, event }));
+      timer = setTimeout(() => finish({ exited: false }), timeoutMs);
+      timer.unref?.();
+    });
+  }
+
+  parkSession(id, { reason = 'idle_timeout' } = {}) {
+    const lifecycleTransitions = this.getLifecycleTransitions();
+    const existingTransition = lifecycleTransitions.get(id);
+    if (existingTransition?.kind === 'parking') return existingTransition.promise;
+    if (existingTransition) {
+      return Promise.resolve({ ok: false, error: 'lifecycle_transition_in_progress' });
+    }
+    const transition = (async () => {
+      const session = this.sessions.get(id);
+      if (!session || !this.isParkingEligible(session)) return { ok: false, error: 'not_eligible' };
+      const processRef = session.pty;
+      const generation = session.ptyGeneration;
+      const previous = {
+        status: session.status,
+        idleEvidence: session.idleEvidence,
+        readySince: session.readySince
+      };
+
+      session.runtimeState = 'parking';
+      session.parkingProposalState = 'none';
+      this.cancelPendingStatusTransition(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+
+      try {
+        this.flushTranscriptStrict(id);
+      } catch (error) {
+        session.runtimeState = 'live';
+        session.status = previous.status;
+        session.idleEvidence = previous.idleEvidence;
+        session.readySince = previous.readySince;
+        session.wakeError = `Transcript flush failed: ${error.message}`;
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        return { ok: false, error: 'transcript_flush_failed' };
+      }
+
+      const exitPromise = this.waitForPtyExit(processRef);
+      try {
+        processRef.kill();
+      } catch (error) {
+        session.runtimeState = 'live';
+        session.wakeError = `Could not stop PTY: ${error.message}`;
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        return { ok: false, error: 'kill_failed' };
+      }
+      const exit = await exitPromise;
+      if (!exit.exited || session.pty !== processRef || session.ptyGeneration !== generation) {
+        session.runtimeState = 'parking_failed_live';
+        session.wakeError = 'PTY termination could not be confirmed';
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        return { ok: false, error: 'kill_timeout' };
+      }
+
+      session.pty = null;
+      session.status = 'paused';
+      session.runtimeState = 'auto_parked';
+      session.pauseReason = 'auto_park';
+      session.parkedAt = new Date().toISOString();
+      session.idleEvidence = null;
+      session.readySince = null;
+      session.wakeError = null;
+      try {
+        this.dataStore.saveSession(session, { throwOnError: true });
+      } catch (error) {
+        session.status = 'paused';
+        session.runtimeState = 'paused';
+        session.pauseReason = 'recovery_failed';
+        session.wakeError = `PTY stopped, but parked state could not be saved: ${error.message}`;
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        return { ok: false, error: 'persistence_failed', session: this.getSessionSnapshot(session) };
+      }
+      session.outputBuffer.clear();
+      const snapshot = this.getSessionSnapshot(session);
+      this.emit('statusChange', {
+        sessionId: id,
+        status: 'paused',
+        currentTask: session.currentTask,
+        source: 'parking'
+      });
+      this.emit('sessionUpdated', snapshot);
+      return { ok: true, session: snapshot };
+    })().finally(() => {
+      if (lifecycleTransitions.get(id)?.promise === transition) lifecycleTransitions.delete(id);
+    });
+    lifecycleTransitions.set(id, { kind: 'parking', promise: transition });
+    return transition;
+  }
+
+  wakeSession(id) {
+    const lifecycleTransitions = this.getLifecycleTransitions();
+    const existingTransition = lifecycleTransitions.get(id);
+    if (existingTransition?.kind === 'waking') return existingTransition.promise;
+    if (existingTransition) {
+      return Promise.resolve({ ok: false, error: 'lifecycle_transition_in_progress' });
+    }
+    const transition = (async () => {
+      const session = this.sessions.get(id);
+      this.ensureParkingFields(session);
+      if (!session || session.runtimeState !== 'auto_parked' || session.pauseReason !== 'auto_park') {
+        return { ok: false, error: 'not_parked' };
+      }
+
+      session.runtimeState = 'resuming';
+      session.wakeError = null;
+      session.claudeResumeVerified = false;
+      session.expectedCodexWakeId = isCodexType(session.cliType)
+        ? String(session.codexSessionId || '').toLowerCase()
+        : null;
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      const started = this.resumeSession(id, { recovery: true, lifecycleOwner: true });
+      if (!started || !session.pty) {
+        session.runtimeState = 'auto_parked';
+        session.status = 'paused';
+        session.pauseReason = 'auto_park';
+        session.wakeError = session.recoveryError || 'Could not start exact resume';
+        session.expectedCodexWakeId = null;
+        this.dataStore.saveSession(session);
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        return { ok: false, error: 'spawn_failed' };
+      }
+
+      const processRef = session.pty;
+      const generation = session.ptyGeneration;
+      const deadline = Date.now() + 60_000;
+      let ready = false;
+      let identityMismatch = false;
+      while (Date.now() < deadline) {
+        if (session.pty !== processRef || session.ptyGeneration !== generation) break;
+        if (session.lastPtyExitGeneration === generation) break;
+        identityMismatch = isCodexType(session.cliType) &&
+          session.codexIdentityState === 'unresolved' &&
+          /^Exact Codex wake expected /.test(session.codexIdentityError || '');
+        if (identityMismatch) break;
+        ready = session.cliType === 'claude'
+          ? session.claudeResumeVerified && session.status === 'idle'
+          : String(session.codexSessionId || '').toLowerCase() === session.expectedCodexWakeId &&
+            session.codexIdentityState === 'verified' &&
+            session.status === 'idle' &&
+            session.idleEvidence === 'codex_ready_prompt';
+        if (ready) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      if (!ready) {
+        const alreadyExited = session.lastPtyExitGeneration === generation;
+        const exitPromise = alreadyExited
+          ? Promise.resolve({ exited: true, event: session.lastPtyExitEvent })
+          : this.waitForPtyExit(processRef);
+        if (!alreadyExited) {
+          try { processRef.kill(); } catch {}
+        }
+        const exit = await exitPromise;
+        if (!exit.exited || session.pty !== processRef || session.ptyGeneration !== generation) {
+          session.runtimeState = 'wake_failed_live';
+          session.wakeError = 'Wake failed and PTY cleanup could not be confirmed';
+        } else {
+          session.pty = null;
+          session.runtimeState = 'auto_parked';
+          session.status = 'paused';
+          session.pauseReason = 'auto_park';
+          session.wakeError = identityMismatch
+            ? session.codexIdentityError
+            : 'Exact session did not become ready before timeout';
+        }
+        session.expectedCodexWakeId = null;
+        this.dataStore.saveSession(session);
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        return {
+          ok: false,
+          error: identityMismatch ? 'identity_mismatch' : 'wake_timeout',
+          session: this.getSessionSnapshot(session)
+        };
+      }
+
+      session.runtimeState = 'live';
+      session.pauseReason = null;
+      session.parkedAt = null;
+      session.wakeError = null;
+      session.expectedCodexWakeId = null;
+      session.lastUserOrOrchestratorActivityAt = new Date().toISOString();
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      this.drainMessageQueue(session);
+      return { ok: true, session: this.getSessionSnapshot(session) };
+    })().finally(() => {
+      if (lifecycleTransitions.get(id)?.promise === transition) lifecycleTransitions.delete(id);
+    });
+    lifecycleTransitions.set(id, { kind: 'waking', promise: transition });
+    return transition;
+  }
+
+  retryTerminateSession(id) {
+    const lifecycleTransitions = this.getLifecycleTransitions();
+    const existingTransition = lifecycleTransitions.get(id);
+    if (existingTransition?.kind === 'retry_kill') return existingTransition.promise;
+    if (existingTransition) {
+      return Promise.resolve({ ok: false, error: 'lifecycle_transition_in_progress' });
+    }
+    const transition = (async () => {
+      const session = this.sessions.get(id);
+      if (!session || !['parking_failed_live', 'wake_failed_live'].includes(session.runtimeState)) {
+        return { ok: false, error: 'not_in_cleanup_limbo' };
+      }
+      const processRef = session.pty;
+      const generation = session.ptyGeneration;
+      if (processRef) {
+        const alreadyExited = session.lastPtyExitGeneration === generation;
+        const exitPromise = alreadyExited
+          ? Promise.resolve({ exited: true })
+          : this.waitForPtyExit(processRef);
+        if (!alreadyExited) {
+          try { processRef.kill(); } catch {}
+        }
+        const exit = await exitPromise;
+        if (!exit.exited || session.pty !== processRef || session.ptyGeneration !== generation) {
+          session.wakeError = 'PTY termination still could not be confirmed';
+          this.emit('sessionUpdated', this.getSessionSnapshot(session));
+          return { ok: false, error: 'kill_timeout', session: this.getSessionSnapshot(session) };
+        }
+      }
+      session.pty = null;
+      session.status = 'paused';
+      session.runtimeState = 'auto_parked';
+      session.pauseReason = 'auto_park';
+      session.parkedAt = session.parkedAt || new Date().toISOString();
+      session.wakeError = null;
+      session.expectedCodexWakeId = null;
+      try {
+        this.dataStore.saveSession(session, { throwOnError: true });
+      } catch (error) {
+        session.runtimeState = 'paused';
+        session.pauseReason = 'recovery_failed';
+        session.wakeError = `PTY stopped, but cleanup state could not be saved: ${error.message}`;
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+        return { ok: false, error: 'persistence_failed', session: this.getSessionSnapshot(session) };
+      }
+      session.outputBuffer.clear();
+      const snapshot = this.getSessionSnapshot(session);
+      this.emit('sessionUpdated', snapshot);
+      return { ok: true, session: snapshot };
+    })().finally(() => {
+      if (lifecycleTransitions.get(id)?.promise === transition) lifecycleTransitions.delete(id);
+    });
+    lifecycleTransitions.set(id, { kind: 'retry_kill', promise: transition });
+    return transition;
+  }
+
   /**
    * Pause a session (kill PTY but keep metadata)
    * @param {string} id - Session ID
@@ -2839,6 +3188,7 @@ class SessionManager extends EventEmitter {
     if (!session) {
       return false;
     }
+    if (this.getLifecycleTransitions().has(id)) return false;
 
     if (session.status === 'paused' || session.status === 'completed') {
       return false;
@@ -2875,6 +3225,11 @@ class SessionManager extends EventEmitter {
     }
 
     session.status = 'paused';
+    session.runtimeState = 'paused';
+    session.pauseReason = 'manual';
+    session.parkedAt = null;
+    session.idleEvidence = null;
+    session.readySince = null;
     session.lastActivity = new Date();
 
     debugLog(`Session ${id} PAUSED via pauseSession(). Stack: ${new Error().stack}`);
@@ -2899,15 +3254,18 @@ class SessionManager extends EventEmitter {
    * @param {boolean} options.recovery - Safe startup recovery without role/startup automation or Claude fresh fallback
    * @returns {boolean} Success status
    */
-  resumeSession(id, { fresh = false, recovery = false } = {}) {
+  resumeSession(id, { fresh = false, recovery = false, lifecycleOwner = false } = {}) {
     const session = this.sessions.get(id);
     if (!session) {
       return false;
     }
+    if (this.getLifecycleTransitions().has(id) && !lifecycleOwner) return false;
 
     if (session.status !== 'paused') {
       return false;
     }
+    this.ensureParkingFields(session);
+    if (session.pauseReason === 'auto_park' && !recovery) return false;
 
     const cliType = session.cliType || 'claude';
     session.recoveryError = null;
@@ -2978,7 +3336,6 @@ class SessionManager extends EventEmitter {
       debugLog(`Session ${id}: Claude resume failed for ID ${oldClaudeSessionId || 'none'}, falling back to fresh Claude shell`);
 
       try {
-        suppressNextExit = true;
         if (session.pty) {
           session.pty.kill();
         }
@@ -2994,8 +3351,13 @@ class SessionManager extends EventEmitter {
 
     const wirePtyHandlers = (processRef) => {
       session.pty = processRef;
+      session.ptyGeneration = (Number(session.ptyGeneration) || 0) + 1;
+      session.lastPtyExitGeneration = null;
+      session.lastPtyExitEvent = null;
+      const ptyGeneration = session.ptyGeneration;
 
       processRef.onData((data) => {
+        if (session.pty !== processRef || session.ptyGeneration !== ptyGeneration) return;
         session.outputBuffer.push(data);
         this.emit('output', { sessionId: id, data });
         this.appendToTranscript(id, data);
@@ -3043,6 +3405,9 @@ class SessionManager extends EventEmitter {
       });
 
       processRef.onExit(({ exitCode, signal }) => {
+        if (session.pty !== processRef || session.ptyGeneration !== ptyGeneration) return;
+        session.lastPtyExitGeneration = ptyGeneration;
+        session.lastPtyExitEvent = { exitCode, signal };
         // Expected exit from fallback transition (old process killed intentionally)
         if (suppressNextExit) {
           suppressNextExit = false;
@@ -3059,6 +3424,7 @@ class SessionManager extends EventEmitter {
         if (session.status === 'paused') {
           return;
         }
+        if (['parking', 'parking_failed_live', 'resuming', 'wake_failed_live'].includes(session.runtimeState)) return;
 
         // If session just started and immediately exited with error, keep it paused (don't delete)
         // This preserves sessions that fail to resume (e.g., "Session ID already in use")
@@ -3109,7 +3475,7 @@ class SessionManager extends EventEmitter {
 
     if (fresh) {
       this.clearCodexStatusSampler(session);
-      session.outputBuffer = new RingBuffer(this.getOutputBufferSize(cliType));
+      session.outputBuffer = new ByteRingBuffer(this.getOutputBufferSize(cliType));
 
       if (cliType === 'claude') {
         const oldClaudeSessionId = session.claudeSessionId;
@@ -3190,6 +3556,11 @@ class SessionManager extends EventEmitter {
     }
 
     session.status = 'active';
+    if (session.runtimeState !== 'resuming') {
+      session.runtimeState = 'live';
+      session.pauseReason = null;
+      session.parkedAt = null;
+    }
     session.lastActivity = new Date();
     session.statusDetectionContext = '';
     if (isCodexType(cliType) && !session.codexLaunchStartedAt) {
@@ -3646,7 +4017,15 @@ class SessionManager extends EventEmitter {
     this.clearCodexStatusSampler?.(session);
     session.statusDetectionContext = '';
     session.lastSubmittedInputAtMs = Date.now();
+    session.lastUserOrOrchestratorActivityAt = new Date().toISOString();
     session.isComposingPrompt = false;
+    session.interactionPending = false;
+    session.interactionPendingSource = null;
+    session.idleEvidence = null;
+    session.readySince = null;
+    session.parkingProposalState = 'none';
+    session.parkingProposalReason = null;
+    session.parkingDetectedAt = null;
 
     if (
       session.status !== 'paused' &&
@@ -3751,6 +4130,7 @@ class SessionManager extends EventEmitter {
     if (!session) {
       return false;
     }
+    if (this.getLifecycleTransitions().has(id)) return false;
 
     // Clear idle timer
     if (session.idleTimer) {
@@ -3803,12 +4183,20 @@ class SessionManager extends EventEmitter {
    * Hook events provide authoritative signals (e.g. Stop = Claude finished)
    * that bypass the noisy PTY regex detection.
    */
-  applyHookStatus({ cwd, claudeSessionId, status, hookEvent }) {
+  applyHookStatus({
+    cwd,
+    claudeSessionId,
+    status,
+    hookEvent,
+    notificationType = null,
+    toolName = null
+  }) {
     // Find session: prefer exact claudeSessionId match, fall back to workingDir
     // Fallback only matches sessions with a running PTY to avoid cross-contamination
     let session = claudeSessionId
       ? [...this.sessions.values()].find(s => s.claudeSessionId === claudeSessionId)
       : null;
+    if (hookEvent === 'SessionStart' && !session) return;
     if (!session) {
       session = [...this.sessions.values()].find(
         s => s.workingDir === cwd && s.cliType === 'claude' && s.status !== 'paused' && s.pty
@@ -3818,20 +4206,61 @@ class SessionManager extends EventEmitter {
 
     const prev = session.status;
 
-    if (hookEvent === 'Stop' || hookEvent === 'Notification') {
+    if (hookEvent === 'SessionStart') {
+      if (session.runtimeState === 'resuming' && session.claudeSessionId === claudeSessionId) {
+        session.claudeResumeVerified = true;
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      }
+      return;
+    }
+
+    if (hookEvent === 'Stop') {
       // Claude finished or waiting for user input (e.g. AskUserQuestion) — force idle
       if (session.idleTimer) {
         clearInterval(session.idleTimer);
         session.idleTimer = null;
       }
-      session.lastActivity = new Date(0);
-      session.status = 'idle';
+      session.lastActivity = new Date();
+      if (session.interactionPending) {
+        session.status = 'waiting';
+        session.idleEvidence = null;
+        session.readySince = null;
+      } else {
+        session.status = 'idle';
+        session.idleEvidence = 'claude_stop_hook';
+        session.readySince = new Date().toISOString();
+      }
+    } else if (hookEvent === 'Notification') {
+      session.status = 'waiting';
+      session.interactionPending = true;
+      session.interactionPendingSource = 'claude_notification';
+      session.interactionPendingKind = notificationType || 'unknown';
+      session.idleEvidence = null;
+      session.readySince = null;
     } else if (hookEvent === 'UserPromptSubmit') {
       session.status = 'active';
       session.lastActivity = new Date();
-    } else if (hookEvent === 'PreToolUse' && session.status !== 'idle') {
-      session.status = 'editing';
+      session.lastUserOrOrchestratorActivityAt = new Date().toISOString();
+      session.interactionPending = false;
+      session.interactionPendingSource = null;
+      session.interactionPendingKind = null;
+      session.idleEvidence = null;
+      session.readySince = null;
+    } else if (hookEvent === 'PreToolUse') {
       session.lastActivity = new Date();
+      if (toolName === 'AskUserQuestion') {
+        session.interactionPending = true;
+        session.interactionPendingSource = 'claude_tool';
+        session.interactionPendingKind = 'elicitation_dialog';
+      } else if (session.interactionPendingSource === 'claude_notification' &&
+          session.interactionPendingKind === 'permission_prompt') {
+        session.interactionPending = false;
+        session.interactionPendingSource = null;
+        session.interactionPendingKind = null;
+      }
+      session.status = session.interactionPending ? 'waiting' : 'editing';
+      session.idleEvidence = null;
+      session.readySince = null;
     }
 
     if (session.status !== prev) {
@@ -3841,8 +4270,12 @@ class SessionManager extends EventEmitter {
         status: session.status,
         source: 'hook',
       });
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
       // Restart idle detection after non-Stop events
       if (hookEvent !== 'Stop') this.startIdleDetection(session);
+    } else {
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
     }
   }
 
@@ -3989,7 +4422,8 @@ class SessionManager extends EventEmitter {
    */
   sendInput(id, text) {
     const session = this.sessions.get(id);
-    if (!session || session.status === 'completed' || session.status === 'paused') {
+    if (!session || session.status === 'completed' || session.status === 'paused' ||
+        (session.runtimeState && session.runtimeState !== 'live')) {
       return false;
     }
 
@@ -4348,6 +4782,7 @@ class SessionManager extends EventEmitter {
    * @returns {object} Session snapshot (without PTY reference)
    */
   getSessionSnapshot(session) {
+    this.ensureParkingFields(session);
     return {
       id: session.id,
       name: session.name,
@@ -4375,6 +4810,19 @@ class SessionManager extends EventEmitter {
       codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
       codexIdentityError: session.codexIdentityError || null,
       recoveryError: session.recoveryError || null,
+      runtimeState: session.runtimeState,
+      pauseReason: session.pauseReason || null,
+      parkedAt: session.parkedAt || null,
+      keepAwake: !!session.keepAwake,
+      interactionPending: !!session.interactionPending,
+      idleEvidence: session.idleEvidence || null,
+      readySince: session.readySince || null,
+      wakeError: session.wakeError || null,
+      parkingProposalState: session.parkingProposalState || 'none',
+      parkingProposalReason: session.parkingProposalReason || null,
+      parkingDetectedAt: session.parkingDetectedAt || null,
+      parkingSnoozedUntil: session.parkingSnoozedUntil || null,
+      lastUserOrOrchestratorActivityAt: session.lastUserOrOrchestratorActivityAt || null,
       notes: session.notes || '',
       role: session.role || '',
       agentId: session.agentId || null,
@@ -4856,6 +5304,7 @@ class SessionManager extends EventEmitter {
    */
   canAcceptOrchestratorInput(session) {
     if (!session || !session.pty) return false;
+    if (session.runtimeState && session.runtimeState !== 'live') return false;
     if (session.status === 'completed' || session.status === 'paused') return false;
     if (session.startupSequence?.active) return false;
     if (session._writeDraining) return false;
@@ -4871,6 +5320,16 @@ class SessionManager extends EventEmitter {
     const session = this.sessions.get(id);
     if (!session) return { sent: false, queued: false, error: 'session_not_found' };
     if (session.status === 'completed') return { sent: false, queued: false, error: 'session_completed' };
+
+    this.ensureParkingFields(session);
+    if (['parking', 'auto_parked', 'resuming'].includes(session.runtimeState)) {
+      const queued = this.enqueueMessage(id, text, fromSessionId);
+      if (queued.queued && session.runtimeState === 'auto_parked') {
+        void this.wakeSession(id);
+        return { ...queued, waking: true };
+      }
+      return queued;
+    }
 
     if (this.canAcceptOrchestratorInput(session)) {
       const result = this.sendInput(id, text);
@@ -5113,11 +5572,18 @@ class SessionManager extends EventEmitter {
       this.clearCodexSessionCapture(session);
       this.clearCodexStatusSampler(session);
       session.startupSequence = null;
+      if (['parking_failed_live', 'wake_failed_live'].includes(session.runtimeState)) {
+        session.pauseReason = 'recovery_failed';
+        session.recoveryError = 'EasyCC shut down while PTY termination was unconfirmed';
+      } else if (session.runtimeState !== 'auto_parked') {
+        session.pauseReason = session.pauseReason || 'startup_restore';
+      }
       if (session.pty) {
         this._clearWriteQueue(session);
         session.pty.kill();
       }
       session.status = 'paused';
+      if (session.runtimeState !== 'auto_parked') session.runtimeState = 'paused';
       session.pty = null;
       this.dataStore.saveSession(session);  // Persist for restart
     }

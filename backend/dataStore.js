@@ -10,6 +10,7 @@ class DataStore {
     this.dataDir = dataDir;
     this.sessionsFile = path.join(dataDir, 'sessions.json');
     this.stagesFile = path.join(dataDir, 'stages.json');
+    this.parkingEventsFile = path.join(dataDir, 'parking-events.log');
     this.ensureDataDir();
   }
 
@@ -45,7 +46,7 @@ class DataStore {
    * Save a session to disk
    * @param {object} session - Session object to save
    */
-  saveSession(session) {
+  saveSession(session, { throwOnError = false } = {}) {
     try {
       const sessions = this.loadSessions();
 
@@ -79,6 +80,11 @@ class DataStore {
         codexIdentityError: session.codexIdentityError || null,
         codexTranscriptPath: session.codexTranscriptPath || null,
         recoveryError: session.recoveryError || null,
+        pauseReason: session.pauseReason || null,
+        parkedAt: session.parkedAt || null,
+        keepAwake: !!session.keepAwake,
+        lastUserOrOrchestratorActivityAt: session.lastUserOrOrchestratorActivityAt || null,
+        wakeError: session.wakeError || null,
         notes: session.notes || '',
         role: session.role || '',
         agentId: session.agentId || null,
@@ -110,8 +116,11 @@ class DataStore {
       };
 
       this.writeSessionsFile(sessions);
+      return true;
     } catch (error) {
       console.error('Error saving session:', error.message);
+      if (throwOnError) throw error;
+      return false;
     }
   }
 
@@ -153,6 +162,7 @@ class DataStore {
 
       // Update allowed metadata fields
       const allowedFields = ['name', 'notes', 'role', 'agentId', 'taskId', 'tags', 'plans', 'claudeSessionId', 'previousClaudeSessionIds', 'codexSessionId', 'codexThreadName', 'codexLaunchStartedAt', 'codexIdentityState', 'codexIdentityVerifiedAt', 'codexIdentityError', 'recoveryError', 'status', 'lastActivity',
+        'pauseReason', 'parkedAt', 'keepAwake', 'lastUserOrOrchestratorActivityAt', 'wakeError',
         'repoRoot', 'repoName', 'gitBranch', 'groupKey',
         'stage', 'priority', 'description', 'blockedBy', 'blocks', 'manuallyPlaced', 'manualPlacedAt', 'placementLocked',
         'rejectionHistory', 'completedAt', 'updatedAt', 'comments', 'messageQueue',
@@ -302,6 +312,54 @@ class DataStore {
       console.error('Error reading transitions:', error.message);
       return [];
     }
+  }
+
+  logParkingEvent(event) {
+    try {
+      fs.appendFileSync(this.parkingEventsFile, `${JSON.stringify(event)}\n`, 'utf8');
+      this.compactParkingEvents();
+      return true;
+    } catch (error) {
+      console.error('Error logging parking event:', error.message);
+      return false;
+    }
+  }
+
+  getRecentParkingEvents(limit = 100) {
+    try {
+      if (!fs.existsSync(this.parkingEventsFile)) return [];
+      return fs.readFileSync(this.parkingEventsFile, 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map(line => {
+          try { return JSON.parse(line); } catch { return null; }
+        })
+        .filter(Boolean)
+        .slice(-Math.max(1, Math.min(500, Number(limit) || 100)))
+        .reverse();
+    } catch (error) {
+      console.error('Error reading parking events:', error.message);
+      return [];
+    }
+  }
+
+  compactParkingEvents(nowMs = Date.now()) {
+    if (!fs.existsSync(this.parkingEventsFile)) return;
+    const cutoff = nowMs - 7 * 24 * 60 * 60 * 1000;
+    const parsed = fs.readFileSync(this.parkingEventsFile, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(line => {
+        try { return JSON.parse(line); } catch { return null; }
+      })
+      .filter(Boolean);
+    const retained = parsed
+      .filter(event => new Date(event.timestamp || 0).getTime() >= cutoff)
+      .slice(-500);
+    if (retained.length === parsed.length && parsed.length <= 500) return;
+    const tempFile = `${this.parkingEventsFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, retained.map(event => JSON.stringify(event)).join('\n') + (retained.length ? '\n' : ''), 'utf8');
+    fs.renameSync(tempFile, this.parkingEventsFile);
   }
 }
 

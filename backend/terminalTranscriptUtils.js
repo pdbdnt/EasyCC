@@ -60,14 +60,37 @@ function readTranscriptWindow(filePath, options = {}) {
     };
   }
 
-  const byteLength = window.endByte - window.startByte;
   const fd = fs.openSync(filePath, 'r');
 
   try {
+    let startByte = window.startByte;
+    let endByte = window.endByte;
+    const startProbe = Buffer.alloc(Math.min(4, Math.max(0, totalBytes - startByte)));
+    if (startProbe.length) fs.readSync(fd, startProbe, 0, startProbe.length, startByte);
+    while (startByte < endByte && startProbe[startByte - window.startByte] !== undefined &&
+           (startProbe[startByte - window.startByte] & 0xc0) === 0x80) {
+      startByte += 1;
+    }
+
+    const tailStart = Math.max(startByte, endByte - 4);
+    const tail = Buffer.alloc(Math.max(0, endByte - tailStart));
+    if (tail.length) fs.readSync(fd, tail, 0, tail.length, tailStart);
+    if (tail.length) {
+      let leadIndex = tail.length - 1;
+      while (leadIndex > 0 && (tail[leadIndex] & 0xc0) === 0x80) leadIndex -= 1;
+      const lead = tail[leadIndex];
+      const expected = lead < 0x80 ? 1 : (lead & 0xe0) === 0xc0 ? 2 : (lead & 0xf0) === 0xe0 ? 3 : (lead & 0xf8) === 0xf0 ? 4 : 1;
+      if (leadIndex + expected > tail.length) endByte = tailStart + leadIndex;
+    }
+
+    const byteLength = Math.max(0, endByte - startByte);
     const buffer = Buffer.alloc(byteLength);
-    fs.readSync(fd, buffer, 0, byteLength, window.startByte);
+    fs.readSync(fd, buffer, 0, byteLength, startByte);
     return {
       ...window,
+      startByte,
+      endByte,
+      hasMore: startByte > 0,
       data: buffer.toString('utf8')
     };
   } finally {

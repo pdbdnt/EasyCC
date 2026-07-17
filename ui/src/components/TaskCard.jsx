@@ -105,12 +105,13 @@ const TaskCard = forwardRef(function TaskCard({
   };
 
   const isPaused = session.status === 'paused';
-  const statusColor = getStatusColor(session.status);
+  const isParked = session.runtimeState === 'auto_parked';
+  const statusColor = isParked ? '#4aa3ff' : getStatusColor(session.status);
 
   return (
     <div
       ref={cardRef}
-      className={`task-card task-card-linked ${isDragging ? 'dragging' : ''} ${isPaused ? 'task-card-paused' : ''} ${isSelected ? 'task-card-selected' : ''}`}
+      className={`task-card task-card-linked ${isDragging ? 'dragging' : ''} ${isPaused && !isParked ? 'task-card-paused' : ''} ${isParked ? 'task-card-parked' : ''} ${isSelected ? 'task-card-selected' : ''}`}
       style={{ borderLeftColor: statusColor }}
       draggable
       onDragStart={handleDragStart}
@@ -118,7 +119,7 @@ const TaskCard = forwardRef(function TaskCard({
       onClick={handleClick}
     >
       <div className="task-card-header">
-        <span className={`status-indicator ${session.status}`} />
+        <span className={`status-indicator ${isParked ? 'parked' : session.status}`} />
         {session.isOrchestrator && <span className="orchestrator-icon" title="Orchestrator">&#9733;</span>}
         <span className="task-title">{session.name}</span>
         {(!session.cliType || session.cliType === 'claude' || session.cliType === 'claude-code') && (
@@ -147,7 +148,7 @@ const TaskCard = forwardRef(function TaskCard({
 
       <div className="task-card-meta">
         <span className="task-card-status">
-          {getStatusEmoji(session.status)} {session.status}
+          {isParked ? '◐ parked' : `${getStatusEmoji(session.status)} ${session.status}`}
         </span>
         <button
           className={`btn-icon task-lock-btn ${session.manuallyPlaced ? 'locked' : ''}`}
@@ -172,7 +173,7 @@ const TaskCard = forwardRef(function TaskCard({
 
       {(() => {
         const displayTask = getDisplayTask(session);
-        return displayTask && !isPaused ? (
+        return displayTask && (!isPaused || isParked) ? (
           <div className="task-card-current-task" title={displayTask}>
             {displayTask}
           </div>
@@ -198,14 +199,17 @@ const TaskCard = forwardRef(function TaskCard({
 
       <div className="task-card-footer">
         <span className="task-card-time">
-          {isPaused ? 'Paused' : getRelativeTime(session.lastActivity)}
+          {isParked ? `Parked ${getRelativeTime(session.parkedAt)}` : isPaused ? 'Paused' : getRelativeTime(session.lastActivity)}
         </span>
       </div>
 
-      {isPaused && (
+      {isPaused && !isParked && (
         <div className="paused-overlay">
           <span className="paused-badge">PAUSED</span>
         </div>
+      )}
+      {isParked && (
+        <div className="parked-overlay"><span className="parked-badge">PARKED</span></div>
       )}
     </div>
   );

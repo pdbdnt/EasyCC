@@ -25,6 +25,7 @@ const {
 } = require('./planPathUtils');
 const registerCodexResumeRoutes = require('./codexResumeRoutes');
 const registerRecoveryRoutes = require('./recoveryRoutes');
+const { ParkingCoordinator } = require('./parkingCoordinator');
 
 const app = fastify({ logger: true });
 const dataStore = new DataStore();
@@ -49,6 +50,11 @@ const terminalClients = new Map(); // sessionId -> Set of clients
 const activeChildren = new Set();
 // Track recent /ec-send senders: recipientId -> Map<senderId, timestamp>
 const recentSenders = new Map();
+const parkingCoordinator = new ParkingCoordinator({
+  sessionManager,
+  settingsManager,
+  broadcast: payload => broadcastDashboard(payload)
+});
 
 const VALID_TEAM_STRATEGIES = new Set(['hierarchical', 'parallel']);
 const AGENT_TEMPLATES = {
@@ -1908,6 +1914,13 @@ async function start() {
   // Pause a session
   app.post('/api/sessions/:id/pause', async (request, reply) => {
     const { id } = request.params;
+    const existing = sessionManager.getSession(id);
+    if (existing?.interactionPending && request.body?.confirmInteractionLoss !== true) {
+      return reply.status(409).send({
+        error: 'This session is waiting for a question or approval that may not survive pausing.',
+        code: 'interaction_pending_confirmation_required'
+      });
+    }
     const success = sessionManager.pauseSession(id);
 
     if (!success) {
@@ -1922,6 +1935,12 @@ async function start() {
     const { id } = request.params;
     const { fresh } = request.body || {};
     const existing = sessionManager.getSession(id);
+    if (existing?.pauseReason === 'auto_park') {
+      return reply.status(409).send({
+        error: 'Parked sessions must be woken through the exact wake flow',
+        code: 'parked_session_use_wake'
+      });
+    }
     if (['codex', 'codex-windows'].includes(existing?.cliType) && !fresh && !existing.codexSessionId) {
       return reply.status(409).send({
         error: 'Choose an exact Codex conversation before resuming',
@@ -1936,6 +1955,71 @@ async function start() {
 
     const payload = { success: true, session: sessionManager.getSession(id) };
     return ['codex', 'codex-windows'].includes(existing?.cliType) ? reply.status(202).send(payload) : payload;
+  });
+
+  app.post('/api/sessions/:id/wake', async (request, reply) => {
+    const result = await sessionManager.wakeSession(request.params.id);
+    if (!result.ok) {
+      const session = sessionManager.sessions.get(request.params.id);
+      if (session) parkingCoordinator.log('wake_failed', session, result.error, 'error');
+      const status = ['not_parked', 'identity_mismatch', 'lifecycle_transition_in_progress'].includes(result.error)
+        ? 409
+        : 504;
+      return reply.status(status).send(result);
+    }
+    parkingCoordinator.evaluate();
+    const session = sessionManager.sessions.get(request.params.id);
+    if (session) parkingCoordinator.log('wake_success', session, 'exact_resume');
+    return result;
+  });
+
+  app.post('/api/sessions/:id/retry-kill', async (request, reply) => {
+    const result = await sessionManager.retryTerminateSession(request.params.id);
+    if (!result.ok) {
+      const status = ['not_in_cleanup_limbo', 'lifecycle_transition_in_progress'].includes(result.error)
+        ? 409
+        : 504;
+      return reply.status(status).send(result);
+    }
+    parkingCoordinator.evaluate();
+    return result;
+  });
+
+  app.post('/api/sessions/:id/input', async (request, reply) => {
+    const text = request.body?.text;
+    if (typeof text !== 'string' || !text.length) return reply.status(400).send({ error: 'text is required' });
+    const result = sessionManager.sendOrEnqueue(request.params.id, text);
+    if (result.error === 'session_not_found') return reply.status(404).send(result);
+    if (result.error) return reply.status(409).send(result);
+    parkingCoordinator.evaluate();
+    return result;
+  });
+
+  app.post('/api/session-parking/confirm', async (request, reply) => {
+    const sessionIds = request.body?.sessionIds;
+    if (!Array.isArray(sessionIds)) return reply.status(400).send({ error: 'sessionIds array is required' });
+    return parkingCoordinator.confirm(sessionIds);
+  });
+
+  app.post('/api/session-parking/snooze', async (request, reply) => {
+    const sessionIds = request.body?.sessionIds;
+    if (!Array.isArray(sessionIds)) return reply.status(400).send({ error: 'sessionIds array is required' });
+    return { snoozed: parkingCoordinator.snooze(sessionIds), summary: parkingCoordinator.getSummary() };
+  });
+
+  app.get('/api/session-parking/summary', async () => ({
+    summary: parkingCoordinator.getSummary()
+  }));
+
+  app.get('/api/session-parking/events', async (request) => ({
+    events: dataStore.getRecentParkingEvents(request.query?.limit || 100)
+  }));
+
+  app.patch('/api/sessions/:id/keep-awake', async (request, reply) => {
+    const session = sessionManager.setKeepAwake(request.params.id, request.body?.keepAwake);
+    if (!session) return reply.status(404).send({ error: 'Session not found' });
+    parkingCoordinator.evaluate();
+    return { session };
   });
 
   // Get plans for a session
@@ -2768,24 +2852,52 @@ async function start() {
   // Receive Claude Code lifecycle hook events (Stop, UserPromptSubmit, PreToolUse)
   // Hook script (backend/claude-hook.js) POSTs the JSON payload from stdin here.
   app.post('/api/hook-event', async (request, reply) => {
-    const { hook_event_name, cwd, transcript_path } = request.body || {};
+    const {
+      hook_event_name,
+      cwd,
+      transcript_path,
+      session_id,
+      source,
+      notification_type,
+      tool_name
+    } = request.body || {};
     if (!hook_event_name || !cwd) return reply.send({ ok: false });
 
     // Extract claudeSessionId from transcript filename: .../abc123.jsonl → abc123
-    const claudeSessionId = transcript_path
+    const claudeSessionId = session_id || (transcript_path
       ? path.basename(transcript_path, '.jsonl')
-      : null;
+      : null);
 
     const statusMap = {
       Stop: 'idle',
       UserPromptSubmit: 'active',
       PreToolUse: 'editing',
-      Notification: 'idle',
+      Notification: 'waiting',
+      SessionStart: 'active'
     };
     const status = statusMap[hook_event_name];
     if (!status) return reply.send({ ok: true });
 
-    sessionManager.applyHookStatus({ cwd, claudeSessionId, status, hookEvent: hook_event_name });
+    if (hook_event_name === 'SessionStart') {
+      if (source !== 'resume') return reply.send({ ok: true });
+      reply.raw.once('finish', () => {
+        setImmediate(() => sessionManager.applyHookStatus({
+          cwd,
+          claudeSessionId,
+          status,
+          hookEvent: hook_event_name
+        }));
+      });
+      return reply.send({ ok: true });
+    }
+    sessionManager.applyHookStatus({
+      cwd,
+      claudeSessionId,
+      status,
+      hookEvent: hook_event_name,
+      notificationType: notification_type,
+      toolName: tool_name
+    });
     return reply.send({ ok: true });
   });
 
@@ -2979,12 +3091,14 @@ async function start() {
 
     const settings = settingsManager.updateSettings(updates);
     exportProjectAliases(settings.projectAliases);
+    parkingCoordinator.evaluate();
     return { settings };
   });
 
   // Reset settings to defaults
   app.post('/api/settings/reset', async () => {
     const settings = settingsManager.resetSettings();
+    parkingCoordinator.evaluate();
     return { settings };
   });
 
@@ -3012,21 +3126,31 @@ async function start() {
 
     // Build hook command using node with the absolute script path
     const command = `node "${scriptPath}"`;
-    const makeEntry = () => [{
+    const makeEntry = (matcher = null) => ({
+      ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command, timeout: 5 }]
-    }];
+    });
+    const withoutOwned = entries => (Array.isArray(entries) ? entries : [])
+      .map(entry => ({
+        ...entry,
+        hooks: (Array.isArray(entry?.hooks) ? entry.hooks : []).filter(hook =>
+          !(hook?.type === 'command' && String(hook.command || '').includes(scriptPath))
+        )
+      }))
+      .filter(entry => entry.hooks.length > 0);
+    const installOwned = (event, matcher = null) => {
+      existing.hooks[event] = [...withoutOwned(existing.hooks[event]), makeEntry(matcher)];
+    };
 
     existing.hooks = existing.hooks || {};
-    existing.hooks.Stop = makeEntry();
-    existing.hooks.UserPromptSubmit = makeEntry();
-    existing.hooks.PreToolUse = makeEntry();
-    existing.hooks.Notification = [{
-      matcher: 'idle_prompt',
-      hooks: [{ type: 'command', command, timeout: 5 }]
-    }];
+    installOwned('Stop');
+    installOwned('UserPromptSubmit');
+    installOwned('PreToolUse');
+    installOwned('Notification', 'idle_prompt|permission_prompt|elicitation_dialog');
+    installOwned('SessionStart', 'resume');
 
     fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2), 'utf8');
-    return { ok: true, settingsPath, events: ['Stop', 'UserPromptSubmit', 'PreToolUse', 'Notification'] };
+    return { ok: true, settingsPath, events: ['Stop', 'UserPromptSubmit', 'PreToolUse', 'Notification', 'SessionStart'] };
   });
 
   // Check if Claude Code hooks are currently installed
@@ -3036,7 +3160,11 @@ async function start() {
     try {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       const hooks = settings.hooks || {};
-      const installed = !!(hooks.Stop && hooks.UserPromptSubmit && hooks.PreToolUse);
+      const scriptPath = path.resolve(__dirname, 'claude-hook.js');
+      const hasOwned = event => (hooks[event] || []).some(entry =>
+        (entry.hooks || []).some(hook => String(hook.command || '').includes(scriptPath))
+      );
+      const installed = ['Stop', 'UserPromptSubmit', 'PreToolUse', 'Notification', 'SessionStart'].every(hasOwned);
       return { installed, hooks: Object.keys(hooks) };
     } catch {
       return { installed: false };
@@ -3050,11 +3178,20 @@ async function start() {
 
     try {
       const existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      const scriptPath = path.resolve(__dirname, 'claude-hook.js');
       if (existing.hooks) {
-        delete existing.hooks.Stop;
-        delete existing.hooks.UserPromptSubmit;
-        delete existing.hooks.PreToolUse;
-        delete existing.hooks.Notification;
+        for (const event of ['Stop', 'UserPromptSubmit', 'PreToolUse', 'Notification', 'SessionStart']) {
+          const remaining = (Array.isArray(existing.hooks[event]) ? existing.hooks[event] : [])
+            .map(entry => ({
+              ...entry,
+              hooks: (Array.isArray(entry?.hooks) ? entry.hooks : []).filter(hook =>
+                !String(hook.command || '').includes(scriptPath)
+              )
+            }))
+            .filter(entry => entry.hooks.length > 0);
+          if (remaining.length) existing.hooks[event] = remaining;
+          else delete existing.hooks[event];
+        }
         if (Object.keys(existing.hooks).length === 0) delete existing.hooks;
       }
       fs.writeFileSync(settingsPath, JSON.stringify(existing, null, 2), 'utf8');
@@ -3552,22 +3689,34 @@ async function start() {
   app.register(async function (fastify) {
     fastify.get('/socket/dashboard', { websocket: true }, (socket, req) => {
       dashboardClients.add(socket);
+      const clientId = parkingCoordinator.registerClient(socket);
 
       // Send initial sessions list
       socket.send(JSON.stringify({
         type: 'init',
+        clientId,
         sessions: sessionManager.getAllSessions(),
         agents: agentStore.listAgents(),
-        tasks: taskStore.listTasks()
+        tasks: taskStore.listTasks(),
+        parkingSummary: parkingCoordinator.getSummary()
       }));
+
+      socket.on('message', message => {
+        try {
+          const payload = JSON.parse(message.toString());
+          if (payload.type === 'presence') parkingCoordinator.updatePresence(clientId, payload);
+        } catch {}
+      });
 
       socket.on('close', () => {
         dashboardClients.delete(socket);
+        parkingCoordinator.removeClient(clientId);
       });
 
       socket.on('error', (error) => {
         console.error('Dashboard WebSocket error:', error.message);
         dashboardClients.delete(socket);
+        parkingCoordinator.removeClient(clientId);
       });
     });
   });
@@ -3593,7 +3742,9 @@ async function start() {
       // Send session status (for paused indicator)
       socket.send(JSON.stringify({
         type: 'status',
-        status: session.status
+        status: session.status,
+        runtimeState: session.runtimeState,
+        wakeError: session.wakeError || null
       }));
 
       // Send buffered output after a short delay to allow proxy to fully establish
@@ -3712,17 +3863,19 @@ async function start() {
   // Broadcast new session creation to all dashboard clients
   sessionManager.on('sessionCreated', ({ id, session }) => {
     broadcastDashboard({ type: 'sessionCreated', session });
+    parkingCoordinator.evaluate();
   });
 
   // Broadcast status changes to dashboard clients
-  sessionManager.on('statusChange', ({ sessionId, status, currentTask, error, recoveryFailure }) => {
+  sessionManager.on('statusChange', ({ sessionId, status, currentTask, error, recoveryFailure, source }) => {
     const message = JSON.stringify({
       type: 'statusChange',
       sessionId,
       status,
       currentTask,
       error: error || null,
-      recoveryFailure: !!recoveryFailure
+      recoveryFailure: !!recoveryFailure,
+      source: source || null
     });
 
     for (const client of dashboardClients) {
@@ -3732,6 +3885,7 @@ async function start() {
         console.error('Error sending to dashboard client:', error.message);
       }
     }
+    parkingCoordinator.evaluate();
 
     // Also notify terminal clients about status changes (for paused overlay)
     const termClients = terminalClients.get(sessionId);
@@ -3845,6 +3999,7 @@ async function start() {
         console.error('Error sending to dashboard client:', error.message);
       }
     }
+    parkingCoordinator.evaluate();
   });
 
   // Broadcast prompt added to dashboard clients
@@ -3974,6 +4129,12 @@ async function start() {
   // so repeated events for the same target don't restart the debounce window.
   // Hook-sourced events use a shorter debounce since they're authoritative signals.
   sessionManager.on('statusChange', ({ sessionId, status, source }) => {
+    if (source === 'parking') {
+      const existing = kanbanSyncTimers.get(sessionId);
+      if (existing) clearTimeout(existing.timer);
+      kanbanSyncTimers.delete(sessionId);
+      return;
+    }
     const existing = kanbanSyncTimers.get(sessionId);
     const session = sessionManager.getSession(sessionId);
     const recentOutput = session
@@ -4089,6 +4250,7 @@ async function start() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log('Shutting down...');
+    parkingCoordinator.stop();
     sessionManager.cleanup();
     await app.close();
     process.exit(0);
@@ -4110,6 +4272,8 @@ async function start() {
       console.warn('Could not install /ec-* skills:', err.message);
     }
     await app.listen({ port, host });
+    parkingCoordinator.start();
+    parkingCoordinator.evaluate();
     console.log(`\nEasyCC running at:`);
     console.log(`  Local:   http://localhost:${port}`);
     console.log(`  Network: http://${getLocalIP()}:${port}\n`);

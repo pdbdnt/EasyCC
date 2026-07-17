@@ -744,6 +744,7 @@ body {
 .status-indicator.waiting { background-color: var(--status-waiting); animation: pulse 1.5s infinite; }
 .status-indicator.completed { background-color: var(--status-completed); }
 .status-indicator.paused { background-color: var(--status-paused, #888888); }
+.status-indicator.parked { background-color: #4aa3ff; box-shadow: 0 0 0 2px rgba(74, 163, 255, 0.18); }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -3085,6 +3086,118 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.session-card.parked {
+  border-color: rgba(74, 163, 255, 0.55);
+  background: linear-gradient(135deg, var(--bg-primary), rgba(74, 163, 255, 0.08));
+}
+
+.session-card.parking-review {
+  border-left: 3px solid #e0a43b;
+}
+
+.parked-overlay {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+}
+
+.parked-badge,
+.parking-review-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 9px;
+  letter-spacing: .04em;
+}
+
+.parked-badge { color: #b9dcff; background: rgba(42, 125, 210, .32); }
+.parking-review-badge { color: #ffd994; background: rgba(190, 126, 20, .28); }
+
+.parking-summary-chip {
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border-radius: 12px;
+  padding: 3px 8px;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.parking-summary-chip.needs-review {
+  color: #ffd994;
+  border-color: rgba(224, 164, 59, .7);
+  background: rgba(224, 164, 59, .12);
+}
+
+.parking-confirm-overlay { z-index: 12000; }
+.parking-confirm-modal { width: min(620px, 92vw); max-height: 80vh; }
+.parking-review-list { display: flex; flex-direction: column; gap: 8px; overflow: auto; max-height: 48vh; }
+.parking-review-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+.parking-review-main { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.parking-review-main small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.parking-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(430px, 92vw);
+  z-index: 11000;
+  padding: 16px;
+  background: var(--bg-primary);
+  border-left: 1px solid var(--border-color);
+  box-shadow: -12px 0 30px rgba(0, 0, 0, .35);
+  overflow: auto;
+}
+.parking-drawer-header { display: flex; align-items: center; justify-content: space-between; }
+.parking-tabs { display: flex; gap: 6px; margin: 12px 0; }
+.parking-tabs button {
+  flex: 1;
+  padding: 7px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  border-radius: 6px;
+}
+.parking-tabs button.active { color: var(--accent-blue); border-color: var(--accent-blue); }
+.parking-history { display: flex; flex-direction: column; gap: 8px; }
+.parking-history-row { display: flex; flex-direction: column; gap: 2px; padding: 9px; border-bottom: 1px solid var(--border-color); }
+.parking-history-row small { color: var(--text-muted); }
+
+.terminal-parked-panel {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(74, 163, 255, .6);
+  border-radius: 8px;
+  background: rgba(16, 26, 38, .96);
+  z-index: 20;
+}
+.terminal-parked-heading { grid-column: 1 / -1; display: flex; justify-content: space-between; color: #b9dcff; }
+.terminal-parked-heading span { color: var(--text-muted); font-size: 11px; }
+.terminal-parked-panel textarea {
+  min-height: 52px;
+  resize: vertical;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 8px;
 }
 
 .show-paused-toggle {
@@ -6746,6 +6859,20 @@ textarea::placeholder {
 .agent-status-pill.offline {
   background: var(--bg-active);
   color: var(--text-muted);
+}
+
+.agent-status-pill.sleeping {
+  color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.14);
+  border-color: rgba(139, 92, 246, 0.35);
+}
+
+.agent-card-accent.sleeping {
+  background: #8b5cf6;
+}
+
+.agent-avatar.sleeping {
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.45);
 }
 
 .agent-card-header-actions { display: flex; gap: 6px; align-items: center; }

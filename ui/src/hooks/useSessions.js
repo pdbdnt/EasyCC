@@ -41,6 +41,10 @@ export function useSessions() {
   const selectedId = selectedIds[selectedIds.length - 1] || null;
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [initialized, setInitialized] = useState(false);
+  const [parkingSummary, setParkingSummary] = useState({
+    live: 0, parked: 0, review: 0, currentParked: [], reviewSessions: [], modalOwnerClientId: null
+  });
+  const [dashboardClientId, setDashboardClientId] = useState(null);
 
   // Fetch stages on mount
   useEffect(() => {
@@ -68,6 +72,8 @@ export function useSessions() {
         setSessions(data.sessions || []);
         setAgents(data.agents || []);
         setTasks(data.tasks || []);
+        setDashboardClientId(data.clientId || null);
+        if (data.parkingSummary) setParkingSummary(data.parkingSummary);
         // Auto-select first session if none selected
         setSelectedIds(prev => {
           if (prev.length === 0 && data.sessions?.length > 0) {
@@ -76,6 +82,12 @@ export function useSessions() {
           return prev;
         });
         setInitialized(true);
+        break;
+
+      case 'parkingSummary':
+        setParkingSummary(data.summary || {
+          live: 0, parked: 0, review: 0, currentParked: [], reviewSessions: [], modalOwnerClientId: null
+        });
         break;
 
       case 'sessionCreated':
@@ -181,11 +193,58 @@ export function useSessions() {
     setConnectionStatus('disconnected');
   }, []);
 
-  const { isConnected } = useWebSocket('/socket/dashboard', {
+  const { isConnected, send: sendDashboardMessage } = useWebSocket('/socket/dashboard', {
     onMessage: handleMessage,
     onOpen: handleOpen,
     onClose: handleClose
   });
+
+  const confirmParking = useCallback(async (sessionIds) => {
+    const response = await fetch('/api/session-parking/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionIds })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not park selected sessions');
+    return result;
+  }, []);
+
+  const snoozeParking = useCallback(async (sessionIds) => {
+    const response = await fetch('/api/session-parking/snooze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionIds })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not snooze parking');
+    return result;
+  }, []);
+
+  const wakeSession = useCallback(async (id) => {
+    const response = await fetch(`/api/sessions/${id}/wake`, { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not wake session');
+    return result;
+  }, []);
+
+  const retryTerminateSession = useCallback(async (id) => {
+    const response = await fetch(`/api/sessions/${id}/retry-kill`, { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not terminate the CLI process');
+    return result;
+  }, []);
+
+  const setKeepAwake = useCallback(async (id, keepAwake) => {
+    const response = await fetch(`/api/sessions/${id}/keep-awake`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keepAwake })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not update Keep Awake');
+    return result.session;
+  }, []);
 
   const selectSession = useCallback((id) => {
     setSelectedIds([id]);
@@ -273,9 +332,17 @@ export function useSessions() {
 
   const pauseSession = useCallback(async (id) => {
     try {
-      const response = await fetch(`/api/sessions/${id}/pause`, {
-        method: 'POST'
-      });
+      let response = await fetch(`/api/sessions/${id}/pause`, { method: 'POST' });
+      if (response.status === 409) {
+        const warning = await response.json();
+        if (warning.code !== 'interaction_pending_confirmation_required' ||
+            !window.confirm(`${warning.error}\n\nPause this session anyway?`)) return false;
+        response = await fetch(`/api/sessions/${id}/pause`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirmInteractionLoss: true })
+        });
+      }
 
       if (!response.ok) {
         const error = await response.json();
@@ -692,8 +759,16 @@ export function useSessions() {
     deleteAgent,
     connectionStatus,
     initialized,
-    isConnected
-  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, setSelectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, restartSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, initialized, isConnected]);
+    isConnected,
+    parkingSummary,
+    dashboardClientId,
+    sendDashboardMessage,
+    confirmParking,
+    snoozeParking,
+    wakeSession,
+    retryTerminateSession,
+    setKeepAwake
+  }), [sessions, agents, tasks, stages, sessionsByStage, selectedId, selectedIds, setSelectedIds, selectSession, selectMultiple, setActiveSelectedId, toggleSelectSession, createSession, killSession, pauseSession, resumeSession, restartSession, updateSession, moveSession, advanceSession, rejectSession, resetPlacement, lockPlacement, createAgent, updateAgent, startAgent, stopAgent, restartAgent, rewarmAgent, createTask, updateTask, assignTaskAgents, addTaskComment, startTaskRun, stopTaskRun, deleteTask, deleteAgent, connectionStatus, initialized, isConnected, parkingSummary, dashboardClientId, sendDashboardMessage, confirmParking, snoozeParking, wakeSession, retryTerminateSession, setKeepAwake]);
 }
 
 export default useSessions;

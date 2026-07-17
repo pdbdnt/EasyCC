@@ -66,18 +66,23 @@ function AgentSidebar({
 
       <div className="agent-sidebar-list">
         {visibleAgents.map(agent => {
+          const linkedSession = agent.activeSessionId
+            ? (sessions || []).find(session => session.id === agent.activeSessionId)
+            : null;
           const isOnline = !!agent.activeSessionId;
+          const isSleeping = linkedSession?.runtimeState === 'auto_parked';
+          const presenceClass = isSleeping ? 'sleeping' : isOnline ? 'online' : 'offline';
           return (
             <div
               key={agent.id}
-              className={`agent-card ${isOnline ? 'online' : ''} ${selectedAgentId === agent.id ? 'selected' : ''}`}
+              className={`agent-card ${presenceClass} ${selectedAgentId === agent.id ? 'selected' : ''}`}
               onClick={() => setSelectedAgentId(selectedAgentId === agent.id ? null : agent.id)}
             >
-              <div className={`agent-card-accent ${isOnline ? 'online' : 'offline'}`} />
+              <div className={`agent-card-accent ${presenceClass}`} />
               <div className="agent-card-body">
                 <div className="agent-card-header">
                   <div className="agent-card-title">
-                    <div className={`agent-avatar ${isOnline ? 'online' : ''}`}>
+                    <div className={`agent-avatar ${presenceClass}`}>
                       {getInitials(agent.name)}
                     </div>
                     <div className="agent-card-name-group">
@@ -88,8 +93,8 @@ function AgentSidebar({
                     </div>
                   </div>
                   <div className="agent-card-header-actions">
-                    <span className={`agent-status-pill ${isOnline ? 'online' : 'offline'}`}>
-                      {isOnline ? 'online' : 'offline'}
+                    <span className={`agent-status-pill ${presenceClass}`}>
+                      {isSleeping ? 'sleeping' : isOnline ? 'online' : 'offline'}
                     </span>
                   </div>
                 </div>
@@ -158,6 +163,7 @@ function AgentDetailModal({
     ? (sessions || []).find(s => s.id === agent.activeSessionId)
     : null;
   const isOnline = !!agent.activeSessionId;
+  const isSleeping = session?.runtimeState === 'auto_parked';
 
   const toggleSection = (section) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
@@ -187,12 +193,14 @@ function AgentDetailModal({
       <div className="modal agent-detail-modal" onClick={e => e.stopPropagation()}>
         <div className="agent-detail-header">
           <div className="agent-detail-title-row">
-            <div className={`agent-avatar large ${isOnline ? 'online' : ''}`}>
+            <div className={`agent-avatar large ${isSleeping ? 'sleeping' : isOnline ? 'online' : ''}`}>
               {getInitials(agent.name)}
             </div>
             <div>
               <h3>{agent.name}</h3>
-              <span className="agent-detail-subtitle">{agent.cliType} agent</span>
+              <span className="agent-detail-subtitle">
+                {agent.cliType} agent · {isSleeping ? 'sleeping' : isOnline ? 'online' : 'offline'}
+              </span>
             </div>
           </div>
           <button className="modal-close-btn" onClick={onClose}>&times;</button>

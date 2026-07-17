@@ -3,7 +3,7 @@ import PlanViewer from './PlanViewer';
 
 const REACTION_EMOJIS = ['\uD83D\uDC4D', '\u2705', '\uD83D\uDC40', '\u2764\uFE0F', '\uD83C\uDF89', '\uD83E\uDD14'];
 
-function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, onKill }) {
+function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, onKill, onSetKeepAwake }) {
   const [activeTab, setActiveTab] = useState('details');
   const [name, setName] = useState(session?.name || '');
   const [notes, setNotes] = useState(session?.notes || '');
@@ -377,6 +377,11 @@ function SessionDetailsModal({ session, onClose, onUpdate, onPause, onResume, on
                     Pause Session
                   </button>
                 ) : null}
+                {session.status !== 'completed' && (
+                  <button className="btn btn-secondary" onClick={() => onSetKeepAwake?.(session.id, !session.keepAwake)}>
+                    {session.keepAwake ? 'Disable Keep Awake' : 'Keep Awake'}
+                  </button>
+                )}
                 <button className="btn btn-danger" onClick={() => onKill(session.id)}>
                   Delete Session
                 </button>

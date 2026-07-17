@@ -85,7 +85,9 @@ function Dashboard({
   initialCollapsedGroups,
   onThemeToggle,
   currentTheme,
-  onViewOrchestratorGroup
+  onViewOrchestratorGroup,
+  parkingSummary,
+  onOpenParking
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups || new Set());
   const [groupNameInput, setGroupNameInput] = useState('');
@@ -101,6 +103,7 @@ function Dashboard({
   const [projectFilters, setProjectFilters] = useState(new Set());
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [showPaused, setShowPaused] = useState(true);
+  const [showParked, setShowParked] = useState(true);
   const projectDropdownRef = useRef(null);
 
   // Sync project filter from Kanban view when switching back via Ctrl+O
@@ -235,9 +238,10 @@ function Dashboard({
     // Local sidebar filters
     if (stageFilter) result = result.filter(s => s.stage === stageFilter);
     if (projectFilters.size > 0) result = result.filter(s => projectFilters.has(getSessionGroupKey(s)));
-    if (!showPaused) result = result.filter(s => s.status !== 'paused');
+    if (!showPaused) result = result.filter(s => s.status !== 'paused' || s.runtimeState === 'auto_parked');
+    if (!showParked) result = result.filter(s => s.runtimeState !== 'auto_parked');
     return result;
-  }, [sessions, kanbanColumnFilter, kanbanProjectFilter, stageFilter, projectFilters, showPaused]);
+  }, [sessions, kanbanColumnFilter, kanbanProjectFilter, stageFilter, projectFilters, showPaused, showParked]);
 
   // Build child sessions map: parentSessionId -> [child sessions]
   const childSessionsMap = useMemo(() => {
@@ -546,6 +550,14 @@ function Dashboard({
       <div className="sidebar-header">
         <h1>EasyCC</h1>
         <div className="sidebar-header-actions">
+          <button
+            className={`parking-summary-chip ${(parkingSummary?.review || 0) > 0 ? 'needs-review' : ''}`}
+            onClick={onOpenParking}
+            title="Open session parking"
+          >
+            Live {parkingSummary?.live || 0} · Parked {parkingSummary?.parked || 0}
+            {(parkingSummary?.review || 0) > 0 && <> · Review {parkingSummary.review}</>}
+          </button>
           {onThemeToggle && (
             <button
               className="theme-toggle-btn"
@@ -725,6 +737,14 @@ function Dashboard({
             onChange={(event) => setShowPaused(event.target.checked)}
           />
           <span>Paused Sessions</span>
+        </label>
+        <label className="show-paused-toggle">
+          <input
+            type="checkbox"
+            checked={showParked}
+            onChange={(event) => setShowParked(event.target.checked)}
+          />
+          <span>Parked Sessions</span>
         </label>
       </div>
       <div className="sessions-list">

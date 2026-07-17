@@ -52,6 +52,20 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
     setHasChanges(true);
   }, []);
 
+  const updateAutoParking = useCallback((key, value) => {
+    setLocalSettings(prev => ({
+      ...prev,
+      session: {
+        ...prev.session,
+        autoParking: {
+          ...prev.session?.autoParking,
+          [key]: value
+        }
+      }
+    }));
+    setHasChanges(true);
+  }, []);
+
   const handleSave = async () => {
     const success = await onSave(localSettings);
     if (success) {
@@ -403,6 +417,43 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
 
           {activeTab === 'general' && (
             <div className="settings-section">
+              <h4 className="settings-subtitle">Session parking</h4>
+              <p className="settings-description">
+                Detect resumable background AI sessions and ask before stopping their CLI processes.
+              </p>
+              <div className="form-group checkbox-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={localSettings.session?.autoParking?.enabled !== false}
+                    onChange={event => updateAutoParking('enabled', event.target.checked)}
+                  />
+                  Enable parking suggestions
+                </label>
+              </div>
+              <div className="form-group">
+                <label>Maximum live AI sessions</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  value={localSettings.session?.autoParking?.maxLiveAiSessions ?? 6}
+                  onChange={event => updateAutoParking('maxLiveAiSessions', Number(event.target.value))}
+                />
+              </div>
+              <div className="form-group">
+                <label>Background idle minutes</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="120"
+                  value={localSettings.session?.autoParking?.idleMinutes ?? 15}
+                  onChange={event => updateAutoParking('idleMinutes', Number(event.target.value))}
+                />
+              </div>
+              <p className="settings-description">Confirmation is required. Not now snoozes a suggestion for 15 minutes.</p>
+              <div className="settings-divider" />
+
               <h4 className="settings-subtitle">Codex (W) integration</h4>
               <p className="settings-description">
                 Runs the Windows-native Codex CLI in Windows folders. EasyCC installs an owned Codex profile and uses a SessionStart hook to capture the exact conversation ID. The hook-trust bypass applies to this Codex invocation.

@@ -108,6 +108,8 @@ function SessionCard({
   };
 
   const isPaused = session.status === 'paused';
+  const isParked = session.runtimeState === 'auto_parked';
+  const isParkingReview = session.parkingProposalState === 'pending_review';
   const currentStage = stages.find(s => s.id === session.stage);
   const canViewGroup = session.isOrchestrator && childCount > 0 && typeof onViewOrchestratorGroup === 'function';
 
@@ -118,7 +120,7 @@ function SessionCard({
 
   return (
     <div
-      className={`session-card ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''} ${isGroupFocused ? 'group-focused' : ''} ${isPaused ? 'paused' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}${session.isOrchestrator ? ' session-card--orchestrator' : ''}${isChildSession ? ' session-card--child' : ''}`}
+      className={`session-card ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''} ${isGroupFocused ? 'group-focused' : ''} ${isPaused && !isParked ? 'paused' : ''} ${isParked ? 'parked' : ''} ${isParkingReview ? 'parking-review' : ''} ${isRecentlyEntered ? 'recently-entered' : ''}${session.isOrchestrator ? ' session-card--orchestrator' : ''}${isChildSession ? ' session-card--child' : ''}`}
       onClick={handleClick}
     >
       {hintCode && (
@@ -132,7 +134,7 @@ function SessionCard({
       )}
       <div className="session-card-header">
         <span className="session-name" onDoubleClick={handleNameDoubleClick}>
-          <span className={`status-indicator ${session.status}`} />
+          <span className={`status-indicator ${isParked ? 'parked' : session.status}`} />
           {isEditing ? (
             <input
               type="text"
@@ -188,14 +190,14 @@ function SessionCard({
             </>
           )}
         </span>
-        <span className={`session-status ${session.status}`}>
-          {getStatusEmoji(session.status)} {session.status}
+        <span className={`session-status ${isParked ? 'parked' : session.status}`}>
+          {isParked ? '◐ parked' : `${getStatusEmoji(session.status)} ${session.status}`}
         </span>
       </div>
 
       {(() => {
         const displayTask = getDisplayTask(session);
-        return displayTask && !isPaused ? (
+        return displayTask && (!isPaused || isParked) ? (
           <div className="session-task" title={displayTask}>
             {displayTask}
           </div>
@@ -274,7 +276,11 @@ function SessionCard({
           </div>
         )}
         <div className="session-time">
-          {isPaused ? 'Paused' : `Last activity: ${getRelativeTime(session.lastActivity)}`}
+          {isParked
+            ? `Parked ${getRelativeTime(session.parkedAt)}`
+            : isPaused
+              ? 'Paused'
+              : `Last activity: ${getRelativeTime(session.lastActivity)}`}
         </div>
         {canViewGroup && (
           <button
@@ -297,12 +303,20 @@ function SessionCard({
         </button>
       </div>
 
-      {isPaused && (
+      {isPaused && !isParked && (
         <div className="paused-overlay">
           <span className="paused-badge" title={session.recoveryError || undefined}>
             {session.recoveryError ? 'RECOVERY FAILED' : 'PAUSED'}
           </span>
         </div>
+      )}
+      {isParked && (
+        <div className="parked-overlay">
+          <span className="parked-badge">PARKED</span>
+        </div>
+      )}
+      {isParkingReview && !isParked && (
+        <span className="parking-review-badge">READY TO PARK</span>
       )}
     </div>
   );

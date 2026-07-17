@@ -21,7 +21,7 @@ function deepMerge(defaults, saved) {
 
 // Default settings (should match backend)
 const defaultSettings = {
-  version: 1,
+  version: 2,
   keyboard: {
     copyKey: 'Ctrl+C',
     pasteKey: 'Ctrl+V',
@@ -51,7 +51,7 @@ const defaultSettings = {
     fontFamily: "Consolas, Monaco, 'Courier New', monospace",
     cursorStyle: 'block',
     cursorBlink: true,
-    scrollback: 20000
+    scrollback: 5000
   },
   ui: {
     defaultView: 'list',
@@ -63,7 +63,14 @@ const defaultSettings = {
   },
   session: {
     defaultWorkingDir: '',
-    startupRecoveryMode: 'ask'
+    startupRecoveryMode: 'ask',
+    autoParking: {
+      enabled: true,
+      confirmBeforeParking: true,
+      maxLiveAiSessions: 6,
+      idleMinutes: 15,
+      snoozeMinutes: 15
+    }
   },
   general: {
     clearTerminalWhenSessionListEmpty: false

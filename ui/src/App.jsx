@@ -13,6 +13,7 @@ import AgentSidebar from './components/AgentSidebar';
 import ToastContainer from './components/Toast';
 import CodexResumeModal from './components/CodexResumeModal';
 import StartupRecoveryModal from './components/StartupRecoveryModal';
+import ParkingReview from './components/ParkingReview';
 import { useSessions } from './hooks/useSessions';
 import { useSessionGroups } from './hooks/useSessionGroups';
 import { useContextSidebar } from './hooks/useContextSidebar';
@@ -22,6 +23,8 @@ import { useToast } from './hooks/useToast';
 import { registerHint, unregisterHint } from './utils/hintRegistry';
 
 const makePaneId = () => `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const isNavigableSession = session =>
+  session.status !== 'paused' || session.runtimeState === 'auto_parked';
 
 function getGridLayout(count) {
   if (count <= 1) return { cols: 1, rows: 1 };
@@ -126,7 +129,15 @@ function App() {
     deleteTask,
     deleteAgent,
     connectionStatus,
-    initialized: sessionsInitialized
+    initialized: sessionsInitialized,
+    parkingSummary,
+    dashboardClientId,
+    sendDashboardMessage,
+    confirmParking,
+    snoozeParking,
+    wakeSession,
+    retryTerminateSession,
+    setKeepAwake
   } = useSessions();
   const { isVisible: sidebarVisible, toggle: toggleSidebar, hide: hideSidebar } = useContextSidebar();
   const { settings, loading: settingsLoading, error: settingsError, updateSettings, resetSettings } = useSettings();
@@ -161,6 +172,7 @@ function App() {
   const [multiPaneLayout, setMultiPaneLayout] = useState('auto'); // 'auto' | 'row' | 'column'
   const [multiPaneSizes, setMultiPaneSizes] = useState(null); // null=equal, Array for row/col, {cols:[]} for grid
   const [manualHiddenTerminalFilter, setManualHiddenTerminalFilter] = useState(null);
+  const [parkingDrawerOpen, setParkingDrawerOpen] = useState(false);
   const [viewTransition, setViewTransition] = useState({
     active: false,
     direction: null,
@@ -198,6 +210,56 @@ function App() {
     triggerKey: hintModeSettings.triggerKey
   });
   const confirmBeforeLeave = settings?.ui?.confirmBeforeLeave ?? true;
+
+  useEffect(() => {
+    if (!dashboardClientId) return undefined;
+    const sendPresence = () => {
+      const visibleIds = [...new Set([
+        ...(terminalPanes || []).map(pane => pane.sessionId),
+        ...(selectedId ? [selectedId] : [])
+      ])];
+      sendDashboardMessage({
+        type: 'presence',
+        focused: document.hasFocus() && !document.hidden,
+        minimized: document.hidden,
+        visibleSessionIds: visibleIds
+      });
+    };
+    sendPresence();
+    const interval = setInterval(sendPresence, 15_000);
+    window.addEventListener('focus', sendPresence);
+    window.addEventListener('blur', sendPresence);
+    document.addEventListener('visibilitychange', sendPresence);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', sendPresence);
+      window.removeEventListener('blur', sendPresence);
+      document.removeEventListener('visibilitychange', sendPresence);
+    };
+  }, [dashboardClientId, selectedId, sendDashboardMessage, terminalPanes]);
+
+  const handleConfirmParking = useCallback(async (ids) => {
+    try {
+      const result = await confirmParking(ids);
+      if (result.parked?.length) addToast(`Parked ${result.parked.length} session${result.parked.length === 1 ? '' : 's'}`, 'success');
+      if (result.skipped?.length) addToast(`${result.skipped.length} session${result.skipped.length === 1 ? '' : 's'} stayed live`, 'info');
+      return result;
+    } catch (error) {
+      addToast(error.message, 'error', 5000);
+      throw error;
+    }
+  }, [addToast, confirmParking]);
+
+  const handleSnoozeParking = useCallback(async (ids) => {
+    try {
+      const result = await snoozeParking(ids);
+      addToast('Parking review snoozed for 15 minutes', 'info');
+      return result;
+    } catch (error) {
+      addToast(error.message, 'error', 5000);
+      throw error;
+    }
+  }, [addToast, snoozeParking]);
 
   const openCodexRecovery = useCallback(() => {
     setCodexResumeScope({ startup: true });
@@ -839,7 +901,7 @@ function App() {
       const allVisible = [];
       for (const [, sessionsInGroup] of groupedSessions) {
         for (const item of sessionsInGroup) {
-          if (item.session.status !== 'paused') allVisible.push(item);
+          if (isNavigableSession(item.session)) allVisible.push(item);
         }
       }
       if (allVisible.length > 0) {
@@ -851,7 +913,7 @@ function App() {
     }
 
     // Filter out paused sessions within this group
-    const eligible = currentGroup.filter(item => item.session.status !== 'paused');
+    const eligible = currentGroup.filter(item => isNavigableSession(item.session));
     if (eligible.length === 0) return;
 
     const currentIndex = eligible.findIndex(item => item.session.id === selectedId);
@@ -877,7 +939,7 @@ function App() {
     for (const [dirName, sessionsInGroup] of groupedSessions) {
       if (collapsedGroups.has(dirName)) continue;
       for (const item of sessionsInGroup) {
-        if (item.session.status === 'paused') continue;
+        if (!isNavigableSession(item.session)) continue;
         visibleSessions.push(item);
       }
     }
@@ -1630,6 +1692,8 @@ function App() {
             kanbanRects={kanbanRectsRef.current}
             onKanbanRectsConsumed={handleKanbanRectsConsumed}
             sidebarCardRefsRef={sidebarCardRefsRef}
+            parkingSummary={parkingSummary}
+            onOpenParking={() => setParkingDrawerOpen(true)}
           />
         )}
       </aside>
@@ -1849,6 +1913,9 @@ function App() {
                       onKillSession={() => killSession(paneSession.id)}
                       onPauseSession={pauseSession}
                       onResumeSession={handleResumeSession}
+                      onWakeSession={wakeSession}
+                      onRetryTerminateSession={retryTerminateSession}
+                      onSetKeepAwake={setKeepAwake}
                       onRestartSession={restartSession}
                       onToggleSidebar={toggleSidebar}
                       sidebarVisible={sidebarVisible}
@@ -1991,6 +2058,7 @@ function App() {
           onPause={handlePauseFromDetails}
           onResume={handleResumeFromDetails}
           onKill={handleKillFromDetails}
+          onSetKeepAwake={setKeepAwake}
         />
       )}
       {hintModeActive && (
@@ -1999,6 +2067,20 @@ function App() {
           <span className="typed-chars">{typedChars || '_'}</span>
         </div>
       )}
+      <ParkingReview
+        summary={parkingSummary}
+        clientId={dashboardClientId}
+        drawerOpen={parkingDrawerOpen}
+        onCloseDrawer={() => setParkingDrawerOpen(false)}
+        onConfirm={handleConfirmParking}
+        onSnooze={handleSnoozeParking}
+        onKeepAwake={setKeepAwake}
+        onWake={wakeSession}
+        onOpenSession={(id) => {
+          selectSession(id);
+          setParkingDrawerOpen(false);
+        }}
+      />
       {showCloseSessionModal && pendingCloseSession && (
         <div className="modal-overlay" onClick={handleCancelCloseCurrentSession} onKeyDown={e => { if (e.key === 'Escape') handleCancelCloseCurrentSession(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>

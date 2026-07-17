@@ -79,6 +79,9 @@ const TerminalView = forwardRef(function TerminalView({
   onKillSession,
   onPauseSession,
   onResumeSession,
+  onWakeSession,
+  onRetryTerminateSession,
+  onSetKeepAwake,
   onRestartSession,
   onToggleSidebar,
   sidebarVisible,
@@ -99,6 +102,9 @@ const TerminalView = forwardRef(function TerminalView({
   const wsRef = useRef(null);
   const currentSessionId = useRef(null);
   const [sessionStatus, setSessionStatus] = useState(session?.status || 'active');
+  const runtimeStateRef = useRef(session?.runtimeState || 'live');
+  const [parkedDraft, setParkedDraft] = useState('');
+  const [wakeStarted, setWakeStarted] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(session?.name || '');
   const ctrlCPendingRef = useRef(false);
@@ -301,7 +307,7 @@ const TerminalView = forwardRef(function TerminalView({
     fontFamily: "Consolas, Monaco, 'Courier New', monospace",
     cursorStyle: 'block',
     cursorBlink: true,
-    scrollback: 20000
+    scrollback: 5000
   };
 
   const keyboardSettings = settings?.keyboard || {
@@ -737,6 +743,22 @@ const TerminalView = forwardRef(function TerminalView({
       // When picker is open, all input is handled by attachCustomKeyEventHandler
       // This is a safety net — suppress everything from PTY while picker is open
       if (atPickerRef.current !== null) return;
+      if (runtimeStateRef.current === 'auto_parked' || runtimeStateRef.current === 'resuming') {
+        const parkedInput = data
+          .replaceAll('\x1b[200~', '')
+          .replaceAll('\x1b[201~', '');
+        const hasPrintableInput = !parkedInput.startsWith('\x1b') &&
+          [...parkedInput].some(char => char.charCodeAt(0) >= 32 && char !== '\x7f');
+        if (runtimeStateRef.current === 'auto_parked' && hasPrintableInput) {
+          setWakeStarted(true);
+          void onWakeSession?.(currentSessionId.current).catch(() => {});
+        }
+        if (parkedInput === '\x7f' || parkedInput === '\b') setParkedDraft(value => value.slice(0, -1));
+        else if (!parkedInput.startsWith('\x1b') && parkedInput !== '\r' && parkedInput !== '\n') {
+          setParkedDraft(value => value + parkedInput);
+        }
+        return;
+      }
 
       // Track buffer so @ picker knows the current line context
       if (data === '\x7f' || data === '\b') {
@@ -795,6 +817,11 @@ const TerminalView = forwardRef(function TerminalView({
     };
   }, []);
 
+  useEffect(() => {
+    runtimeStateRef.current = session?.runtimeState || 'live';
+    if (session?.runtimeState === 'live') setWakeStarted(false);
+  }, [session?.runtimeState]);
+
   // Connect to session when session ID changes
   // Status updates come via WebSocket (line 66), not props
   useEffect(() => {
@@ -825,6 +852,33 @@ const TerminalView = forwardRef(function TerminalView({
       refreshHistoryMeta(session.id);
     }
   }, [session?.id, connect, refreshHistoryMeta]);
+
+  useEffect(() => {
+    if (!session?.id || session.runtimeState !== 'auto_parked') return;
+    const controller = new AbortController();
+    fetch(`/api/sessions/${session.id}/transcript?limitBytes=${DEFAULT_HISTORY_PAGE_BYTES}`, {
+      signal: controller.signal
+    })
+      .then(response => response.json())
+      .then(data => {
+        const transcript = data.transcript || {};
+        renderedOutputRef.current = transcript.data || '';
+        historyPrefixRef.current = '';
+        setHistoryState(prev => ({
+          ...prev,
+          hasOlderContent: !!transcript.hasMore || (transcript.startByte || 0) > 0,
+          hasMore: !!transcript.hasMore,
+          beforeByte: transcript.startByte || 0,
+          loadedBytes: (transcript.endByte || 0) - (transcript.startByte || 0),
+          olderBytesAvailable: transcript.olderBytesAvailable || 0
+        }));
+        rebuildTerminal();
+      })
+      .catch(error => {
+        if (error.name !== 'AbortError') console.error('Failed to load parked transcript:', error);
+      });
+    return () => controller.abort();
+  }, [rebuildTerminal, session?.id, session?.runtimeState]);
 
   // Update terminal settings when they change
   useEffect(() => {
@@ -979,7 +1033,19 @@ const TerminalView = forwardRef(function TerminalView({
   };
 
   const handleResume = () => {
-    onResumeSession?.(session.id);
+    if (session?.runtimeState === 'auto_parked') onWakeSession?.(session.id);
+    else onResumeSession?.(session.id);
+  };
+
+  const submitParkedDraft = async () => {
+    const text = parkedDraft.trimEnd();
+    if (!text || !session?.id) return;
+    const response = await fetch(`/api/sessions/${session.id}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `${text}\r` })
+    });
+    if (response.ok) setParkedDraft('');
   };
 
   const handleStartFresh = () => {
@@ -1011,7 +1077,8 @@ const TerminalView = forwardRef(function TerminalView({
     }
   };
 
-  const isPaused = sessionStatus === 'paused';
+  const isParked = session?.runtimeState === 'auto_parked' || session?.runtimeState === 'resuming';
+  const isPaused = sessionStatus === 'paused' && !isParked;
   const isCompleted = sessionStatus === 'completed';
   const canRestartFresh = ['codex', 'codex-windows'].includes(session?.cliType) && !isCompleted;
 
@@ -1098,7 +1165,7 @@ const TerminalView = forwardRef(function TerminalView({
     <div className="terminal-container">
       {!hideHeader && <div className="terminal-header">
         <div className="terminal-title" onDoubleClick={handleNameDoubleClick}>
-          <span className={`status-indicator ${sessionStatus}`} />
+          <span className={`status-indicator ${isParked ? 'parked' : sessionStatus}`} />
           {isEditingName ? (
             <input
               type="text"
@@ -1186,7 +1253,16 @@ const TerminalView = forwardRef(function TerminalView({
               Restart
             </button>
           )}
-          {isPaused ? (
+          {isParked ? (
+            <>
+              <button className="btn btn-primary btn-small" onClick={handleResume}>
+                {session?.runtimeState === 'resuming' ? 'Waking…' : 'Wake'}
+              </button>
+              <button className="btn btn-secondary btn-small" onClick={() => onSetKeepAwake?.(session.id, true)}>
+                Keep Awake
+              </button>
+            </>
+          ) : isPaused ? (
             <button className="btn btn-primary btn-small" onClick={handleResume}>
               Resume
             </button>
@@ -1221,6 +1297,50 @@ const TerminalView = forwardRef(function TerminalView({
                 </button>
               </div>
             </div>
+          </div>
+        )}
+        {isParked && (
+          <div className="terminal-parked-panel">
+            <div className="terminal-parked-heading">
+              <strong>{session?.runtimeState === 'resuming' ? 'Waking exact session…' : 'Parked · transcript only'}</strong>
+              <span>{session?.wakeError || 'Typing here starts the exact resume flow.'}</span>
+            </div>
+            <textarea
+              value={parkedDraft}
+              onChange={event => {
+                const nextValue = event.target.value;
+                if (!wakeStarted &&
+                    session?.runtimeState === 'auto_parked' &&
+                    nextValue.length > parkedDraft.length) {
+                  setWakeStarted(true);
+                  void onWakeSession?.(session.id).catch(() => {});
+                }
+                setParkedDraft(nextValue);
+              }}
+              onKeyDown={event => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void submitParkedDraft();
+                } else if (event.key === 'Escape') {
+                  setParkedDraft('');
+                }
+              }}
+              placeholder="Type while the session wakes…"
+            />
+            <button className="btn btn-primary btn-small" onClick={submitParkedDraft} disabled={!parkedDraft.trim()}>
+              Send
+            </button>
+          </div>
+        )}
+        {['parking_failed_live', 'wake_failed_live'].includes(session?.runtimeState) && (
+          <div className="terminal-parked-panel">
+            <div className="terminal-parked-heading">
+              <strong>Process cleanup needs attention</strong>
+              <span>{session?.wakeError || 'EasyCC could not confirm that the CLI process stopped.'}</span>
+            </div>
+            <button className="btn btn-danger btn-small" onClick={() => onRetryTerminateSession?.(session.id)}>
+              Retry Kill
+            </button>
           </div>
         )}
         {ecResult && (

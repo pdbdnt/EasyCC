@@ -21,7 +21,7 @@ class SettingsManager {
    */
   getDefaults() {
     return {
-      version: 1,
+      version: 2,
       keyboard: {
         copyKey: 'Ctrl+C',
         pasteKey: 'Ctrl+V',
@@ -51,7 +51,7 @@ class SettingsManager {
         fontFamily: "Consolas, Monaco, 'Courier New', monospace",
         cursorStyle: 'block',
         cursorBlink: true,
-        scrollback: 20000
+        scrollback: 5000
       },
       ui: {
         defaultView: 'list',
@@ -63,7 +63,14 @@ class SettingsManager {
       },
       session: {
         defaultWorkingDir: '',
-        startupRecoveryMode: 'ask'
+        startupRecoveryMode: 'ask',
+        autoParking: {
+          enabled: true,
+          confirmBeforeParking: true,
+          maxLiveAiSessions: 6,
+          idleMinutes: 15,
+          snoozeMinutes: 15
+        }
       },
       general: {
         clearTerminalWhenSessionListEmpty: false
@@ -156,13 +163,27 @@ class SettingsManager {
    */
   mergeWithDefaults(settings) {
     const defaults = this.getDefaults();
-    const merged = this.deepMerge(defaults, settings || {});
+    const source = settings || {};
+    const sourceVersion = Number(source.version) || 1;
+    const migrated = this.deepMerge({}, source);
+    if (sourceVersion < 2 && migrated.terminal?.scrollback === 20000) {
+      migrated.terminal.scrollback = 5000;
+    }
+    migrated.version = 2;
+    const merged = this.deepMerge(defaults, migrated);
     const validModes = new Set(['ask', 'auto-resume', 'restore-paused']);
     if (!validModes.has(merged.session?.startupRecoveryMode)) {
       merged.session.startupRecoveryMode = 'ask';
     }
     if (merged.session) {
       delete merged.session.autoResumeOnStart;
+      const parking = merged.session.autoParking || {};
+      parking.enabled = parking.enabled !== false;
+      parking.confirmBeforeParking = true;
+      parking.maxLiveAiSessions = Math.max(1, Math.min(20, Number(parking.maxLiveAiSessions) || 6));
+      parking.idleMinutes = Math.max(1, Math.min(120, Number(parking.idleMinutes) || 15));
+      parking.snoozeMinutes = 15;
+      merged.session.autoParking = parking;
     }
     return merged;
   }
