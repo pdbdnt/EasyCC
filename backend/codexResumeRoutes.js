@@ -10,6 +10,7 @@ function registerCodexResumeRoutes(app, { sessionManager }) {
   app.post('/api/codex/resume-selection', async (request, reply) => {
     const selections = request.body?.selections;
     const targetEasyccSessionId = request.body?.easyccSessionId || '';
+    const historyRuntime = request.body?.historyRuntime || '';
     if (!Array.isArray(selections) || selections.length === 0) {
       return reply.status(400).send({ error: 'Select at least one Codex conversation' });
     }
@@ -26,6 +27,12 @@ function registerCodexResumeRoutes(app, { sessionManager }) {
     if (targetEasyccSessionId && typeof targetEasyccSessionId !== 'string') {
       return reply.status(400).send({ error: 'EasyCC session ID must be a string' });
     }
+    if (historyRuntime && !['wsl', 'windows'].includes(historyRuntime)) {
+      return reply.status(400).send({ error: 'Codex history runtime must be wsl or windows' });
+    }
+    if (!targetEasyccSessionId && !historyRuntime) {
+      return reply.status(400).send({ error: 'Codex history runtime is required' });
+    }
     if (targetEasyccSessionId && selections.length !== 1) {
       return reply.status(400).send({ error: 'Choose exactly one conversation for this EasyCC card' });
     }
@@ -39,7 +46,11 @@ function registerCodexResumeRoutes(app, { sessionManager }) {
       const scopedSelections = targetEasyccSessionId
         ? selections.map((selection) => ({ ...selection, easyccSessionId: targetEasyccSessionId }))
         : selections;
-      const result = await sessionManager.resumeCodexSelections(scopedSelections, { targetEasyccSessionId });
+      const options = {
+        targetEasyccSessionId,
+        ...(historyRuntime ? { historyRuntime } : {})
+      };
+      const result = await sessionManager.resumeCodexSelections(scopedSelections, options);
       return reply.status(202).send(result);
     } catch (error) {
       return reply.status(500).send({ error: `Could not resume Codex conversations: ${error.message}` });

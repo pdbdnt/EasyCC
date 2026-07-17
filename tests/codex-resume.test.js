@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   CodexSessionService,
   buildProcessScanProbe,
@@ -108,6 +111,24 @@ function makeCatalogRunner() {
     }
     return '';
   };
+}
+
+function createWindowsHistory(t, { id = IDS.first, cwd = 'C:\\Users\\denni\\apps\\specsket-ph2.5' } = {}) {
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'easycc-codex-windows-'));
+  t.after(() => fs.rmSync(codexHome, { recursive: true, force: true }));
+  const sessionsDir = path.join(codexHome, 'sessions', '2026', '07', '17');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, 'session_index.jsonl'), `${JSON.stringify({
+    id,
+    thread_name: 'Windows Specsket conversation',
+    updated_at: '2026-07-17T01:00:00.000Z'
+  })}\n`);
+  const rolloutPath = path.join(sessionsDir, `rollout-test-${id}.jsonl`);
+  fs.writeFileSync(rolloutPath, [
+    sessionMeta(id, cwd, { timestamp: '2026-07-17T01:00:00.000Z' }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'Continue native Specsket work' } })
+  ].join('\n'));
+  return codexHome;
 }
 
 test('normalizePreview removes controls and truncates by Unicode code point', () => {
@@ -294,6 +315,83 @@ test('an empty Windows cold-start history scan retries and remains stale when st
   assert.equal(history.empty, true);
   const cached = await service.getHistorySnapshot({ allowStale: true });
   assert.equal(cached.stale, true);
+});
+
+test('group and card scopes read only the Codex history for their Windows or WSL runtime', async (t) => {
+  const windowsCwd = 'C:\\Users\\denni\\apps\\specsket-ph2.5';
+  const windowsCodexHome = createWindowsHistory(t, { cwd: windowsCwd });
+  const baseRunner = makeCatalogRunner();
+  let wslHistoryReads = 0;
+  const service = new CodexSessionService({
+    platform: 'linux',
+    codexHome: '/home/test/.codex',
+    windowsCodexHome,
+    commandRunner: (command) => {
+      if (command.includes('session_index.jsonl') || (command.includes('node -e') && command.includes('modifiedAtMs'))) {
+        wslHistoryReads += 1;
+      }
+      return baseRunner(command);
+    }
+  });
+  const windowsSession = {
+    id: 'easycc-windows',
+    name: 'Windows Specsket',
+    cliType: 'codex-windows',
+    status: 'paused',
+    workingDir: windowsCwd,
+    groupKey: windowsCwd,
+    codexSessionId: null
+  };
+
+  const windowsGroup = await service.getResumeCatalog({
+    sessions: [windowsSession],
+    groupKey: windowsCwd,
+    timeZone: 'UTC'
+  });
+  assert.equal(windowsGroup.cache.diagnostics.runtime, 'windows');
+  assert.equal(windowsGroup.cache.diagnostics.codexHome, path.resolve(windowsCodexHome));
+  assert.deepEqual(windowsGroup.threads.map((thread) => thread.codexSessionId), [IDS.first]);
+  assert.equal(windowsGroup.threads[0].preview, 'Continue native Specsket work');
+  assert.equal(wslHistoryReads, 0);
+
+  const windowsCard = await service.getResumeCatalog({
+    sessions: [windowsSession],
+    easyccSessionId: windowsSession.id,
+    timeZone: 'UTC'
+  });
+  assert.equal(windowsCard.cache.diagnostics.runtime, 'windows');
+  assert.deepEqual(windowsCard.savedSessions.map((session) => session.easyccSessionId), [windowsSession.id]);
+  assert.deepEqual(windowsCard.threads.map((thread) => thread.codexSessionId), [IDS.first]);
+  assert.equal(wslHistoryReads, 0);
+
+  const wslGroup = await service.getResumeCatalog({
+    sessions: [{
+      id: 'easycc-wsl',
+      name: 'WSL project',
+      cliType: 'codex',
+      status: 'paused',
+      workingDir: '/mnt/c/work/project-a',
+      groupKey: '/mnt/c/work/project-a',
+      codexSessionId: null
+    }],
+    groupKey: '/mnt/c/work/project-a',
+    timeZone: 'UTC'
+  });
+  assert.equal(wslGroup.cache.diagnostics.runtime, 'wsl');
+  assert.deepEqual(wslGroup.threads.map((thread) => thread.codexSessionId), [IDS.first, IDS.second]);
+  assert.ok(wslHistoryReads >= 2);
+});
+
+test('a mixed-runtime folder scope refuses to combine Windows and WSL history', async () => {
+  const service = new CodexSessionService({ platform: 'linux', commandRunner: () => '' });
+  const groupKey = 'C:\\work\\mixed';
+  await assert.rejects(service.getResumeCatalog({
+    groupKey,
+    sessions: [
+      { id: 'windows', cliType: 'codex-windows', status: 'paused', workingDir: groupKey, groupKey },
+      { id: 'wsl', cliType: 'codex', status: 'paused', workingDir: '/mnt/c/work/mixed', groupKey }
+    ]
+  }), /both Windows and WSL Codex cards/);
 });
 
 test('card-scoped resume catalog returns only the requested paused card and its exact folder', async () => {
@@ -610,7 +708,10 @@ test('Codex resume API validates selections and returns accepted work', async ()
 
   const acceptedReply = makeReply();
   await routes.get('POST /api/codex/resume-selection')({
-    body: { selections: [{ codexSessionId: IDS.first, easyccSessionId: 'easycc-one' }] }
+    body: {
+      historyRuntime: 'wsl',
+      selections: [{ codexSessionId: IDS.first, easyccSessionId: 'easycc-one' }]
+    }
   }, acceptedReply);
   assert.equal(acceptedReply.statusCode, 202);
   assert.deepEqual(acceptedReply.payload.accepted, [{ codexSessionId: IDS.first, easyccSessionId: 'easycc-one' }]);
@@ -668,7 +769,7 @@ test('batch resume asks the service for all selected threads once', async () => 
   const result = await SessionManager.prototype.resumeCodexSelections.call(manager, [
     { codexSessionId: IDS.first },
     { codexSessionId: IDS.second }
-  ]);
+  ], { historyRuntime: 'wsl' });
   assert.equal(batchLookups, 1);
   assert.deepEqual(result.accepted, []);
   assert.deepEqual(result.skipped.map((item) => item.code), ['not_found', 'not_found']);
@@ -678,7 +779,7 @@ test('card-scoped resume reuses the paused card and never creates a duplicate', 
   const target = {
     id: 'easycc-target',
     name: 'Needs mapping',
-    cliType: 'codex',
+    cliType: 'codex-windows',
     status: 'paused',
     workingDir: 'C:\\work\\project-a',
     groupKey: 'C:\\work\\project-a',
@@ -689,11 +790,18 @@ test('card-scoped resume reuses the paused card and never creates a duplicate', 
     sessions: new Map([[target.id, target]]),
     codexSessionService: {
       scanProcesses: async () => ({ roots: [], liveRootIds: new Set() }),
-      getThreadsByIds: async () => new Map([[IDS.first, {
+      getProcessSnapshotForRuntime: async (runtime) => {
+        assert.equal(runtime, 'windows');
+        return { roots: [], liveRootIds: new Set() };
+      },
+      getThreadsByIds: async (ids, history, options) => {
+        assert.equal(options.runtime, 'windows');
+        return new Map([[IDS.first, {
         codexSessionId: IDS.first,
         threadName: 'Chosen conversation',
-        workingDir: '/mnt/c/work/project-a'
-      }]])
+        workingDir: 'C:\\work\\project-a'
+        }]]);
+      }
     },
     dataStore: { saveSession() {} },
     createBoundCodexSession() { created = true; throw new Error('must not create a card'); },

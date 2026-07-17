@@ -15,7 +15,7 @@ const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
 const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
 const { CodexSessionService, pathsEqual: codexPathsEqual } = require('./codexSessionService');
 const codexWindowsRuntime = require('./codexWindowsRuntime');
-const { CODEX_WINDOWS, isCodexType } = require('./codexCliTypes');
+const { CODEX_WINDOWS, getCodexRuntime, isCodexType } = require('./codexCliTypes');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const DEFAULT_OUTPUT_BUFFER_CHUNKS = 750;
@@ -1326,7 +1326,7 @@ class SessionManager extends EventEmitter {
   async getCodexResumeCatalog(query = {}) {
     if (query.easyccSessionId) {
       const target = this.sessions.get(query.easyccSessionId);
-      if (!target || target.cliType !== 'codex' || target.status !== 'paused') {
+      if (!target || !isCodexType(target.cliType) || target.status !== 'paused') {
         throw new Error('The paused Codex card is no longer available');
       }
     }
@@ -1564,7 +1564,7 @@ class SessionManager extends EventEmitter {
       repoName: repoContext.repoName,
       gitBranch: repoContext.gitBranch,
       groupKey: repoContext.groupKey || thread.workingDir,
-      cliType: 'codex',
+      cliType: thread.historyRuntime === 'windows' ? CODEX_WINDOWS : 'codex',
       claudeSessionId: null,
       previousClaudeSessionIds: [],
       claudeSessionName: null,
@@ -1618,14 +1618,22 @@ class SessionManager extends EventEmitter {
     return session;
   }
 
-  async resumeCodexSelections(selections = [], { targetEasyccSessionId = '' } = {}) {
+  async resumeCodexSelections(selections = [], { targetEasyccSessionId = '', historyRuntime = '' } = {}) {
     const accepted = [];
     const skipped = [];
     const seen = new Set();
     const requestedIds = selections.map((selection) => selection?.codexSessionId);
+    const targetSession = targetEasyccSessionId ? this.sessions.get(targetEasyccSessionId) : null;
+    const runtime = targetSession ? getCodexRuntime(targetSession.cliType) : historyRuntime;
+    if (!['wsl', 'windows'].includes(runtime)) {
+      throw new Error('The Codex history runtime is missing or invalid');
+    }
+    const processLookup = typeof this.codexSessionService.getProcessSnapshotForRuntime === 'function'
+      ? this.codexSessionService.getProcessSnapshotForRuntime(runtime)
+      : this.codexSessionService.scanProcesses();
     const [processState, threadsById] = await Promise.all([
-      this.codexSessionService.scanProcesses(),
-      this.codexSessionService.getThreadsByIds(requestedIds)
+      processLookup,
+      this.codexSessionService.getThreadsByIds(requestedIds, null, { runtime })
     ]);
 
     for (const selection of selections) {
@@ -1648,7 +1656,7 @@ class SessionManager extends EventEmitter {
         continue;
       }
       let session = requestedEasyccSessionId ? this.sessions.get(requestedEasyccSessionId) : null;
-      if (requestedEasyccSessionId && (!session || session.cliType !== 'codex' || session.status !== 'paused')) {
+      if (requestedEasyccSessionId && (!session || !isCodexType(session.cliType) || session.status !== 'paused')) {
         skipped.push({ ...selection, code: 'invalid_card', message: 'EasyCC card is not a paused Codex session' });
         continue;
       }
@@ -1658,7 +1666,9 @@ class SessionManager extends EventEmitter {
       }
 
       const linked = [...this.sessions.values()].find((candidate) =>
-        candidate.id !== session?.id && String(candidate.codexSessionId || '').toLowerCase() === codexSessionId
+        candidate.id !== session?.id &&
+        getCodexRuntime(candidate.cliType) === runtime &&
+        String(candidate.codexSessionId || '').toLowerCase() === codexSessionId
       );
       if (linked || processState.liveRootIds.has(codexSessionId)) {
         skipped.push({ ...selection, code: 'already_open', message: 'Codex conversation is already open or linked' });

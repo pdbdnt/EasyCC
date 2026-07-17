@@ -309,6 +309,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           selections: [...selections.values()],
+          historyRuntime: catalog?.cache?.diagnostics?.runtime,
           ...(scope.easyccSessionId ? { easyccSessionId: scope.easyccSessionId } : {})
         })
       });
