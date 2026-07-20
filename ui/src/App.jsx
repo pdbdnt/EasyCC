@@ -173,6 +173,7 @@ function App() {
   const [multiPaneSizes, setMultiPaneSizes] = useState(null); // null=equal, Array for row/col, {cols:[]} for grid
   const [manualHiddenTerminalFilter, setManualHiddenTerminalFilter] = useState(null);
   const [parkingDrawerOpen, setParkingDrawerOpen] = useState(false);
+  const parkingEnabled = settings?.session?.autoParking?.enabled !== false;
   const [viewTransition, setViewTransition] = useState({
     active: false,
     direction: null,
@@ -1693,6 +1694,7 @@ function App() {
             onKanbanRectsConsumed={handleKanbanRectsConsumed}
             sidebarCardRefsRef={sidebarCardRefsRef}
             parkingSummary={parkingSummary}
+            parkingEnabled={parkingEnabled}
             onOpenParking={() => setParkingDrawerOpen(true)}
           />
         )}
@@ -2070,6 +2072,7 @@ function App() {
       <ParkingReview
         summary={parkingSummary}
         clientId={dashboardClientId}
+        enabled={parkingEnabled}
         drawerOpen={parkingDrawerOpen}
         onCloseDrawer={() => setParkingDrawerOpen(false)}
         onConfirm={handleConfirmParking}

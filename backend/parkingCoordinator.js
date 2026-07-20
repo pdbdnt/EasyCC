@@ -202,6 +202,14 @@ class ParkingCoordinator {
   }
 
   async confirm(sessionIds) {
+    if (!this.settings().enabled) {
+      return {
+        parked: [],
+        parkedSessions: [],
+        skipped: [...new Set(sessionIds || [])].map(id => ({ id, reason: 'parking_disabled' })),
+        summary: this.getSummary()
+      };
+    }
     const parked = [];
     const parkedSessions = [];
     const skipped = [];

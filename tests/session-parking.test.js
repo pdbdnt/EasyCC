@@ -119,6 +119,33 @@ test('coordinator protects visible sessions and elects one modal owner', () => {
   coordinator.stop();
 });
 
+test('disabled parking clears proposals and rejects stale confirmations', async () => {
+  const session = liveSession('disabled', { parkingProposalState: 'pending_review' });
+  const manager = new EventEmitter();
+  manager.sessions = new Map([[session.id, session]]);
+  manager.isParkingEligible = () => true;
+  manager.getSessionSnapshot = value => ({ ...value, pty: undefined });
+  manager.dataStore = { logParkingEvent() {} };
+  manager.parkSession = async () => {
+    throw new Error('parkSession must not run while parking is disabled');
+  };
+  const settingsManager = {
+    loadSettings: () => ({
+      session: { autoParking: { enabled: false, maxLiveAiSessions: 6, idleMinutes: 15, snoozeMinutes: 15 } }
+    })
+  };
+  const coordinator = new ParkingCoordinator({ sessionManager: manager, settingsManager, broadcast() {} });
+
+  coordinator.evaluate();
+  const summary = coordinator.getSummary();
+  const result = await coordinator.confirm([session.id]);
+
+  assert.equal(session.parkingProposalState, 'none');
+  assert.equal(summary.review, 0);
+  assert.deepEqual(result.parked, []);
+  assert.deepEqual(result.skipped, [{ id: session.id, reason: 'parking_disabled' }]);
+});
+
 test('confirmed parking persists auto_park only after matching PTY exit', async () => {
   const manager = Object.create(SessionManager.prototype);
   const handlers = [];

@@ -87,6 +87,7 @@ function Dashboard({
   currentTheme,
   onViewOrchestratorGroup,
   parkingSummary,
+  parkingEnabled = true,
   onOpenParking
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => initialCollapsedGroups || new Set());
@@ -550,14 +551,22 @@ function Dashboard({
       <div className="sidebar-header dashboard-sidebar-header">
         <h1>EasyCC</h1>
         <div className="sidebar-header-actions">
-          <button
-            className={`parking-summary-chip ${(parkingSummary?.review || 0) > 0 ? 'needs-review' : ''}`}
-            onClick={onOpenParking}
-            title="Open session parking"
-          >
-            Live {parkingSummary?.live || 0} · Parked {parkingSummary?.parked || 0}
-            {(parkingSummary?.review || 0) > 0 && <> · Review {parkingSummary.review}</>}
-          </button>
+          {(parkingEnabled || (parkingSummary?.parked || 0) > 0) && (
+            <button
+              className={`parking-summary-chip ${parkingEnabled && (parkingSummary?.review || 0) > 0 ? 'needs-review' : ''}`}
+              onClick={onOpenParking}
+              title="Open session parking"
+            >
+              {parkingEnabled ? (
+                <>
+                  Live {parkingSummary?.live || 0} · Parked {parkingSummary?.parked || 0}
+                  {(parkingSummary?.review || 0) > 0 && <> · Review {parkingSummary.review}</>}
+                </>
+              ) : (
+                <>Parked {parkingSummary?.parked || 0}</>
+              )}
+            </button>
+          )}
           {onThemeToggle && (
             <button
               className="theme-toggle-btn"

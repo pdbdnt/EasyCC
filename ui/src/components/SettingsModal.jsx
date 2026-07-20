@@ -419,7 +419,7 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
             <div className="settings-section">
               <h4 className="settings-subtitle">Session parking</h4>
               <p className="settings-description">
-                Detect resumable background AI sessions and ask before stopping their CLI processes.
+                Detect resumable background AI sessions, review them before parking, and resume them later.
               </p>
               <div className="form-group checkbox-group">
                 <label>
@@ -428,8 +428,11 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                     checked={localSettings.session?.autoParking?.enabled !== false}
                     onChange={event => updateAutoParking('enabled', event.target.checked)}
                   />
-                  Enable parking suggestions
+                  Enable session parking
                 </label>
+                <p className="settings-description">
+                  When disabled, EasyCC will not suggest or park any new sessions. Sessions already parked remain available to resume.
+                </p>
               </div>
               <div className="form-group">
                 <label>Maximum live AI sessions</label>
@@ -439,6 +442,7 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                   max="20"
                   value={localSettings.session?.autoParking?.maxLiveAiSessions ?? 6}
                   onChange={event => updateAutoParking('maxLiveAiSessions', Number(event.target.value))}
+                  disabled={localSettings.session?.autoParking?.enabled === false}
                 />
               </div>
               <div className="form-group">
@@ -449,6 +453,7 @@ function SettingsModal({ settings, onClose, onSave, onReset }) {
                   max="120"
                   value={localSettings.session?.autoParking?.idleMinutes ?? 15}
                   onChange={event => updateAutoParking('idleMinutes', Number(event.target.value))}
+                  disabled={localSettings.session?.autoParking?.enabled === false}
                 />
               </div>
               <p className="settings-description">Confirmation is required. Not now snoozes a suggestion for 15 minutes.</p>

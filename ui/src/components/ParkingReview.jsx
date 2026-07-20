@@ -11,6 +11,7 @@ function relativeTime(value) {
 export default function ParkingReview({
   summary,
   clientId,
+  enabled = true,
   drawerOpen,
   onCloseDrawer,
   onConfirm,
@@ -19,8 +20,8 @@ export default function ParkingReview({
   onWake,
   onOpenSession
 }) {
-  const reviewSessions = summary?.reviewSessions || [];
-  const modalOwned = reviewSessions.length > 0 && summary?.modalOwnerClientId === clientId;
+  const reviewSessions = enabled ? summary?.reviewSessions || [] : [];
+  const modalOwned = enabled && reviewSessions.length > 0 && summary?.modalOwnerClientId === clientId;
   const [selected, setSelected] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState([]);
