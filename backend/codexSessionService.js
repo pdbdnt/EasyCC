@@ -300,13 +300,21 @@ class CodexSessionService {
     return path.resolve(String(this.windowsCodexHomeOverride));
   }
 
-  resolveHistoryRuntime({ sessions = [], groupKey = '', easyccSessionId = '' } = {}) {
+  resolveHistoryRuntime({ sessions = [], groupKey = '', easyccSessionId = '', historyRuntime = '' } = {}) {
     const sessionList = sessions instanceof Map ? [...sessions.values()] : sessions;
+    const requestedRuntime = String(historyRuntime || '').trim().toLowerCase();
+    if (requestedRuntime && ![HISTORY_RUNTIME_WSL, HISTORY_RUNTIME_WINDOWS].includes(requestedRuntime)) {
+      throw new Error('Codex history runtime must be wsl or windows');
+    }
     if (easyccSessionId) {
       const target = (sessionList || []).find((session) => session?.id === easyccSessionId);
-      return getCodexRuntime(target?.cliType) || HISTORY_RUNTIME_WSL;
+      const targetRuntime = getCodexRuntime(target?.cliType) || HISTORY_RUNTIME_WSL;
+      if (requestedRuntime && requestedRuntime !== targetRuntime) {
+        throw new Error(`This Codex card uses ${targetRuntime} history`);
+      }
+      return targetRuntime;
     }
-    if (!groupKey) return HISTORY_RUNTIME_WSL;
+    if (!groupKey) return requestedRuntime || HISTORY_RUNTIME_WSL;
     const runtimes = new Set((sessionList || [])
       .filter((session) => session?.status === 'paused' && isCodexType(session.cliType))
       .filter((session) => pathsEqual(session.groupKey || session.workingDir, groupKey))
@@ -315,7 +323,11 @@ class CodexSessionService {
     if (runtimes.size > 1) {
       throw new Error('This folder contains both Windows and WSL Codex cards. Resume a specific card instead.');
     }
-    return [...runtimes][0] || HISTORY_RUNTIME_WSL;
+    const groupRuntime = [...runtimes][0] || HISTORY_RUNTIME_WSL;
+    if (requestedRuntime && requestedRuntime !== groupRuntime) {
+      throw new Error(`This Codex folder uses ${groupRuntime} history`);
+    }
+    return groupRuntime;
   }
 
   getRootAssignment() {
@@ -865,8 +877,8 @@ class CodexSessionService {
     return (await this.getThreadsByIds([normalizedId])).get(normalizedId) || null;
   }
 
-  async getResumeCatalog({ sessions = [], groupKey = '', easyccSessionId = '', cursor = '', timeZone = 'UTC', query = '', refresh = false, groupBy = '', groupSort = '', threadSort = '' } = {}) {
-    const runtime = this.resolveHistoryRuntime({ sessions, groupKey, easyccSessionId });
+  async getResumeCatalog({ sessions = [], groupKey = '', easyccSessionId = '', historyRuntime = '', cursor = '', timeZone = 'UTC', query = '', refresh = false, groupBy = '', groupSort = '', threadSort = '' } = {}) {
+    const runtime = this.resolveHistoryRuntime({ sessions, groupKey, easyccSessionId, historyRuntime });
     const [history, processState] = await Promise.all([
       this.getHistorySnapshot({ force: refresh, allowStale: !refresh, runtime }),
       this.getProcessSnapshotForRuntime(runtime)

@@ -141,6 +141,62 @@ test('History action opens the exact-thread chooser and search stays server-back
   await expect(dialog.getByText('Fix session recovery')).toBeVisible();
 });
 
+test('global History switches between WSL and Windows conversation storage', async ({ page }) => {
+  await mockRecoverySummary(page, { candidate: false });
+  const requestedRuntimes = [];
+  let submittedBody = null;
+  await page.route('**/api/codex/resume-catalog?**', async (route) => {
+    const historyRuntime = new URL(route.request().url()).searchParams.get('historyRuntime');
+    requestedRuntimes.push(historyRuntime);
+    const windows = historyRuntime === 'windows';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        savedSessions: [],
+        threads: [{
+          ...catalogFixture().threads[0],
+          threadName: windows ? 'Native Windows conversation' : 'WSL conversation',
+          workingDir: windows ? 'C:\\Users\\denni\\apps\\EasyCC' : '/mnt/c/Users/denni/apps/EasyCC',
+          groupKey: windows ? 'C:\\Users\\denni\\apps\\EasyCC' : '/mnt/c/Users/denni/apps/EasyCC',
+          linkedEasyccSessionId: null
+        }],
+        groups: [],
+        page: { dates: ['2026-07-10'], nextCursor: null, hasOlder: false },
+        cache: {
+          historyStale: false,
+          generatedAt: '2026-07-10T07:00:00.000Z',
+          diagnostics: { runtime: historyRuntime }
+        }
+      })
+    });
+  });
+  await page.route('**/api/codex/resume-selection', async (route) => {
+    submittedBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ accepted: [{ id: 'new-windows-session' }], skipped: [] })
+    });
+  });
+
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'History' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
+  const source = dialog.getByRole('combobox', { name: 'Scan Codex history from' });
+  await expect(source).toHaveValue('wsl');
+  await expect(dialog.getByText('WSL conversation')).toBeVisible();
+
+  await source.selectOption('windows');
+  await expect.poll(() => requestedRuntimes).toContain('windows');
+  await expect(dialog.getByText('Native Windows conversation')).toBeVisible();
+  await dialog.getByRole('checkbox', { name: /Native Windows conversation/ }).check();
+  await dialog.getByRole('button', { name: 'Resume 1' }).click();
+
+  await expect.poll(() => submittedBody?.historyRuntime).toBe('windows');
+});
+
 test('global History selects visible conversations and clears selections retained across pages', async ({ page }) => {
   const SECOND_ID = '019f49d3-a29a-72e1-9c67-d7046b6f8a40';
   const THIRD_ID = '019f4972-2155-7d33-9755-3beb3589323e';

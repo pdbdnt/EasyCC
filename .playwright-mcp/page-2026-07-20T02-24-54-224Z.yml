@@ -1,0 +1,84 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - heading "EasyCC" [level=1] [ref=e6]
+      - generic [ref=e7]:
+        - button "Sessions" [ref=e8] [cursor=pointer]
+        - button "Kanban" [ref=e9] [cursor=pointer]
+        - button "Agents" [ref=e10] [cursor=pointer]
+    - generic [ref=e11]:
+      - heading "EasyCC" [level=1] [ref=e12]
+      - generic [ref=e13]:
+        - button "Live 3 · Parked 0" [ref=e14] [cursor=pointer]
+        - button "☾" [ref=e15] [cursor=pointer]
+        - button "⚙️" [ref=e16] [cursor=pointer]
+        - button "History" [ref=e17] [cursor=pointer]
+        - button "+ New" [ref=e18] [cursor=pointer]
+    - generic [ref=e19]:
+      - combobox [ref=e20] [cursor=pointer]:
+        - option "All Stages" [selected]
+        - option "To Do"
+        - option "In Progress"
+        - option "In Review"
+        - option "Testing"
+        - option "Done"
+      - button "All Projects ▾" [ref=e22] [cursor=pointer]:
+        - text: All Projects
+        - generic [ref=e23]: ▾
+    - generic [ref=e24]:
+      - generic "In Progress" [ref=e25]: "2"
+      - generic [ref=e27] [cursor=pointer]:
+        - checkbox "Paused Sessions" [checked] [ref=e28]
+        - generic [ref=e29]: Paused Sessions
+      - generic [ref=e30] [cursor=pointer]:
+        - checkbox "Parked Sessions" [checked] [ref=e31]
+        - generic [ref=e32]: Parked Sessions
+    - generic [ref=e34]:
+      - button "Collapse EasyCC (3 sessions)" [expanded] [ref=e35] [cursor=pointer]:
+        - generic [ref=e36]: ▾
+        - generic [ref=e37]: 📁
+        - generic "/mnt/c/Users/denni/apps/EasyCC" [ref=e38]: EasyCC
+        - generic [ref=e39]: "3"
+        - generic "In Progress" [ref=e40]: "2"
+        - generic [ref=e42]:
+          - button "⚙" [ref=e43]
+          - button "Kill all sessions in EasyCC" [ref=e44]: ✕
+      - generic [ref=e47] [cursor=pointer]:
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - text: Session 2026-07-20-0937
+            - generic [ref=e51]: CDX
+          - generic [ref=e52]: ⚪ completed
+        - generic [ref=e53]:
+          - generic [ref=e54]: To Do
+          - generic [ref=e55]: "Last activity: 25m ago"
+          - button "⚙️" [ref=e56]
+      - generic [ref=e59] [cursor=pointer]:
+        - generic [ref=e60]:
+          - generic [ref=e61]:
+            - text: Codex 019f7d41
+            - generic [ref=e63]: CDX
+            - 'generic "Branch: master (EasyCC)" [ref=e64]': master (EasyCC)
+          - generic [ref=e65]: 🟢 active
+        - generic "ahmm, let's sort ofHave a way so that the user can choose to scan Windows or to scan the WSL file sy" [ref=e66]
+        - generic [ref=e67]:
+          - generic [ref=e68]: In Progress
+          - generic [ref=e69]: "Last activity: 7s ago"
+          - button "⚙️" [ref=e70]
+      - generic [ref=e73] [cursor=pointer]:
+        - generic [ref=e74]:
+          - generic [ref=e75]:
+            - text: Codex 019f7d42
+            - generic [ref=e77]: CDX
+            - 'generic "Branch: master (EasyCC)" [ref=e78]': master (EasyCC)
+          - generic [ref=e79]: 🟢 active
+        - generic "continue" [ref=e80]
+        - generic [ref=e81]:
+          - generic [ref=e82]: In Progress
+          - generic [ref=e83]: "Last activity: 6s ago"
+          - button "⚙️" [ref=e84]
+    - generic [ref=e85]: Connected
+  - main [ref=e88]:
+    - generic [ref=e89]:
+      - generic [ref=e90]: 🖥️
+      - paragraph [ref=e91]: Select a session or create a new one

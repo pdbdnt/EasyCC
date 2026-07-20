@@ -364,6 +364,14 @@ test('group and card scopes read only the Codex history for their Windows or WSL
   assert.deepEqual(windowsCard.threads.map((thread) => thread.codexSessionId), [IDS.first]);
   assert.equal(wslHistoryReads, 0);
 
+  const globalWindows = await service.getResumeCatalog({
+    historyRuntime: 'windows',
+    timeZone: 'UTC'
+  });
+  assert.equal(globalWindows.cache.diagnostics.runtime, 'windows');
+  assert.deepEqual(globalWindows.threads.map((thread) => thread.codexSessionId), [IDS.first]);
+  assert.equal(wslHistoryReads, 0);
+
   const wslGroup = await service.getResumeCatalog({
     sessions: [{
       id: 'easycc-wsl',
@@ -380,6 +388,13 @@ test('group and card scopes read only the Codex history for their Windows or WSL
   assert.equal(wslGroup.cache.diagnostics.runtime, 'wsl');
   assert.deepEqual(wslGroup.threads.map((thread) => thread.codexSessionId), [IDS.first, IDS.second]);
   assert.ok(wslHistoryReads >= 2);
+
+  await assert.rejects(service.getResumeCatalog({
+    sessions: [windowsSession],
+    easyccSessionId: windowsSession.id,
+    historyRuntime: 'wsl',
+    timeZone: 'UTC'
+  }), /uses windows history/);
 });
 
 test('a mixed-runtime folder scope refuses to combine Windows and WSL history', async () => {

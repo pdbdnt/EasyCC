@@ -1395,6 +1395,7 @@ class SessionManager extends EventEmitter {
       sessions: this.sessions,
       groupKey: query.groupKey || '',
       easyccSessionId: query.easyccSessionId || '',
+      historyRuntime: query.historyRuntime || '',
       cursor: query.cursor || '',
       timeZone: query.timeZone || 'UTC',
       query: query.query || '',

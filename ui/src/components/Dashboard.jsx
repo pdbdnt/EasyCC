@@ -547,7 +547,7 @@ function Dashboard({
 
   return (
     <>
-      <div className="sidebar-header">
+      <div className="sidebar-header dashboard-sidebar-header">
         <h1>EasyCC</h1>
         <div className="sidebar-header-actions">
           <button

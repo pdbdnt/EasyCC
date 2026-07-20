@@ -5,6 +5,7 @@ const catalogCache = new Map();
 const catalogRequests = new Map();
 const HISTORY_PREFERENCES_KEY = 'easycc.codexHistoryPreferences.v1';
 const DEFAULT_HISTORY_PREFERENCES = {
+  historyRuntime: 'wsl',
   groupBy: 'folder',
   groupSort: 'recent',
   threadSort: 'updated-desc'
@@ -90,7 +91,8 @@ function fallbackGroups(threads) {
 
 export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
   const [historyPreferences, setHistoryPreferences] = useState(readHistoryPreferences);
-  const { groupBy, groupSort, threadSort } = historyPreferences;
+  const { historyRuntime, groupBy, groupSort, threadSort } = historyPreferences;
+  const canChooseHistoryRuntime = !scope.easyccSessionId && !scope.groupKey;
   const [catalog, setCatalog] = useState(scope.initialCatalog || null);
   const [loading, setLoading] = useState(!scope.initialCatalog);
   const [refreshing, setRefreshing] = useState(false);
@@ -116,6 +118,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
     const params = new URLSearchParams({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
     if (scope.groupKey) params.set('groupKey', scope.groupKey);
     if (scope.easyccSessionId) params.set('easyccSessionId', scope.easyccSessionId);
+    if (canChooseHistoryRuntime) params.set('historyRuntime', historyRuntime);
     params.set('groupBy', groupBy);
     params.set('groupSort', groupSort);
     params.set('threadSort', threadSort);
@@ -170,7 +173,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
         setRefreshing(false);
       }
     }
-  }, [cursor, groupBy, groupSort, query, reloadNonce, scope.easyccSessionId, scope.groupKey, threadSort]);
+  }, [canChooseHistoryRuntime, cursor, groupBy, groupSort, historyRuntime, query, reloadNonce, scope.easyccSessionId, scope.groupKey, threadSort]);
 
   useEffect(() => {
     try {
@@ -299,6 +302,16 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
     setCursorStack([]);
   }, []);
 
+  const changeHistoryRuntime = useCallback((value) => {
+    setHistoryPreferences((current) => ({ ...current, historyRuntime: value }));
+    setCursor('');
+    setCursorStack([]);
+    setSelections(new Map());
+    setCollapsedGroups(new Set());
+    setBulkMessage('');
+    defaultsInitializedRef.current = false;
+  }, []);
+
   const submit = async () => {
     if (selections.size === 0) return;
     setSubmitting(true);
@@ -397,7 +410,20 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
           <button className="btn btn-secondary btn-small" type="submit">Search</button>
         </form>
 
-        <div className="codex-resume-sortbar" aria-label="History organization">
+        <div className={`codex-resume-sortbar${canChooseHistoryRuntime ? ' has-history-source' : ''}`} aria-label="History organization">
+          {canChooseHistoryRuntime && (
+            <label>
+              <span>Scan history from</span>
+              <select
+                aria-label="Scan Codex history from"
+                value={historyRuntime}
+                onChange={(event) => changeHistoryRuntime(event.target.value)}
+              >
+                <option value="wsl">WSL file system</option>
+                <option value="windows">Windows file system</option>
+              </select>
+            </label>
+          )}
           <label>
             <span>Group by</span>
             <select
