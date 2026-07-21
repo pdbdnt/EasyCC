@@ -6,6 +6,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
 import { getProjectDisplayName } from '../utils/projectUtils';
+import { encodeSoftNewline, shouldUseBracketedSoftNewline } from '../utils/terminalInputUtils';
 import '@xterm/xterm/css/xterm.css';
 
 const TERMINAL_THEMES = {
@@ -101,6 +102,7 @@ const TerminalView = forwardRef(function TerminalView({
   const fitAddonRef = useRef(null);
   const wsRef = useRef(null);
   const currentSessionId = useRef(null);
+  const currentCliTypeRef = useRef(session?.cliType || '');
   const [sessionStatus, setSessionStatus] = useState(session?.status || 'active');
   const runtimeStateRef = useRef(session?.runtimeState || 'live');
   const [parkedDraft, setParkedDraft] = useState('');
@@ -543,10 +545,19 @@ const TerminalView = forwardRef(function TerminalView({
         }
       }
 
-      // Route soft newlines through xterm's paste path so TUI apps receive
-      // bracketed-paste input instead of WinPTY interpreting a bare LF.
+      // Preserve LF inside explicit bracketed paste. Codex enables this mode at
+      // startup; forcing it avoids xterm/WinPTY degrading a soft newline to submit.
       if (event.ctrlKey && event.key === 'Enter') {
-        term.paste('\n');
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          const useBracketedPaste = shouldUseBracketedSoftNewline(
+            currentCliTypeRef.current,
+            term.modes.bracketedPasteMode
+          );
+          wsRef.current.send(JSON.stringify({
+            type: 'input',
+            data: encodeSoftNewline(useBracketedPaste)
+          }));
+        }
         return false;
       }
 
@@ -819,8 +830,9 @@ const TerminalView = forwardRef(function TerminalView({
 
   useEffect(() => {
     runtimeStateRef.current = session?.runtimeState || 'live';
+    currentCliTypeRef.current = session?.cliType || '';
     if (session?.runtimeState === 'live') setWakeStarted(false);
-  }, [session?.runtimeState]);
+  }, [session?.cliType, session?.runtimeState]);
 
   // Connect to session when session ID changes
   // Status updates come via WebSocket (line 66), not props
