@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const pty = require('node-pty');
 
 const PROFILE_NAME = 'easycc-windows';
@@ -84,6 +84,52 @@ function quoteTomlLiteral(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+function extractExplicitResumeTarget(commandLine = '') {
+  const match = String(commandLine).match(
+    /(?:^|\s)resume\s+"?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"?(?=\s|$)/i
+  );
+  return match ? match[1].toLowerCase() : null;
+}
+
+function findExplicitResumeOwners(resumeTarget, { run = execFile } = {}) {
+  const expected = String(resumeTarget || '').toLowerCase();
+  if (process.platform !== 'win32' || !expected) return Promise.resolve([]);
+  const powershell = path.join(
+    process.env.SystemRoot || 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
+  );
+  const script = [
+    "Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\"",
+    "Select-Object ProcessId,CommandLine",
+    "ConvertTo-Json -Compress"
+  ].join(' | ');
+  return new Promise(resolve => {
+    try {
+      run(powershell, ['-NoProfile', '-Command', script], {
+        encoding: 'utf8', timeout: 2000, windowsHide: true
+      }, (error, stdout) => {
+        if (error) return resolve([]);
+        try {
+          const output = String(stdout || '').trim();
+          if (!output) return resolve([]);
+          const parsed = JSON.parse(output);
+          const rows = Array.isArray(parsed) ? parsed : [parsed];
+          resolve(rows
+            .filter(row => extractExplicitResumeTarget(row?.CommandLine) === expected)
+            .map(row => ({
+              processId: Number(row.ProcessId) || null,
+              commandLine: String(row.CommandLine || '')
+            })));
+        } catch {
+          resolve([]);
+        }
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
 function ensureProfile() {
   const codexHome = getCodexHome();
   fs.mkdirSync(codexHome, { recursive: true });
@@ -143,4 +189,13 @@ function spawn(workingDir, { resumeTarget = null, easyccSessionId = '', env = {}
   });
 }
 
-module.exports = { PROFILE_NAME, getCodexHome, getCapability, ensureProfile, findNativeCodexExe, spawn };
+module.exports = {
+  PROFILE_NAME,
+  getCodexHome,
+  getCapability,
+  ensureProfile,
+  findNativeCodexExe,
+  extractExplicitResumeTarget,
+  findExplicitResumeOwners,
+  spawn
+};

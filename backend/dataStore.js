@@ -108,7 +108,11 @@ class DataStore {
         updatedAt: session.updatedAt || null,
         comments: session.comments || [],
         // Message queue (persisted for restart recovery)
-        messageQueue: (session.messageQueue || []).filter(m => m.status === 'queued'),
+        messageQueue: (session.messageQueue || [])
+          .filter(message => ['queued', 'delivering'].includes(message.status))
+          .map(message => message.status === 'delivering'
+            ? { ...message, status: 'queued' }
+            : message),
         // Orchestrator fields
         isOrchestrator: session.isOrchestrator || false,
         parentSessionId: session.parentSessionId || null,

@@ -3093,6 +3093,29 @@ textarea::placeholder {
   gap: 4px;
 }
 
+.terminal-wake-warning {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 8;
+  display: flex;
+  max-width: min(720px, calc(100% - 32px));
+  transform: translateX(-50%);
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  border-radius: 6px;
+  background: rgba(69, 42, 8, 0.96);
+  color: #fde68a;
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.terminal-wake-warning span {
+  color: #fef3c7;
+}
+
 .session-card.parked {
   border-color: rgba(74, 163, 255, 0.55);
   background: linear-gradient(135deg, var(--bg-primary), rgba(74, 163, 255, 0.08));

@@ -1294,6 +1294,12 @@ const TerminalView = forwardRef(function TerminalView({
           ref={terminalRef}
           onClick={handleTerminalClick}
         />
+        {session?.runtimeState === 'live' && session?.wakeWarning && (
+          <div className="terminal-wake-warning" role="status">
+            <strong>Identity callback delayed</strong>
+            <span>{session.wakeWarning}</span>
+          </div>
+        )}
         {isPaused && (
           <div className="terminal-paused-overlay">
             <div className="paused-content">

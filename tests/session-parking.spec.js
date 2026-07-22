@@ -201,3 +201,68 @@ test('General settings can disable session parking', async ({ page }) => {
   await expect.poll(() => savedSettings?.session?.autoParking?.enabled).toBe(false);
   await expect(page.getByRole('heading', { name: 'Settings' })).toHaveCount(0);
 });
+
+test('live Codex Windows session shows delayed identity callback warning', async ({ page }) => {
+  const warningSession = {
+    id: 'warning-session',
+    name: 'Wake warning session',
+    status: 'idle',
+    runtimeState: 'live',
+    cliType: 'codex-windows',
+    workingDir: 'C:/work/easycc',
+    groupKey: 'C:/work/easycc',
+    stage: 'todo',
+    wakeWarning: 'Exact resume is active, but the SessionStart identity callback did not arrive.'
+  };
+  await page.addInitScript((session) => {
+    class MockWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      constructor() {
+        this.readyState = MockWebSocket.CONNECTING;
+        setTimeout(() => {
+          this.readyState = MockWebSocket.OPEN;
+          this.onopen?.();
+          this.onmessage?.({
+            data: JSON.stringify({
+              type: 'init',
+              clientId: 'warning-client',
+              sessions: [session],
+              agents: [],
+              tasks: [],
+              parkingSummary: {
+                live: 1,
+                parked: 0,
+                review: 0,
+                currentParked: [],
+                reviewSessions: [],
+                modalOwnerClientId: null
+              }
+            })
+          });
+        }, 0);
+      }
+      send() {}
+      close() { this.readyState = MockWebSocket.CLOSED; }
+    }
+    window.WebSocket = MockWebSocket;
+  }, warningSession);
+  await page.route('**/api/settings', route => route.fulfill({
+    json: { settings: { session: { startupRecoveryMode: 'ask', autoParking: { enabled: true } } } }
+  }));
+  await page.route('**/api/stages', route => route.fulfill({ json: { stages: [] } }));
+  await page.route('**/api/sessions/recovery-summary', route => route.fulfill({
+    json: { sessions: [], totals: { candidateTotal: 0, launchableTotal: 0, requiresSelectionTotal: 0, disabledTotal: 0, projectTotal: 0 } }
+  }));
+  await page.route('**/api/sessions/warning-session/transcript**', route => route.fulfill({
+    json: { chunks: [], hasMore: false, nextBeforeBytes: null }
+  }));
+
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.locator('.session-card').filter({ hasText: 'Wake warning session' }).click();
+
+  await expect(page.getByRole('status')).toContainText('Identity callback delayed');
+  await expect(page.getByRole('status')).toContainText('SessionStart identity callback did not arrive');
+});

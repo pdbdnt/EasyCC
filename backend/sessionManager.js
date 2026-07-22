@@ -36,6 +36,12 @@ const TRANSCRIPT_FLUSH_MAX_BYTES = 64 * 1024;
 // Message queue constants
 const MAX_MESSAGE_QUEUE_SIZE = 20;
 const MESSAGE_QUEUE_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+const CODEX_WAKE_TIMEOUT_MS = 60_000;
+const CODEX_WAKE_POLL_MS = 100;
+const CODEX_WAKE_READY_STABLE_MS = 2_000;
+const CODEX_HOOK_CORROBORATION_TIMEOUT_MS = 10_000;
+const CODEX_WINDOWS_SUBMIT_DELAY_MS = 2_000;
+const CODEX_WAKE_OUTPUT_MAX_CHARS = 4096;
 
 // Debug logger that writes to file
 const DEBUG_LOG_FILE = path.join(__dirname, '..', 'data', 'debug.log');
@@ -223,6 +229,11 @@ class SessionManager extends EventEmitter {
     this.planManager = new PlanManager();
     this.codexSessionService = new CodexSessionService();
     this.codexWindowsHookTokens = new Map();
+    this.wakeTimeoutMs = CODEX_WAKE_TIMEOUT_MS;
+    this.wakePollMs = CODEX_WAKE_POLL_MS;
+    this.wakeReadyStableMs = CODEX_WAKE_READY_STABLE_MS;
+    this.codexHookCorroborationTimeoutMs = CODEX_HOOK_CORROBORATION_TIMEOUT_MS;
+    this.wakeSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     this.recoveryInFlight = new Set();
     this.lifecycleTransitions = new Map();
     this.stages = [...DEFAULT_STAGES];
@@ -514,6 +525,7 @@ class SessionManager extends EventEmitter {
     session.parkingDetectedAt = session.parkingDetectedAt || null;
     session.parkingSnoozedUntil = session.parkingSnoozedUntil || null;
     session.wakeError = session.wakeError || persisted?.wakeError || null;
+    session.wakeWarning = session.wakeWarning || null;
     session.ptyGeneration = Number(session.ptyGeneration) || (session.pty ? 1 : 0);
     return session;
   }
@@ -528,7 +540,9 @@ class SessionManager extends EventEmitter {
         session.roleInjection?.active || session._writeDraining || session._queueDraining ||
         (session.messageQueue || []).some(message => message.status === 'queued')) return false;
     if (session.cliType === 'claude') return !!session.claudeSessionId;
-    return !!session.codexSessionId && session.codexIdentityState === 'verified' && !session.codexIdentityError;
+    return !!session.codexSessionId &&
+      ['verified', 'resume_verified'].includes(session.codexIdentityState) &&
+      !session.codexIdentityError;
   }
 
   setKeepAwake(id, keepAwake) {
@@ -1313,8 +1327,10 @@ class SessionManager extends EventEmitter {
 
     const candidateId = String(observation.candidateId).toLowerCase();
     const previousCodexSessionId = String(session.codexSessionId || '').toLowerCase();
-    const expectedWakeId = String(session.expectedCodexWakeId || '').toLowerCase();
-    if (session.runtimeState === 'resuming' && expectedWakeId && candidateId !== expectedWakeId) {
+    const expectedWakeId = String(
+      session.codexWakeAttempt?.expectedId || session.expectedCodexWakeId || ''
+    ).toLowerCase();
+    if (expectedWakeId && candidateId !== expectedWakeId) {
       session.codexIdentityState = 'unresolved';
       session.codexIdentityError = `Exact Codex wake expected ${expectedWakeId}, but resumed ${candidateId}`;
       this.emit('sessionUpdated', this.getSessionSnapshot(session));
@@ -1963,7 +1979,11 @@ class SessionManager extends EventEmitter {
   spawnCodexWindowsProcess(workingDir, { resume = false, resumeTarget = null, easyccSessionId = '', meta = {} } = {}) {
     if (resume && !resumeTarget) throw new Error('Exact Codex resume target is required');
     const token = uuidv4();
-    this.codexWindowsHookTokens.set(easyccSessionId, token);
+    this.codexWindowsHookTokens.set(easyccSessionId, {
+      token,
+      generation: null,
+      resumeTarget: resume ? String(resumeTarget).toLowerCase() : null
+    });
     const env = this.getEasyccEnv(easyccSessionId, meta);
     env.EASYCC_CODEX_HOOK_TOKEN = token;
     return codexWindowsRuntime.spawn(workingDir, {
@@ -1973,22 +1993,189 @@ class SessionManager extends EventEmitter {
     });
   }
 
+  clearCodexWindowsWakeAttempt(session, {
+    clearToken = false,
+    clearWarning = true,
+    clearExpected = true
+  } = {}) {
+    if (!session) return;
+    const attempt = session.codexWakeAttempt;
+    if (attempt?.corroborationTimer) clearTimeout(attempt.corroborationTimer);
+    if (clearToken) {
+      const tokenEntry = this.codexWindowsHookTokens.get(session.id);
+      if (!attempt || !tokenEntry || tokenEntry.token === attempt.token) {
+        this.codexWindowsHookTokens.delete(session.id);
+      }
+    }
+    session.codexWakeAttempt = null;
+    if (clearExpected) session.expectedCodexWakeId = null;
+    if (clearWarning) session.wakeWarning = null;
+  }
+
+  bindCodexWindowsLaunch(session, resumeTarget = null) {
+    const tokenEntry = this.codexWindowsHookTokens.get(session?.id);
+    if (!session || !tokenEntry) return null;
+    tokenEntry.generation = session.ptyGeneration;
+    if (resumeTarget) tokenEntry.resumeTarget = String(resumeTarget).toLowerCase();
+    if (session.runtimeState !== 'resuming' || !resumeTarget) return null;
+
+    const expectedId = String(session.expectedCodexWakeId || '').toLowerCase();
+    const launchTarget = String(resumeTarget).toLowerCase();
+    session.codexWakeAttempt = {
+      expectedId,
+      launchTarget,
+      cliType: session.cliType,
+      token: tokenEntry.token,
+      ptyGeneration: session.ptyGeneration,
+      startedAt: Date.now(),
+      fallbackAt: null,
+      startupOutput: '',
+      error: null,
+      corroborationTimer: null
+    };
+    return session.codexWakeAttempt;
+  }
+
+  markCodexWakeAttemptError(session, code, message) {
+    const attempt = session?.codexWakeAttempt;
+    if (!attempt || attempt.ptyGeneration !== session.ptyGeneration) return false;
+    attempt.error = { code, message };
+    session.codexIdentityState = code === 'identity_conflict' ? 'conflict' : 'unresolved';
+    session.codexIdentityError = message;
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    return true;
+  }
+
+  observeCodexWakeStartupOutput(session, data, generation) {
+    const attempt = session?.codexWakeAttempt;
+    if (!attempt || attempt.ptyGeneration !== generation || attempt.error) return false;
+    attempt.startupOutput = `${attempt.startupOutput}${this.cleanTerminalText(data)}`
+      .slice(-CODEX_WAKE_OUTPUT_MAX_CHARS);
+    const text = attempt.startupOutput;
+    let message = null;
+    let code = 'startup_error';
+    if (/(?:^|\n)\s*(?:(?:error|fatal)\s*:?\s*)?(?:session|conversation)\s+[0-9a-f-]{36}\b.{0,100}\balready (?:in use|open)\b/im.test(text) ||
+        /(?:^|\n)\s*(?:error|fatal)\s*:.{0,100}\b(?:session|conversation)\b.{0,100}\balready (?:in use|open)\b/im.test(text)) {
+      code = 'identity_conflict';
+      message = 'The exact Codex conversation is already open';
+    } else if (/(?:^|\n)\s*(?:error|fatal)\s*:.{0,100}(?:(?:no|missing) (?:conversation|rollout)|(?:conversation|rollout).{0,40}not found)/im.test(text)) {
+      message = 'The exact Codex conversation could not be found';
+    } else if (/(?:^|\n)\s*(?:error|fatal)\s*:.{0,100}(?:failed to resume|exact Codex resume failed)/im.test(text)) {
+      message = 'The exact Codex resume failed during startup';
+    }
+    return message ? this.markCodexWakeAttemptError(session, code, message) : false;
+  }
+
+  startCodexWakeCorroborationTimer(session, attempt) {
+    if (!session || !attempt || attempt.corroborationTimer) return;
+    const delay = Number(this.codexHookCorroborationTimeoutMs) || CODEX_HOOK_CORROBORATION_TIMEOUT_MS;
+    attempt.corroborationTimer = setTimeout(() => {
+      if (session.codexWakeAttempt !== attempt ||
+          session.ptyGeneration !== attempt.ptyGeneration ||
+          session.codexIdentityState !== 'resume_verified') return;
+      session.wakeWarning = 'Exact resume is active, but the SessionStart identity callback did not arrive. Pause and retry if the displayed conversation is unexpected.';
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    }, delay);
+    attempt.corroborationTimer.unref?.();
+  }
+
+  failLiveCodexWakeAttempt(session, attempt, message) {
+    if (!session || session.codexWakeAttempt !== attempt ||
+        session.ptyGeneration !== attempt.ptyGeneration) return false;
+    if (attempt.corroborationTimer) clearTimeout(attempt.corroborationTimer);
+    const processRef = session.pty;
+    session.status = 'paused';
+    session.runtimeState = 'wake_failed_live';
+    session.pauseReason = 'auto_park';
+    session.wakeError = message;
+    session.wakeWarning = null;
+    if (processRef) {
+      try { processRef.kill(); } catch {}
+    }
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    return true;
+  }
+
   acceptCodexWindowsSessionStart(easyccSessionId, token, payload = {}) {
-    const expected = this.codexWindowsHookTokens.get(easyccSessionId);
-    if (!expected || expected !== token) return false;
+    const tokenEntry = this.codexWindowsHookTokens.get(easyccSessionId);
+    if (!tokenEntry || tokenEntry.token !== token) return false;
     const session = this.sessions.get(easyccSessionId);
     if (!session || session.cliType !== CODEX_WINDOWS) return false;
+    if (!session.pty || tokenEntry.generation !== session.ptyGeneration) return false;
     const candidateId = payload.session_id || payload.sessionId || payload.id;
     if (!candidateId) return false;
+    const normalizedCandidate = String(candidateId).toLowerCase();
+    const attempt = session.codexWakeAttempt;
+    if (attempt && attempt.ptyGeneration !== session.ptyGeneration) return false;
+    if (attempt && normalizedCandidate !== attempt.expectedId) {
+      this.codexWindowsHookTokens.delete(easyccSessionId);
+      const message = `Exact Codex wake expected ${attempt.expectedId}, but resumed ${normalizedCandidate}`;
+      this.markCodexWakeAttemptError(session, 'identity_mismatch', message);
+      if (session.runtimeState === 'live') this.failLiveCodexWakeAttempt(session, attempt, message);
+      return true;
+    }
+    if (payload.cwd && !codexPathsEqual(payload.cwd, session.workingDir)) {
+      this.codexWindowsHookTokens.delete(easyccSessionId);
+      const message = 'Codex conversation belongs to a different folder';
+      if (attempt) {
+        this.markCodexWakeAttemptError(session, 'identity_mismatch', message);
+        if (session.runtimeState === 'live') this.failLiveCodexWakeAttempt(session, attempt, message);
+      } else {
+        session.codexIdentityState = 'unresolved';
+        session.codexIdentityError = message;
+        this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      }
+      return true;
+    }
+    const activeOwner = [...this.sessions.values()].find(candidate =>
+      candidate.id !== session.id &&
+      candidate.cliType === CODEX_WINDOWS &&
+      candidate.pty &&
+      !['paused', 'completed', 'killed'].includes(candidate.status) &&
+      String(candidate.codexSessionId || '').toLowerCase() === normalizedCandidate
+    );
+    if (activeOwner) {
+      this.codexWindowsHookTokens.delete(easyccSessionId);
+      const message = `Codex conversation is already linked to ${activeOwner.name}`;
+      if (attempt) {
+        this.markCodexWakeAttemptError(session, 'identity_conflict', message);
+        if (session.runtimeState === 'live') this.failLiveCodexWakeAttempt(session, attempt, message);
+      } else {
+        this.applyCodexIdentityObservation({
+          sessionId: easyccSessionId,
+          state: 'conflict',
+          candidateId: normalizedCandidate,
+          error: message
+        });
+      }
+      return true;
+    }
     this.codexWindowsHookTokens.delete(easyccSessionId);
     session.codexTranscriptPath = payload.transcript_path || payload.transcriptPath || null;
-    return this.applyCodexIdentityObservation({
+    this.applyCodexIdentityObservation({
       sessionId: easyccSessionId,
       state: 'verified',
-      candidateId,
+      candidateId: normalizedCandidate,
       workingDir: payload.cwd || session.workingDir,
       threadName: session.name
     });
+    if (attempt && session.codexIdentityState === 'conflict') {
+      session.runtimeState = 'wake_failed_live';
+      session.pauseReason = 'auto_park';
+      session.wakeError = session.codexIdentityError;
+    } else if (attempt && session.runtimeState === 'live') {
+      this.clearCodexWindowsWakeAttempt(session, { clearToken: false });
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    } else if (attempt) {
+      attempt.hookVerified = true;
+      if (attempt.corroborationTimer) {
+        clearTimeout(attempt.corroborationTimer);
+        attempt.corroborationTimer = null;
+      }
+    }
+    return true;
   }
 
   spawnClaudeProcess(workingDir, { sessionId = null, resumeId = null, role = '', easyccSessionId = '', meta = {}, startupPrompt = '', planMode = false } = {}) {
@@ -2642,6 +2829,9 @@ class SessionManager extends EventEmitter {
 
     this.resetSessionTranscript(id);
     const ptyGeneration = session.ptyGeneration;
+    if (cliType === CODEX_WINDOWS) {
+      this.bindCodexWindowsLaunch(session, null);
+    }
 
     // Queue startupPrompt via startupSequence (delivers via PTY stdin after idle)
     if (sessionMeta.startupPrompt) {
@@ -2968,6 +3158,10 @@ class SessionManager extends EventEmitter {
         return { ok: false, error: 'transcript_flush_failed' };
       }
 
+      if (session.cliType === CODEX_WINDOWS) {
+        this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
+      }
+
       const exitPromise = this.waitForPtyExit(processRef);
       try {
         processRef.kill();
@@ -3020,6 +3214,84 @@ class SessionManager extends EventEmitter {
     return transition;
   }
 
+  async getCodexWindowsWakeCollision(session, expectedId) {
+    const normalized = String(expectedId || '').toLowerCase();
+    const findActiveOwner = () => [...this.sessions.values()].find(candidate =>
+      candidate.id !== session.id &&
+      candidate.cliType === CODEX_WINDOWS &&
+      candidate.pty &&
+      !['paused', 'completed', 'killed'].includes(candidate.status) &&
+      String(candidate.codexSessionId || '').toLowerCase() === normalized
+    );
+    let activeOwner = findActiveOwner();
+    if (activeOwner) {
+      return `Codex conversation is already linked to ${activeOwner.name}`;
+    }
+    const scanOwners = this.findCodexWindowsResumeOwners || codexWindowsRuntime.findExplicitResumeOwners;
+    const externalOwners = await scanOwners(normalized);
+    if (externalOwners.length > 0) {
+      return 'Codex conversation is already open in another Windows process';
+    }
+    activeOwner = findActiveOwner();
+    if (activeOwner) {
+      return `Codex conversation is already linked to ${activeOwner.name}`;
+    }
+    return null;
+  }
+
+  evaluateWakeReadiness(session, processRef, generation) {
+    if (session.pty !== processRef || session.ptyGeneration !== generation) {
+      return { ready: false, error: 'pty_replaced', message: 'The resumed PTY was replaced before it became ready' };
+    }
+    if (session.lastPtyExitGeneration === generation) {
+      return { ready: false, error: 'process_exited', message: 'The exact resume process exited before it became ready' };
+    }
+    if (session.cliType === 'claude') {
+      return { ready: !!(session.claudeResumeVerified && session.status === 'idle') };
+    }
+
+    const attempt = session.codexWakeAttempt;
+    if (attempt?.error) {
+      return { ready: false, error: attempt.error.code, message: attempt.error.message };
+    }
+    if (session.codexIdentityState === 'conflict') {
+      return {
+        ready: false,
+        error: 'identity_conflict',
+        message: session.codexIdentityError || 'Codex conversation is already open'
+      };
+    }
+    if (session.codexIdentityState === 'unresolved' && session.codexIdentityError) {
+      return { ready: false, error: 'identity_mismatch', message: session.codexIdentityError };
+    }
+
+    const expectedId = String(session.expectedCodexWakeId || '').toLowerCase();
+    const savedId = String(session.codexSessionId || '').toLowerCase();
+    const readySinceMs = Date.parse(session.readySince || '');
+    const configuredStableMs = Number(this.wakeReadyStableMs);
+    const stableMs = Number.isFinite(configuredStableMs)
+      ? Math.max(0, configuredStableMs)
+      : CODEX_WAKE_READY_STABLE_MS;
+    const promptReady = session.status === 'idle' &&
+      session.idleEvidence === 'codex_ready_prompt' &&
+      Number.isFinite(readySinceMs) &&
+      Date.now() - readySinceMs >= stableMs;
+    if (!expectedId || savedId !== expectedId || !promptReady) return { ready: false };
+    if (session.codexIdentityState === 'verified') return { ready: true, mode: 'hook_verified' };
+
+    const exactWindowsAttempt = session.cliType === CODEX_WINDOWS &&
+      attempt &&
+      attempt.cliType === CODEX_WINDOWS &&
+      attempt.ptyGeneration === generation &&
+      attempt.expectedId === expectedId &&
+      attempt.launchTarget === expectedId &&
+      attempt.token;
+    if (exactWindowsAttempt && ['verifying', 'resume_verified'].includes(session.codexIdentityState)) {
+      return { ready: true, mode: 'resume_verified', attempt };
+    }
+    return { ready: false };
+  }
+
   wakeSession(id) {
     const lifecycleTransitions = this.getLifecycleTransitions();
     const existingTransition = lifecycleTransitions.get(id);
@@ -3034,12 +3306,27 @@ class SessionManager extends EventEmitter {
         return { ok: false, error: 'not_parked' };
       }
 
-      session.runtimeState = 'resuming';
-      session.wakeError = null;
-      session.claudeResumeVerified = false;
-      session.expectedCodexWakeId = isCodexType(session.cliType)
+      const expectedId = isCodexType(session.cliType)
         ? String(session.codexSessionId || '').toLowerCase()
         : null;
+      if (session.cliType === CODEX_WINDOWS) {
+        const collision = await this.getCodexWindowsWakeCollision(session, expectedId);
+        if (collision) {
+          session.codexIdentityState = 'conflict';
+          session.codexIdentityError = collision;
+          session.wakeError = collision;
+          this.dataStore.saveSession(session);
+          this.emit('sessionUpdated', this.getSessionSnapshot(session));
+          return { ok: false, error: 'identity_conflict', session: this.getSessionSnapshot(session) };
+        }
+      }
+
+      this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
+      session.runtimeState = 'resuming';
+      session.wakeError = null;
+      session.wakeWarning = null;
+      session.claudeResumeVerified = false;
+      session.expectedCodexWakeId = expectedId;
       this.emit('sessionUpdated', this.getSessionSnapshot(session));
       const started = this.resumeSession(id, { recovery: true, lifecycleOwner: true });
       if (!started || !session.pty) {
@@ -3047,7 +3334,7 @@ class SessionManager extends EventEmitter {
         session.status = 'paused';
         session.pauseReason = 'auto_park';
         session.wakeError = session.recoveryError || 'Could not start exact resume';
-        session.expectedCodexWakeId = null;
+        this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
         this.dataStore.saveSession(session);
         this.emit('sessionUpdated', this.getSessionSnapshot(session));
         return { ok: false, error: 'spawn_failed' };
@@ -3055,24 +3342,16 @@ class SessionManager extends EventEmitter {
 
       const processRef = session.pty;
       const generation = session.ptyGeneration;
-      const deadline = Date.now() + 60_000;
+      const deadline = Date.now() + (Number(this.wakeTimeoutMs) || CODEX_WAKE_TIMEOUT_MS);
       let ready = false;
-      let identityMismatch = false;
+      let readiness = { ready: false };
       while (Date.now() < deadline) {
-        if (session.pty !== processRef || session.ptyGeneration !== generation) break;
-        if (session.lastPtyExitGeneration === generation) break;
-        identityMismatch = isCodexType(session.cliType) &&
-          session.codexIdentityState === 'unresolved' &&
-          /^Exact Codex wake expected /.test(session.codexIdentityError || '');
-        if (identityMismatch) break;
-        ready = session.cliType === 'claude'
-          ? session.claudeResumeVerified && session.status === 'idle'
-          : String(session.codexSessionId || '').toLowerCase() === session.expectedCodexWakeId &&
-            session.codexIdentityState === 'verified' &&
-            session.status === 'idle' &&
-            session.idleEvidence === 'codex_ready_prompt';
+        readiness = this.evaluateWakeReadiness(session, processRef, generation);
+        if (readiness.error) break;
+        ready = readiness.ready;
         if (ready) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const sleep = this.wakeSleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+        await sleep(Number(this.wakePollMs) || CODEX_WAKE_POLL_MS);
       }
 
       if (!ready) {
@@ -3092,16 +3371,14 @@ class SessionManager extends EventEmitter {
           session.runtimeState = 'auto_parked';
           session.status = 'paused';
           session.pauseReason = 'auto_park';
-          session.wakeError = identityMismatch
-            ? session.codexIdentityError
-            : 'Exact session did not become ready before timeout';
+          session.wakeError = readiness.message || 'Exact session did not become ready before timeout';
         }
-        session.expectedCodexWakeId = null;
+        this.clearCodexWindowsWakeAttempt(session, { clearToken: true, clearWarning: true });
         this.dataStore.saveSession(session);
         this.emit('sessionUpdated', this.getSessionSnapshot(session));
         return {
           ok: false,
-          error: identityMismatch ? 'identity_mismatch' : 'wake_timeout',
+          error: readiness.error || 'wake_timeout',
           session: this.getSessionSnapshot(session)
         };
       }
@@ -3110,11 +3387,21 @@ class SessionManager extends EventEmitter {
       session.pauseReason = null;
       session.parkedAt = null;
       session.wakeError = null;
-      session.expectedCodexWakeId = null;
       session.lastUserOrOrchestratorActivityAt = new Date().toISOString();
+      if (readiness.mode === 'resume_verified') {
+        session.codexIdentityState = 'resume_verified';
+        session.codexIdentityVerifiedAt = new Date().toISOString();
+        session.codexIdentityError = null;
+        readiness.attempt.fallbackAt = Date.now();
+        this.startCodexWakeCorroborationTimer(session, readiness.attempt);
+      } else if (session.cliType === CODEX_WINDOWS) {
+        this.clearCodexWindowsWakeAttempt(session, { clearToken: false });
+      } else {
+        session.expectedCodexWakeId = null;
+      }
       this.dataStore.saveSession(session);
       this.emit('sessionUpdated', this.getSessionSnapshot(session));
-      this.drainMessageQueue(session);
+      this.drainMessageQueue(session, { codexWindowsResume: session.cliType === CODEX_WINDOWS });
       return { ok: true, session: this.getSessionSnapshot(session) };
     })().finally(() => {
       if (lifecycleTransitions.get(id)?.promise === transition) lifecycleTransitions.delete(id);
@@ -3158,7 +3445,11 @@ class SessionManager extends EventEmitter {
       session.pauseReason = 'auto_park';
       session.parkedAt = session.parkedAt || new Date().toISOString();
       session.wakeError = null;
-      session.expectedCodexWakeId = null;
+      if (session.cliType === CODEX_WINDOWS) {
+        this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
+      } else {
+        session.expectedCodexWakeId = null;
+      }
       try {
         this.dataStore.saveSession(session, { throwOnError: true });
       } catch (error) {
@@ -3213,6 +3504,9 @@ class SessionManager extends EventEmitter {
     this.clearRoleInjectionWorkflow(session);
     this.clearCodexSessionCapture(session);
     this.clearCodexStatusSampler(session);
+    if (session.cliType === CODEX_WINDOWS) {
+      this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
+    }
 
     // Kill the PTY process
     try {
@@ -3270,6 +3564,9 @@ class SessionManager extends EventEmitter {
 
     const cliType = session.cliType || 'claude';
     session.recoveryError = null;
+    if (cliType === CODEX_WINDOWS && session.runtimeState !== 'resuming') {
+      this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
+    }
     if (!isCodexType(cliType)) {
       this.applyRepoContext(session);
     }
@@ -3284,6 +3581,7 @@ class SessionManager extends EventEmitter {
     let claudeFallbackAttempted = false;
     let suppressNextExit = false;
     let shouldResyncClaudeSession = false;
+    let codexResumeTargetUsed = null;
 
     const createFreshClaudeProcess = ({ sessionId = null } = {}) => {
       return this.spawnClaudeProcess(session.workingDir, {
@@ -3379,6 +3677,9 @@ class SessionManager extends EventEmitter {
 
         this.processSessionOutputState(session, data);
         this.observeCodexStatusSample(session, data);
+        if (cliType === CODEX_WINDOWS) {
+          this.observeCodexWakeStartupOutput(session, data, ptyGeneration);
+        }
 
         const newName = this.extractSessionRename(data);
         if (newName && newName !== session.name) {
@@ -3527,9 +3828,10 @@ class SessionManager extends EventEmitter {
         });
       } else if (cliType === CODEX_WINDOWS) {
         session.codexLaunchStartedAt = new Date().toISOString();
+        codexResumeTargetUsed = fresh ? null : this.selectCodexResumeTarget(session);
         ptyProcess = this.spawnCodexWindowsProcess(session.workingDir, {
           resume: !fresh,
-          resumeTarget: fresh ? null : this.selectCodexResumeTarget(session),
+          resumeTarget: codexResumeTargetUsed,
           easyccSessionId: session.id
         });
       } else {
@@ -3574,6 +3876,9 @@ class SessionManager extends EventEmitter {
 
     // Re-setup PTY handlers
     wirePtyHandlers(ptyProcess);
+    if (cliType === CODEX_WINDOWS) {
+      this.bindCodexWindowsLaunch(session, codexResumeTargetUsed);
+    }
     if (!recovery) {
       this.setupRoleInjectionWorkflow(session, 'resume');
     } else {
@@ -4146,6 +4451,9 @@ class SessionManager extends EventEmitter {
     this.clearRoleInjectionWorkflow(session);
     this.clearCodexSessionCapture(session);
     this.clearCodexStatusSampler(session);
+    if (session.cliType === CODEX_WINDOWS) {
+      this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
+    }
 
     // Close Claude sessions watcher
     if (session.claudeIndexWatcher) {
@@ -4303,6 +4611,51 @@ class SessionManager extends EventEmitter {
     this._drainWriteQueue(session);
   }
 
+  /**
+   * Codex on Windows treats text and a trailing carriage return received in
+   * one ConPTY write as pasted text during some resume redraws. Keep Enter as
+   * a distinct keystroke, matching xterm.js and the immediate API-send path.
+   * Scope the delayed keypress to the current PTY generation so it can never
+   * reach a replacement process.
+   */
+  _writeInputToPty(session, text, { submitDelayMs = 0, onSubmitted = null } = {}) {
+    if (session.cliType !== CODEX_WINDOWS || submitDelayMs <= 0 ||
+        text.length <= 1 || !text.endsWith('\r')) {
+      this._writeToPty(session, text);
+      onSubmitted?.(true);
+      return;
+    }
+
+    const body = text.slice(0, -1);
+    const processRef = session.pty;
+    const generation = session.ptyGeneration;
+    this._writeToPty(session, body);
+
+    const scheduleTimeout = this.setTimeoutFn || setTimeout;
+    const submitEnter = () => {
+      const registeredSession = this.sessions?.get?.(session.id);
+      if ((registeredSession && registeredSession !== session) ||
+          (this.sessions?.has && !this.sessions.has(session.id)) ||
+          session.pty !== processRef || session.ptyGeneration !== generation ||
+          ['killed', 'completed', 'paused'].includes(session.status) ||
+          (session.runtimeState && session.runtimeState !== 'live')) {
+        onSubmitted?.(false);
+        return;
+      }
+      if (session._writeDraining) {
+        scheduleTimeout(submitEnter, 10);
+        return;
+      }
+      try {
+        this._writeToPty(session, '\r');
+        onSubmitted?.(true);
+      } catch {
+        onSubmitted?.(false);
+      }
+    };
+    scheduleTimeout(submitEnter, submitDelayMs);
+  }
+
   _splitAndEnqueue(session, text, byteCap) {
     let pos = 0;
     while (pos < text.length) {
@@ -4421,7 +4774,10 @@ class SessionManager extends EventEmitter {
    * @param {string} text - Text to send
    * @returns {boolean} Success status
    */
-  sendInput(id, text) {
+  sendInput(id, text, {
+    codexWindowsSubmitDelayMs = 0,
+    onCodexWindowsSubmitted = null
+  } = {}) {
     const session = this.sessions.get(id);
     if (!session || session.status === 'completed' || session.status === 'paused' ||
         (session.runtimeState && session.runtimeState !== 'live')) {
@@ -4446,7 +4802,10 @@ class SessionManager extends EventEmitter {
           session.manualPlacedAt = null;
         }
       }
-      this._writeToPty(session, filteredText);
+      this._writeInputToPty(session, filteredText, {
+        submitDelayMs: codexWindowsSubmitDelayMs,
+        onSubmitted: onCodexWindowsSubmitted
+      });
 
       // Prompt detection - buffer until Enter.
       // Treat multiline paste chunks as a single prompt entry.
@@ -4819,6 +5178,7 @@ class SessionManager extends EventEmitter {
       idleEvidence: session.idleEvidence || null,
       readySince: session.readySince || null,
       wakeError: session.wakeError || null,
+      wakeWarning: session.wakeWarning || null,
       parkingProposalState: session.parkingProposalState || 'none',
       parkingProposalReason: session.parkingProposalReason || null,
       parkingDetectedAt: session.parkingDetectedAt || null,
@@ -5378,7 +5738,7 @@ class SessionManager extends EventEmitter {
    * Once a message with \r is sent, sendInput transitions status to 'active'
    * on the next event loop tick, so canAcceptOrchestratorInput breaks the loop.
    */
-  drainMessageQueue(session) {
+  drainMessageQueue(session, { codexWindowsResume = false } = {}) {
     if (!session || session._queueDraining) return;
     if (!session.messageQueue?.length) return;
     if (!this.canAcceptOrchestratorInput(session)) return;
@@ -5394,14 +5754,26 @@ class SessionManager extends EventEmitter {
         if (!this.canAcceptOrchestratorInput(session)) break;
 
         const msg = session.messageQueue[idx];
-        const result = this.sendInput(session.id, msg.text);
+        const delayedResumeSubmit = codexWindowsResume && session.cliType === CODEX_WINDOWS &&
+          msg.text.length > 1 && msg.text.endsWith('\r');
+        if (delayedResumeSubmit) msg.status = 'delivering';
+        const result = this.sendInput(session.id, msg.text, {
+          codexWindowsSubmitDelayMs: delayedResumeSubmit ? CODEX_WINDOWS_SUBMIT_DELAY_MS : 0,
+          onCodexWindowsSubmitted: delayedResumeSubmit
+            ? delivered => this.finishDelayedQueueDelivery(session, msg, delivered)
+            : null
+        });
 
-        if (result) {
+        if (result && delayedResumeSubmit) {
+          debugLog(`Queued message ${msg.id} is awaiting its resume Enter keypress for session ${session.id}`);
+          break;
+        } else if (result) {
           msg.status = 'delivered';
           msg.deliveredAt = new Date().toISOString();
           session.messageQueue.splice(idx, 1);
           debugLog(`Delivered queued message ${msg.id} to session ${session.id}`);
         } else {
+          if (delayedResumeSubmit) msg.status = 'queued';
           debugLog(`Failed to deliver queued message ${msg.id} to session ${session.id} — re-queued`);
           break;
         }
@@ -5415,6 +5787,26 @@ class SessionManager extends EventEmitter {
     }
   }
 
+  finishDelayedQueueDelivery(session, msg, delivered) {
+    if (this.sessions?.get && this.sessions.get(session.id) !== session) return;
+    if (!session?.messageQueue || msg.status !== 'delivering') return;
+    const idx = session.messageQueue.indexOf(msg);
+    if (idx === -1) return;
+    if (delivered) {
+      msg.status = 'delivered';
+      msg.deliveredAt = new Date().toISOString();
+      session.messageQueue.splice(idx, 1);
+      debugLog(`Delivered queued message ${msg.id} to session ${session.id}`);
+    } else {
+      msg.status = 'queued';
+      delete msg.deliveredAt;
+      debugLog(`Resume Enter keypress was cancelled for queued message ${msg.id}; message re-queued`);
+    }
+    session.updatedAt = new Date().toISOString();
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+  }
+
   /**
    * Sweep expired messages from a session's queue.
    */
@@ -5425,6 +5817,7 @@ class SessionManager extends EventEmitter {
     let changed = false;
 
     session.messageQueue = session.messageQueue.filter(msg => {
+      if (msg.status === 'delivering') return true;
       if (msg.status !== 'queued') return false; // Remove delivered/expired
       const age = now - new Date(msg.queuedAt).getTime();
       if (age > MESSAGE_QUEUE_EXPIRY_MS) {
@@ -5572,6 +5965,9 @@ class SessionManager extends EventEmitter {
       this.clearRoleInjectionWorkflow(session);
       this.clearCodexSessionCapture(session);
       this.clearCodexStatusSampler(session);
+      if (session.cliType === CODEX_WINDOWS) {
+        this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
+      }
       session.startupSequence = null;
       if (['parking_failed_live', 'wake_failed_live'].includes(session.runtimeState)) {
         session.pauseReason = 'recovery_failed';

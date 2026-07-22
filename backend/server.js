@@ -1962,7 +1962,12 @@ async function start() {
     if (!result.ok) {
       const session = sessionManager.sessions.get(request.params.id);
       if (session) parkingCoordinator.log('wake_failed', session, result.error, 'error');
-      const status = ['not_parked', 'identity_mismatch', 'lifecycle_transition_in_progress'].includes(result.error)
+      const status = [
+        'not_parked',
+        'identity_mismatch',
+        'identity_conflict',
+        'lifecycle_transition_in_progress'
+      ].includes(result.error)
         ? 409
         : 504;
       return reply.status(status).send(result);
