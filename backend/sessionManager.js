@@ -425,6 +425,10 @@ class SessionManager extends EventEmitter {
           codexIdentityVerifiedAt: sessionData.codexIdentityVerifiedAt || null,
           codexIdentityError: sessionData.codexIdentityError || null,
           codexTranscriptPath: sessionData.codexTranscriptPath || null,
+          codexTurnTiming: this.restoreCodexTurnTiming(
+            sessionData.codexTurnTiming,
+            sessionData.lastActivity
+          ),
           recoveryError: sessionData.recoveryError || null,
           notes: sessionData.notes || '',
           role: this.sanitizeRole(sessionData.role || ''),
@@ -1362,6 +1366,7 @@ class SessionManager extends EventEmitter {
       session.codexSessionId = candidateId;
       session.codexThreadName = null;
       session.currentTask = '';
+      session.codexTurnTiming = null;
     }
     session.codexIdentityState = 'verified';
     session.codexIdentityVerifiedAt = new Date().toISOString();
@@ -2086,6 +2091,10 @@ class SessionManager extends EventEmitter {
     session.pauseReason = 'auto_park';
     session.wakeError = message;
     session.wakeWarning = null;
+    this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+      persist: false,
+      emit: false
+    });
     if (processRef) {
       try { processRef.kill(); } catch {}
     }
@@ -2153,6 +2162,9 @@ class SessionManager extends EventEmitter {
     session.codexTranscriptPath = payload.transcript_path || payload.transcriptPath || null;
     const previousCodexSessionId = String(session.codexSessionId || '').toLowerCase();
     const switched = !!previousCodexSessionId && previousCodexSessionId !== normalizedCandidate;
+    if (switched && session.codexTurnTiming) {
+      session.codexTurnTiming = null;
+    }
     const indexedThreadName = this.codexSessionService
       ?.loadWindowsIndex?.()
       ?.get(normalizedCandidate)
@@ -2178,6 +2190,145 @@ class SessionManager extends EventEmitter {
         clearTimeout(attempt.corroborationTimer);
         attempt.corroborationTimer = null;
       }
+    }
+    return true;
+  }
+
+  restoreCodexTurnTiming(timing, fallbackStoppedAt = null) {
+    if (!timing || typeof timing !== 'object' || !timing.turnId || !timing.startedAt) {
+      return null;
+    }
+    const startedAtMs = Date.parse(timing.startedAt);
+    if (!Number.isFinite(startedAtMs)) return null;
+    if (timing.status !== 'running') {
+      return {
+        codexSessionId: timing.codexSessionId ? String(timing.codexSessionId).toLowerCase() : null,
+        turnId: String(timing.turnId),
+        status: timing.status || 'completed',
+        startedAt: new Date(startedAtMs).toISOString(),
+        completedAt: timing.completedAt || null,
+        elapsedMs: Math.max(0, Number(timing.elapsedMs) || 0),
+        stopObservedAt: timing.stopObservedAt || null
+      };
+    }
+
+    const fallbackMs = Date.parse(fallbackStoppedAt || '');
+    const stoppedAtMs = Number.isFinite(fallbackMs)
+      ? Math.max(startedAtMs, fallbackMs)
+      : startedAtMs;
+    return {
+      codexSessionId: timing.codexSessionId ? String(timing.codexSessionId).toLowerCase() : null,
+      turnId: String(timing.turnId),
+      status: 'stopped',
+      startedAt: new Date(startedAtMs).toISOString(),
+      completedAt: new Date(stoppedAtMs).toISOString(),
+      elapsedMs: stoppedAtMs - startedAtMs,
+      stopObservedAt: timing.stopObservedAt || null
+    };
+  }
+
+  setCodexTurnTiming(session, timing, { persist = true, emit = true } = {}) {
+    if (!session) return null;
+    session.codexTurnTiming = timing ? { ...timing } : null;
+    if (persist) this.dataStore.saveSession(session);
+    if (emit) this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    return session.codexTurnTiming;
+  }
+
+  finalizeCodexTurnTiming(
+    session,
+    status = 'stopped',
+    nowMs = Date.now(),
+    options = {}
+  ) {
+    const timing = session?.codexTurnTiming;
+    if (!timing || timing.status !== 'running') return timing || null;
+    const startedAtMs = Date.parse(timing.startedAt);
+    const completedAtMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+    return this.setCodexTurnTiming(session, {
+      ...timing,
+      status,
+      completedAt: new Date(completedAtMs).toISOString(),
+      elapsedMs: Math.max(0, completedAtMs - startedAtMs)
+    }, options);
+  }
+
+  reconcileCodexTurnTimingAtReady(session) {
+    const timing = session?.codexTurnTiming;
+    if (!timing || timing.status !== 'running') return timing || null;
+
+    if (!timing.stopObservedAt) {
+      // UserPromptSubmit runs before Codex resolves every hook. A prompt rejected
+      // by another hook returns directly to the ready prompt without a Stop.
+      return this.setCodexTurnTiming(session, null);
+    }
+
+    const stopObservedAtMs = Date.parse(timing.stopObservedAt);
+    return this.finalizeCodexTurnTiming(
+      session,
+      'completed',
+      Number.isFinite(stopObservedAtMs) ? stopObservedAtMs : Date.now()
+    );
+  }
+
+  acceptCodexWindowsTurnTiming(easyccSessionId, token, payload = {}, nowMs = Date.now()) {
+    const tokenEntry = this.codexWindowsHookTokens.get(easyccSessionId);
+    if (!tokenEntry || tokenEntry.token !== token) return false;
+    const session = this.sessions.get(easyccSessionId);
+    if (!session || session.cliType !== CODEX_WINDOWS) return false;
+    if (!session.pty || tokenEntry.generation !== session.ptyGeneration) return false;
+
+    const codexSessionId = String(payload.session_id || payload.sessionId || '').toLowerCase();
+    if (!codexSessionId ||
+        codexSessionId !== String(session.codexSessionId || '').toLowerCase()) {
+      return false;
+    }
+    if (payload.cwd && !codexPathsEqual(payload.cwd, session.workingDir)) return false;
+
+    const turnId = String(payload.turn_id || payload.turnId || '');
+    const hookEvent = String(payload.hook_event_name || payload.hookEventName || '');
+    if (!turnId || !['UserPromptSubmit', 'Stop'].includes(hookEvent)) return false;
+
+    const existing = session.codexTurnTiming;
+    if (hookEvent === 'UserPromptSubmit') {
+      if (existing?.turnId === turnId) return true;
+      if (existing?.status === 'running') {
+        this.finalizeCodexTurnTiming(session, 'stopped', nowMs, {
+          persist: false,
+          emit: false
+        });
+      }
+      this.setCodexTurnTiming(session, {
+        codexSessionId,
+        turnId,
+        status: 'running',
+        startedAt: new Date(nowMs).toISOString(),
+        completedAt: null,
+        elapsedMs: null,
+        stopObservedAt: null
+      });
+      return true;
+    }
+
+    if (!existing || existing.turnId !== turnId) return false;
+    const stopObservedAt = new Date(nowMs).toISOString();
+    if (existing.status === 'running') {
+      // A Stop hook runs before Codex aggregates every hook result. Keep the
+      // timer live until the terminal actually returns to its ready prompt.
+      this.setCodexTurnTiming(session, {
+        ...existing,
+        stopObservedAt
+      });
+      return true;
+    }
+    if (existing.status === 'completed') {
+      const startedAtMs = Date.parse(existing.startedAt);
+      this.setCodexTurnTiming(session, {
+        ...existing,
+        completedAt: stopObservedAt,
+        elapsedMs: Math.max(0, nowMs - startedAtMs),
+        stopObservedAt
+      });
     }
     return true;
   }
@@ -2644,6 +2795,9 @@ class SessionManager extends EventEmitter {
 
     if (hasExplicitReadySignal) {
       this.clearCodexStatusSampler(session);
+      if (session.cliType === CODEX_WINDOWS && session.codexTurnTiming?.status === 'running') {
+        this.reconcileCodexTurnTimingAtReady(session);
+      }
       if (!session.interactionPending) {
         const gainedReadyEvidence = session.idleEvidence !== 'codex_ready_prompt';
         session.idleEvidence = 'codex_ready_prompt';
@@ -2789,6 +2943,7 @@ class SessionManager extends EventEmitter {
       codexIdentityState: isCodexType(cliType) ? 'verifying' : null,
       codexIdentityVerifiedAt: null,
       codexIdentityError: null,
+      codexTurnTiming: null,
       recoveryError: null,
       notes: '',
       role: sanitizedRole,
@@ -2924,6 +3079,10 @@ class SessionManager extends EventEmitter {
       if (sessionAge < 10000 && exitCode !== 0) {
         debugLog(`Session ${id} PAUSED due to early exit (age=${sessionAge}ms, exitCode=${exitCode})`);
         session.status = 'paused';
+        this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+          persist: false,
+          emit: false
+        });
         this._clearWriteQueue(session);
         session.pty = null;
         this.clearCodexStatusSampler(session);
@@ -2939,6 +3098,10 @@ class SessionManager extends EventEmitter {
       }
 
       session.status = 'completed';
+      this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+        persist: false,
+        emit: false
+      });
       const endedSnapshot = this.getSessionSnapshot(session);
       this.clearCodexStatusSampler(session);
       this.clearCodexSessionCapture(session);
@@ -3190,6 +3353,10 @@ class SessionManager extends EventEmitter {
       session.pty = null;
       session.status = 'paused';
       session.runtimeState = 'auto_parked';
+      this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+        persist: false,
+        emit: false
+      });
       session.pauseReason = 'auto_park';
       session.parkedAt = new Date().toISOString();
       session.idleEvidence = null;
@@ -3450,6 +3617,10 @@ class SessionManager extends EventEmitter {
       session.pty = null;
       session.status = 'paused';
       session.runtimeState = 'auto_parked';
+      this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+        persist: false,
+        emit: false
+      });
       session.pauseReason = 'auto_park';
       session.parkedAt = session.parkedAt || new Date().toISOString();
       session.wakeError = null;
@@ -3529,6 +3700,10 @@ class SessionManager extends EventEmitter {
 
     session.status = 'paused';
     session.runtimeState = 'paused';
+    this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+      persist: false,
+      emit: false
+    });
     session.pauseReason = 'manual';
     session.parkedAt = null;
     session.idleEvidence = null;
@@ -3747,6 +3922,10 @@ class SessionManager extends EventEmitter {
         if (sessionAge < 10000 && (exitCode !== 0 || recovery)) {
           debugLog(`Session ${id} PAUSED due to early exit after resume (age=${sessionAge}ms, exitCode=${exitCode})`);
           session.status = 'paused';
+          this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+            persist: false,
+            emit: false
+          });
           this._clearWriteQueue(session);
           session.pty = null;
           this.clearCodexStatusSampler(session);
@@ -3771,6 +3950,10 @@ class SessionManager extends EventEmitter {
 
         debugLog(`Session ${id} marked COMPLETED (exitCode=${exitCode}, signal=${signal})`);
         session.status = 'completed';
+        this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+          persist: false,
+          emit: false
+        });
         const endedSnapshot = this.getSessionSnapshot(session);
         this.clearCodexStatusSampler(session);
         this.clearCodexSessionCapture(session);
@@ -5196,6 +5379,9 @@ class SessionManager extends EventEmitter {
       codexIdentityState: session.codexIdentityState || null,
       codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
       codexIdentityError: session.codexIdentityError || null,
+      codexTurnTiming: session.codexTurnTiming
+        ? { ...session.codexTurnTiming }
+        : null,
       recoveryError: session.recoveryError || null,
       runtimeState: session.runtimeState,
       pauseReason: session.pauseReason || null,
@@ -6008,6 +6194,10 @@ class SessionManager extends EventEmitter {
       }
       session.status = 'paused';
       if (session.runtimeState !== 'auto_parked') session.runtimeState = 'paused';
+      this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+        persist: false,
+        emit: false
+      });
       session.pty = null;
       this.dataStore.saveSession(session);  // Persist for restart
     }

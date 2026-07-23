@@ -23,6 +23,38 @@ test('Windows Codex profile mirrors the WSL status line including context usage'
       profile,
       /status_line = \["model-with-reasoning", "current-dir", "context-used", "thread-title"\]/
     );
+    assert.match(profile, /\[\[hooks\.UserPromptSubmit\]\]/);
+    assert.match(profile, /\[\[hooks\.Stop\]\]/);
+    assert.match(profile, /turn-timing\.ps1/);
+    assert.match(profile, /command_windows = .*turn-timing\.ps1/);
+  } finally {
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+    fs.rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test('Windows Codex profile upgrades schema 1 but refuses unmanaged profiles', () => {
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'easycc-codex-profile-upgrade-'));
+  const previousCodexHome = process.env.CODEX_HOME;
+  const profilePath = path.join(codexHome, 'easycc-windows.config.toml');
+
+  try {
+    process.env.CODEX_HOME = codexHome;
+    fs.writeFileSync(
+      profilePath,
+      '# EASYCC_OWNED_CODEX_WINDOWS_PROFILE schema=1\n[tui]\n',
+      'utf8'
+    );
+    const upgraded = fs.readFileSync(ensureProfile(), 'utf8');
+    assert.match(upgraded, /EASYCC_OWNED_CODEX_WINDOWS_PROFILE schema=2/);
+    assert.match(upgraded, /\[\[hooks\.UserPromptSubmit\]\]/);
+
+    fs.writeFileSync(profilePath, '[tui]\nstatus_line = []\n', 'utf8');
+    assert.throws(
+      () => ensureProfile(),
+      /Refusing to overwrite non-EasyCC Codex profile/
+    );
   } finally {
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;

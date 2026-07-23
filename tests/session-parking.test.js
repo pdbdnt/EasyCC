@@ -566,6 +566,14 @@ test('Codex Windows SessionStart keeps tracking an in-terminal /resume switch', 
     { session_id: session.codexSessionId, cwd: session.workingDir }
   ), true);
   assert.equal(manager.codexWindowsHookTokens.has(session.id), true);
+  session.codexTurnTiming = {
+    codexSessionId: session.codexSessionId,
+    turnId: 'old-conversation-turn',
+    status: 'completed',
+    startedAt: '2026-07-23T00:00:00.000Z',
+    completedAt: '2026-07-23T00:01:00.000Z',
+    elapsedMs: 60_000
+  };
 
   assert.equal(manager.acceptCodexWindowsSessionStart(
     session.id,
@@ -575,6 +583,7 @@ test('Codex Windows SessionStart keeps tracking an in-terminal /resume switch', 
   assert.equal(session.codexSessionId, resumedId);
   assert.equal(session.codexThreadName, 'Selected conversation title');
   assert.equal(session.name, 'Selected conversation title');
+  assert.equal(session.codexTurnTiming, null);
 });
 
 test('in-terminal /resume retires an existing EasyCC owner and keeps the resumed PTY', async () => {

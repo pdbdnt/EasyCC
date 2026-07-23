@@ -79,6 +79,9 @@ class DataStore {
         codexIdentityVerifiedAt: session.codexIdentityVerifiedAt || null,
         codexIdentityError: session.codexIdentityError || null,
         codexTranscriptPath: session.codexTranscriptPath || null,
+        codexTurnTiming: session.codexTurnTiming
+          ? { ...session.codexTurnTiming }
+          : null,
         recoveryError: session.recoveryError || null,
         pauseReason: session.pauseReason || null,
         parkedAt: session.parkedAt || null,

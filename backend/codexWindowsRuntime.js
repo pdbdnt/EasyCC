@@ -5,7 +5,10 @@ const { execFile, execFileSync } = require('child_process');
 const pty = require('node-pty');
 
 const PROFILE_NAME = 'easycc-windows';
-const PROFILE_MARKER = '# EASYCC_OWNED_CODEX_WINDOWS_PROFILE schema=1';
+const PROFILE_MARKER = '# EASYCC_OWNED_CODEX_WINDOWS_PROFILE schema=2';
+const LEGACY_PROFILE_MARKERS = [
+  '# EASYCC_OWNED_CODEX_WINDOWS_PROFILE schema=1'
+];
 
 function getCodexHome() {
   return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
@@ -134,17 +137,25 @@ function ensureProfile() {
   const codexHome = getCodexHome();
   fs.mkdirSync(codexHome, { recursive: true });
   const profilePath = path.join(codexHome, `${PROFILE_NAME}.config.toml`);
-  const helperPath = path.join(__dirname, 'codex-hooks', 'session-start.ps1');
-  if (!fs.existsSync(helperPath)) throw new Error(`EasyCC Codex hook helper is missing: ${helperPath}`);
+  const sessionStartHelperPath = path.join(__dirname, 'codex-hooks', 'session-start.ps1');
+  const turnTimingHelperPath = path.join(__dirname, 'codex-hooks', 'turn-timing.ps1');
+  for (const helperPath of [sessionStartHelperPath, turnTimingHelperPath]) {
+    if (!fs.existsSync(helperPath)) throw new Error(`EasyCC Codex hook helper is missing: ${helperPath}`);
+  }
   if (fs.existsSync(profilePath)) {
     const existing = fs.readFileSync(profilePath, 'utf8');
-    if (!existing.includes(PROFILE_MARKER)) {
+    const isOwnedProfile = [PROFILE_MARKER, ...LEGACY_PROFILE_MARKERS]
+      .some(marker => existing.includes(marker));
+    if (!isOwnedProfile) {
       throw new Error(`Refusing to overwrite non-EasyCC Codex profile: ${profilePath}`);
     }
   }
   const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const command = `${powershell} -NoProfile -ExecutionPolicy Bypass -File \"${helperPath}\"`;
-  const contents = `${PROFILE_MARKER}\n[tui]\nstatus_line = [\"model-with-reasoning\", \"current-dir\", \"context-used\", \"thread-title\"]\n\n[[hooks.SessionStart]]\nmatcher = \"startup|resume\"\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(command)}\ntimeout = 5\n`;
+  const hookCommand = helperPath =>
+    `${powershell} -NoProfile -ExecutionPolicy Bypass -File \"${helperPath}\"`;
+  const sessionStartCommand = hookCommand(sessionStartHelperPath);
+  const turnTimingCommand = hookCommand(turnTimingHelperPath);
+  const contents = `${PROFILE_MARKER}\n[tui]\nstatus_line = [\"model-with-reasoning\", \"current-dir\", \"context-used\", \"thread-title\"]\n\n[[hooks.SessionStart]]\nmatcher = \"startup|resume\"\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(sessionStartCommand)}\ntimeout = 5\n\n[[hooks.UserPromptSubmit]]\n[[hooks.UserPromptSubmit.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(turnTimingCommand)}\ntimeout = 5\n\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(turnTimingCommand)}\ntimeout = 5\n`;
   const tempPath = `${profilePath}.${process.pid}.tmp`;
   fs.writeFileSync(tempPath, contents, 'utf8');
   fs.renameSync(tempPath, profilePath);

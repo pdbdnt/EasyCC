@@ -3082,6 +3082,15 @@ async function start() {
     return accepted ? { accepted: true } : reply.status(403).send({ accepted: false });
   });
 
+  app.post('/api/codex-windows/turn-timing', async (request, reply) => {
+    const accepted = sessionManager.acceptCodexWindowsTurnTiming(
+      request.headers['x-easycc-session-id'],
+      request.headers['x-easycc-hook-token'],
+      request.body || {}
+    );
+    return accepted ? { accepted: true } : reply.status(403).send({ accepted: false });
+  });
+
   // Get default settings
   app.get('/api/settings/defaults', async () => {
     return { settings: settingsManager.getDefaults() };

@@ -11,6 +11,12 @@ import {
   isExactCtrlEnter,
   shouldUseBracketedSoftNewline
 } from '../utils/terminalInputUtils';
+import { useSharedElapsedTick } from '../hooks/useSharedElapsedTick';
+import {
+  formatElapsedDuration,
+  formatRunningElapsedDuration,
+  getCodexTurnTimingDisplay
+} from '../utils/codexTurnTiming';
 import '@xterm/xterm/css/xterm.css';
 
 const TERMINAL_THEMES = {
@@ -139,6 +145,15 @@ const TerminalView = forwardRef(function TerminalView({
     loadedBytes: 0,
     olderBytesAvailable: 0
   });
+  const hasRunningCodexTurn = session?.cliType === 'codex-windows' &&
+    session?.codexTurnTiming?.status === 'running';
+  const elapsedTickNow = useSharedElapsedTick(hasRunningCodexTurn);
+  const codexTurnTimingDisplay = session?.cliType === 'codex-windows'
+    ? getCodexTurnTimingDisplay(
+        session.codexTurnTiming,
+        Math.max(elapsedTickNow, Date.now())
+      )
+    : null;
 
   // Expose focus method to parent via ref
   useImperativeHandle(ref, () => ({
@@ -1206,6 +1221,18 @@ const TerminalView = forwardRef(function TerminalView({
               <span className="terminal-last-activity">
                 {formatRelativeTime(session.lastActivity)}
               </span>
+              {codexTurnTimingDisplay && (
+                <span
+                  className={`terminal-turn-timing ${session.codexTurnTiming.status}`}
+                  title="Wall-clock time from prompt submission to turn completion"
+                >
+                  {codexTurnTimingDisplay.label} · {
+                    hasRunningCodexTurn
+                      ? formatRunningElapsedDuration(codexTurnTimingDisplay.elapsedMs)
+                      : formatElapsedDuration(codexTurnTimingDisplay.elapsedMs)
+                  }
+                </span>
+              )}
               {showHideTerminalControl && (
                 <button
                   type="button"
