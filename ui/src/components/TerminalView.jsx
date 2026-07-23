@@ -6,7 +6,11 @@ import { SearchAddon } from '@xterm/addon-search';
 import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
 import { getProjectDisplayName } from '../utils/projectUtils';
-import { encodeSoftNewline, shouldUseBracketedSoftNewline } from '../utils/terminalInputUtils';
+import {
+  encodeSoftNewline,
+  isExactCtrlEnter,
+  shouldUseBracketedSoftNewline
+} from '../utils/terminalInputUtils';
 import '@xterm/xterm/css/xterm.css';
 
 const TERMINAL_THEMES = {
@@ -545,18 +549,23 @@ const TerminalView = forwardRef(function TerminalView({
         }
       }
 
-      // Preserve LF inside explicit bracketed paste. Codex enables this mode at
-      // startup; forcing it avoids xterm/WinPTY degrading a soft newline to submit.
-      if (event.ctrlKey && event.key === 'Enter') {
+      // Native Windows Codex gets a bare LF (Ctrl+J); other runtimes retain
+      // their existing bracketed-paste behavior.
+      if (isExactCtrlEnter(event)) {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
+          const cliType = currentCliTypeRef.current;
           const useBracketedPaste = shouldUseBracketedSoftNewline(
-            currentCliTypeRef.current,
+            cliType,
             term.modes.bracketedPasteMode
           );
-          wsRef.current.send(JSON.stringify({
+          const message = {
             type: 'input',
             data: encodeSoftNewline(useBracketedPaste)
-          }));
+          };
+          if (cliType === 'codex-windows') {
+            message.inputIntent = 'soft_newline';
+          }
+          wsRef.current.send(JSON.stringify(message));
         }
         return false;
       }

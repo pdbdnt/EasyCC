@@ -4785,11 +4785,14 @@ class SessionManager extends EventEmitter {
    * Send input to a session
    * @param {string} id - Session ID
    * @param {string} text - Text to send
+   * @param {object} options
+   * @param {'soft_newline'|null} options.inputIntent - Validated terminal input intent
    * @returns {boolean} Success status
    */
   sendInput(id, text, {
     codexWindowsSubmitDelayMs = 0,
-    onCodexWindowsSubmitted = null
+    onCodexWindowsSubmitted = null,
+    inputIntent = null
   } = {}) {
     const session = this.sessions.get(id);
     if (!session || session.status === 'completed' || session.status === 'paused' ||
@@ -4803,6 +4806,18 @@ class SessionManager extends EventEmitter {
       const filteredText = text.replace(/\x1b\[[IO]/g, '');
       if (!filteredText) {
         return true; // Nothing left to send after filtering
+      }
+
+      const isCodexWindowsSoftNewline =
+        session.cliType === CODEX_WINDOWS &&
+        inputIntent === 'soft_newline' &&
+        filteredText === '\n';
+      if (isCodexWindowsSoftNewline) {
+        this._writeInputToPty(session, filteredText);
+        this.clearPromptFlushTimer(session);
+        session.promptBuffer += '\n';
+        session.isComposingPrompt = true;
+        return true;
       }
 
       const isSubmittedInput = hasSubmittedInput(filteredText);

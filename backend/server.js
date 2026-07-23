@@ -18,6 +18,7 @@ const TeamStore = require('./teamStore');
 const { generateSessionName, ensureUniqueSessionName } = require('./sessionNaming');
 const { prepareTerminalReplayPayload } = require('./terminalReplayUtils');
 const { stripAnsi } = require('./sessionInputUtils');
+const { forwardTerminalInputMessage } = require('./terminalInputMessage');
 const codexWindowsRuntime = require('./codexWindowsRuntime');
 const {
   getPlanSource,
@@ -3773,8 +3774,8 @@ async function start() {
         try {
           const parsed = JSON.parse(message.toString());
 
-          if (parsed.type === 'input' && parsed.data) {
-            sessionManager.sendInput(id, parsed.data);
+          if (parsed.type === 'input') {
+            forwardTerminalInputMessage(sessionManager, id, parsed);
           } else if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
             sessionManager.resizeSession(id, parsed.cols, parsed.rows);
           }
