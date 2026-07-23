@@ -2151,14 +2151,19 @@ class SessionManager extends EventEmitter {
       }
       return true;
     }
-    this.codexWindowsHookTokens.delete(easyccSessionId);
     session.codexTranscriptPath = payload.transcript_path || payload.transcriptPath || null;
+    const previousCodexSessionId = String(session.codexSessionId || '').toLowerCase();
+    const switched = !!previousCodexSessionId && previousCodexSessionId !== normalizedCandidate;
+    const indexedThreadName = this.codexSessionService
+      ?.loadWindowsIndex?.()
+      ?.get(normalizedCandidate)
+      ?.threadName;
     this.applyCodexIdentityObservation({
       sessionId: easyccSessionId,
       state: 'verified',
       candidateId: normalizedCandidate,
       workingDir: payload.cwd || session.workingDir,
-      threadName: session.name
+      threadName: indexedThreadName || (switched ? undefined : session.name)
     });
     if (attempt && session.codexIdentityState === 'conflict') {
       session.runtimeState = 'wake_failed_live';
@@ -2895,6 +2900,10 @@ class SessionManager extends EventEmitter {
     // Handle PTY exit
     ptyProcess.onExit(({ exitCode, signal }) => {
       if (session.pty !== ptyProcess || session.ptyGeneration !== ptyGeneration) return;
+      const tokenEntry = this.codexWindowsHookTokens.get(id);
+      if (cliType === CODEX_WINDOWS && tokenEntry?.generation === ptyGeneration) {
+        this.codexWindowsHookTokens.delete(id);
+      }
       session.lastPtyExitGeneration = ptyGeneration;
       session.lastPtyExitEvent = { exitCode, signal };
       // Don't process if shutting down (cleanup handles this)
@@ -3708,6 +3717,10 @@ class SessionManager extends EventEmitter {
 
       processRef.onExit(({ exitCode, signal }) => {
         if (session.pty !== processRef || session.ptyGeneration !== ptyGeneration) return;
+        const tokenEntry = this.codexWindowsHookTokens.get(id);
+        if (cliType === CODEX_WINDOWS && tokenEntry?.generation === ptyGeneration) {
+          this.codexWindowsHookTokens.delete(id);
+        }
         session.lastPtyExitGeneration = ptyGeneration;
         session.lastPtyExitEvent = { exitCode, signal };
         // Expected exit from fallback transition (old process killed intentionally)

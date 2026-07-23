@@ -549,6 +549,34 @@ test('timely and late Windows SessionStart callbacks corroborate the exact wake'
   assert.deepEqual(late.delivered, ['continue\r']);
 });
 
+test('Codex Windows SessionStart keeps tracking an in-terminal /resume switch', async () => {
+  const { manager, session } = createCodexWakeHarness();
+  const resumedId = '22222222-2222-4222-8222-222222222222';
+  manager.codexSessionService = {
+    loadWindowsIndex: () => new Map([[
+      resumedId,
+      { threadName: 'Selected conversation title' }
+    ]])
+  };
+
+  await manager.wakeSession(session.id);
+  assert.equal(manager.acceptCodexWindowsSessionStart(
+    session.id,
+    'wake-token',
+    { session_id: session.codexSessionId, cwd: session.workingDir }
+  ), true);
+  assert.equal(manager.codexWindowsHookTokens.has(session.id), true);
+
+  assert.equal(manager.acceptCodexWindowsSessionStart(
+    session.id,
+    'wake-token',
+    { session_id: resumedId, cwd: session.workingDir }
+  ), true);
+  assert.equal(session.codexSessionId, resumedId);
+  assert.equal(session.codexThreadName, 'Selected conversation title');
+  assert.equal(session.name, 'Selected conversation title');
+});
+
 test('late mismatched SessionStart makes an already-ready wake recoverable', async () => {
   const { manager, session, delivered } = createCodexWakeHarness();
   await manager.wakeSession(session.id);
