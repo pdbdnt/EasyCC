@@ -1341,22 +1341,7 @@ class SessionManager extends EventEmitter {
       String(candidate.codexSessionId || '').toLowerCase() === candidateId
     );
     if (owner) {
-      if (owner.status === 'paused' && !owner.pty) {
-        const canTransferPrevious = previousCodexSessionId && previousCodexSessionId !== candidateId;
-        const transferredThreadName = canTransferPrevious
-          ? (session.codexThreadName || session.name || `Codex ${previousCodexSessionId.slice(0, 8)}`)
-          : null;
-        owner.codexSessionId = canTransferPrevious ? previousCodexSessionId : null;
-        owner.codexThreadName = transferredThreadName;
-        if (transferredThreadName) owner.name = transferredThreadName;
-        owner.codexIdentityState = canTransferPrevious ? 'unverified' : 'unresolved';
-        owner.codexIdentityVerifiedAt = null;
-        owner.codexIdentityError = canTransferPrevious
-          ? null
-          : `Conversation moved to active session ${session.name}`;
-        this.dataStore.saveSession(owner);
-        this.emit('sessionUpdated', this.getSessionSnapshot(owner));
-      } else {
+      if (!this.transferCodexOwnership(session, owner, candidateId)) {
         return this.applyCodexIdentityObservation({
           sessionId: session.id,
           state: 'conflict',
@@ -2046,6 +2031,18 @@ class SessionManager extends EventEmitter {
     return true;
   }
 
+  transferCodexOwnership(session, owner, candidateId = '') {
+    if (!session || !owner || session.id === owner.id) return false;
+    const ownerName = owner.name || owner.id;
+    const transferred = this.killSession(owner.id);
+    if (!transferred) return false;
+    debugLog(
+      `Codex conversation ${candidateId || 'unknown'} ownership transferred ` +
+      `from EasyCC session ${owner.id} (${ownerName}) to ${session.id} (${session.name})`
+    );
+    return true;
+  }
+
   observeCodexWakeStartupOutput(session, data, generation) {
     const attempt = session?.codexWakeAttempt;
     if (!attempt || attempt.ptyGeneration !== generation || attempt.error) return false;
@@ -2136,20 +2133,22 @@ class SessionManager extends EventEmitter {
       String(candidate.codexSessionId || '').toLowerCase() === normalizedCandidate
     );
     if (activeOwner) {
-      this.codexWindowsHookTokens.delete(easyccSessionId);
-      const message = `Codex conversation is already linked to ${activeOwner.name}`;
-      if (attempt) {
-        this.markCodexWakeAttemptError(session, 'identity_conflict', message);
-        if (session.runtimeState === 'live') this.failLiveCodexWakeAttempt(session, attempt, message);
-      } else {
-        this.applyCodexIdentityObservation({
-          sessionId: easyccSessionId,
-          state: 'conflict',
-          candidateId: normalizedCandidate,
-          error: message
-        });
+      if (!this.transferCodexOwnership(session, activeOwner, normalizedCandidate)) {
+        this.codexWindowsHookTokens.delete(easyccSessionId);
+        const message = `Codex conversation is already linked to ${activeOwner.name}`;
+        if (attempt) {
+          this.markCodexWakeAttemptError(session, 'identity_conflict', message);
+          if (session.runtimeState === 'live') this.failLiveCodexWakeAttempt(session, attempt, message);
+        } else {
+          this.applyCodexIdentityObservation({
+            sessionId: easyccSessionId,
+            state: 'conflict',
+            candidateId: normalizedCandidate,
+            error: message
+          });
+        }
+        return true;
       }
-      return true;
     }
     session.codexTranscriptPath = payload.transcript_path || payload.transcriptPath || null;
     const previousCodexSessionId = String(session.codexSessionId || '').toLowerCase();

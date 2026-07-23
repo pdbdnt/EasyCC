@@ -902,35 +902,46 @@ test('verified Codex thread switch updates the saved ID and EasyCC card name', (
   assert.deepEqual(saved, ['easycc-one']);
 });
 
-test('Codex thread switch takes ownership from a paused card without killing the active PTY', () => {
-  let killed = false;
+test('Codex thread switch retires the previous owner without killing the resumed PTY', () => {
+  let resumedPtyKilled = false;
+  let ownerPtyKilled = false;
+  const killedSessionIds = [];
   const active = {
     id: 'easycc-active',
     name: 'First card fallback',
     cliType: 'codex',
     status: 'active',
-    pty: { kill: () => { killed = true; } },
+    pty: { kill: () => { resumedPtyKilled = true; } },
     workingDir: '/mnt/c/work/project-a',
     codexSessionId: IDS.first,
     codexThreadName: null,
     currentTask: ''
   };
-  const pausedOwner = {
-    id: 'easycc-paused',
-    name: 'Paused owner',
+  const previousOwner = {
+    id: 'easycc-owner',
+    name: 'Previous owner',
     cliType: 'codex',
-    status: 'paused',
-    pty: null,
+    status: 'idle',
+    pty: { kill: () => { ownerPtyKilled = true; } },
     workingDir: '/mnt/c/work/project-a',
     codexSessionId: IDS.second,
     codexThreadName: 'Second thread'
   };
   const manager = {
-    sessions: new Map([[active.id, active], [pausedOwner.id, pausedOwner]]),
+    sessions: new Map([[active.id, active], [previousOwner.id, previousOwner]]),
     dataStore: { saveSession() {} },
     emit() {},
     getSessionSnapshot: (value) => ({ id: value.id, codexSessionId: value.codexSessionId }),
-    codexSessionService: { loadIndex: () => new Map([[IDS.second, { threadName: 'Second thread' }]]) }
+    codexSessionService: { loadIndex: () => new Map([[IDS.second, { threadName: 'Second thread' }]]) },
+    transferCodexOwnership: SessionManager.prototype.transferCodexOwnership,
+    killSession(id) {
+      const owner = this.sessions.get(id);
+      owner.status = 'killed';
+      owner.pty?.kill();
+      this.sessions.delete(id);
+      killedSessionIds.push(id);
+      return true;
+    }
   };
 
   const changed = SessionManager.prototype.applyCodexIdentityObservation.call(manager, {
@@ -942,13 +953,12 @@ test('Codex thread switch takes ownership from a paused card without killing the
   });
 
   assert.equal(changed, true);
-  assert.equal(killed, false);
+  assert.equal(resumedPtyKilled, false);
+  assert.equal(ownerPtyKilled, true);
+  assert.deepEqual(killedSessionIds, [previousOwner.id]);
+  assert.equal(manager.sessions.has(previousOwner.id), false);
   assert.equal(active.codexSessionId, IDS.second);
   assert.equal(active.name, 'Second thread');
-  assert.equal(pausedOwner.codexSessionId, IDS.first);
-  assert.equal(pausedOwner.codexThreadName, 'First card fallback');
-  assert.equal(pausedOwner.name, 'First card fallback');
-  assert.equal(pausedOwner.codexIdentityState, 'unverified');
 });
 
 test('Codex bootstrap exports a configured WSL Codex home', () => {

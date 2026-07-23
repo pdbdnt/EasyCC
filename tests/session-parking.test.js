@@ -577,6 +577,54 @@ test('Codex Windows SessionStart keeps tracking an in-terminal /resume switch', 
   assert.equal(session.name, 'Selected conversation title');
 });
 
+test('in-terminal /resume retires an existing EasyCC owner and keeps the resumed PTY', async () => {
+  const { manager, session, pty } = createCodexWakeHarness();
+  const resumedId = '22222222-2222-4222-8222-222222222222';
+  let ownerPtyKilled = false;
+  let resumedPtyKilled = false;
+  pty.kill = () => { resumedPtyKilled = true; };
+  const previousOwner = liveSession('previous-owner', {
+    name: 'Previously hosted card',
+    cliType: 'codex-windows',
+    workingDir: session.workingDir,
+    codexSessionId: resumedId,
+    pty: { kill: () => { ownerPtyKilled = true; } }
+  });
+  manager.sessions.set(previousOwner.id, previousOwner);
+  manager.codexSessionService = {
+    loadWindowsIndex: () => new Map([[
+      resumedId,
+      { threadName: 'Transferred conversation' }
+    ]])
+  };
+  manager.transferCodexOwnership = SessionManager.prototype.transferCodexOwnership;
+  manager.killSession = (id) => {
+    const owner = manager.sessions.get(id);
+    owner.status = 'killed';
+    owner.pty?.kill();
+    manager.sessions.delete(id);
+    return true;
+  };
+
+  await manager.wakeSession(session.id);
+  assert.equal(manager.acceptCodexWindowsSessionStart(
+    session.id,
+    'wake-token',
+    { session_id: session.codexSessionId, cwd: session.workingDir }
+  ), true);
+
+  assert.equal(manager.acceptCodexWindowsSessionStart(
+    session.id,
+    'wake-token',
+    { session_id: resumedId, cwd: session.workingDir }
+  ), true);
+  assert.equal(ownerPtyKilled, true);
+  assert.equal(resumedPtyKilled, false);
+  assert.equal(manager.sessions.has(previousOwner.id), false);
+  assert.equal(session.codexSessionId, resumedId);
+  assert.equal(session.name, 'Transferred conversation');
+});
+
 test('late mismatched SessionStart makes an already-ready wake recoverable', async () => {
   const { manager, session, delivered } = createCodexWakeHarness();
   await manager.wakeSession(session.id);
