@@ -23,6 +23,10 @@ test('Windows Codex profile mirrors the WSL status line including context usage'
       profile,
       /status_line = \["model-with-reasoning", "current-dir", "context-used", "thread-title"\]/
     );
+    assert.match(
+      profile,
+      /\[\[hooks\.SessionStart\]\]\r?\nmatcher = "startup\|resume\|clear\|compact"/
+    );
     assert.match(profile, /\[\[hooks\.UserPromptSubmit\]\]/);
     assert.match(profile, /\[\[hooks\.Stop\]\]/);
     assert.match(profile, /turn-timing\.ps1/);

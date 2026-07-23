@@ -155,7 +155,7 @@ function ensureProfile() {
     `${powershell} -NoProfile -ExecutionPolicy Bypass -File \"${helperPath}\"`;
   const sessionStartCommand = hookCommand(sessionStartHelperPath);
   const turnTimingCommand = hookCommand(turnTimingHelperPath);
-  const contents = `${PROFILE_MARKER}\n[tui]\nstatus_line = [\"model-with-reasoning\", \"current-dir\", \"context-used\", \"thread-title\"]\n\n[[hooks.SessionStart]]\nmatcher = \"startup|resume\"\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(sessionStartCommand)}\ntimeout = 5\n\n[[hooks.UserPromptSubmit]]\n[[hooks.UserPromptSubmit.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(turnTimingCommand)}\ntimeout = 5\n\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(turnTimingCommand)}\ntimeout = 5\n`;
+  const contents = `${PROFILE_MARKER}\n[tui]\nstatus_line = [\"model-with-reasoning\", \"current-dir\", \"context-used\", \"thread-title\"]\n\n[[hooks.SessionStart]]\nmatcher = \"startup|resume|clear|compact\"\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(sessionStartCommand)}\ntimeout = 5\n\n[[hooks.UserPromptSubmit]]\n[[hooks.UserPromptSubmit.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(turnTimingCommand)}\ntimeout = 5\n\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"true\"\ncommand_windows = ${quoteTomlLiteral(turnTimingCommand)}\ntimeout = 5\n`;
   const tempPath = `${profilePath}.${process.pid}.tmp`;
   fs.writeFileSync(tempPath, contents, 'utf8');
   fs.renameSync(tempPath, profilePath);
