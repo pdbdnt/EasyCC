@@ -7,6 +7,7 @@ import { matchKeyCombo } from '../hooks/useSettings';
 import HintBadge from './HintBadge';
 import { getProjectDisplayName } from '../utils/projectUtils';
 import {
+  encodeCodexWindowsSoftNewline,
   encodeSoftNewline,
   isExactCtrlEnter,
   shouldUseBracketedSoftNewline
@@ -564,20 +565,21 @@ const TerminalView = forwardRef(function TerminalView({
         }
       }
 
-      // Native Windows Codex gets a bare LF (Ctrl+J); other runtimes retain
-      // their existing bracketed-paste behavior.
-      if (isExactCtrlEnter(event)) {
+      // xterm 5 cannot report Codex's enhanced modified-key events, so encode
+      // the configured newline chords with the CSI-u protocol Codex expects.
+      const cliType = currentCliTypeRef.current;
+      const codexWindowsSoftNewline = cliType === 'codex-windows'
+        ? encodeCodexWindowsSoftNewline(event)
+        : null;
+      if (codexWindowsSoftNewline || isExactCtrlEnter(event)) {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          const cliType = currentCliTypeRef.current;
-          const useBracketedPaste = shouldUseBracketedSoftNewline(
-            cliType,
-            term.modes.bracketedPasteMode
-          );
           const message = {
             type: 'input',
-            data: encodeSoftNewline(useBracketedPaste)
+            data: codexWindowsSoftNewline || encodeSoftNewline(
+              shouldUseBracketedSoftNewline(cliType, term.modes.bracketedPasteMode)
+            )
           };
-          if (cliType === 'codex-windows') {
+          if (codexWindowsSoftNewline) {
             message.inputIntent = 'soft_newline';
           }
           wsRef.current.send(JSON.stringify(message));

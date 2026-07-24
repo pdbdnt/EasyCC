@@ -94,16 +94,17 @@ function preservedState(session) {
 test('Codex Windows soft newline stays an unsubmitted draft', () => {
   const harness = createHarness();
   const before = preservedState(harness.session);
+  const ctrlEnter = '\x1b[13;5u';
 
   try {
     assert.equal(SessionManager.prototype.sendInput.call(
       harness.manager,
       harness.session.id,
-      '\n',
+      ctrlEnter,
       { inputIntent: 'soft_newline' }
     ), true);
 
-    assert.deepEqual(harness.writes, ['\n']);
+    assert.deepEqual(harness.writes, [ctrlEnter]);
     assert.equal(harness.session.promptBuffer, 'first line\n');
     assert.equal(harness.session.promptFlushTimer, null);
     assert.equal(harness.session.isComposingPrompt, true);
@@ -122,7 +123,7 @@ test('soft newline in an empty composer remains a composing draft', () => {
     assert.equal(SessionManager.prototype.sendInput.call(
       harness.manager,
       harness.session.id,
-      '\n',
+      '\x1b[13;2u',
       { inputIntent: 'soft_newline' }
     ), true);
     assert.equal(harness.session.promptBuffer, '\n');
@@ -140,7 +141,7 @@ test('ordinary Enter submits the complete multiline prompt once', () => {
     assert.equal(SessionManager.prototype.sendInput.call(
       harness.manager,
       harness.session.id,
-      '\n',
+      '\x1b[106;5u',
       { inputIntent: 'soft_newline' }
     ), true);
     assert.equal(SessionManager.prototype.sendInput.call(
@@ -154,7 +155,7 @@ test('ordinary Enter submits the complete multiline prompt once', () => {
       '\r'
     ), true);
 
-    assert.deepEqual(harness.writes, ['\n', 'second line', '\r']);
+    assert.deepEqual(harness.writes, ['\x1b[106;5u', 'second line', '\r']);
     assert.equal(harness.semanticSubmissionCount(), 1);
     assert.deepEqual(harness.promptHistory, ['first line\nsecond line']);
     assert.equal(harness.session.promptBuffer, '');
@@ -164,11 +165,32 @@ test('ordinary Enter submits the complete multiline prompt once', () => {
   }
 });
 
-test('invalid soft-newline combinations retain ordinary submission semantics', () => {
+test('invalid soft-newline combinations do not receive privileged draft handling', () => {
   for (const scenario of [
-    { cliType: 'codex-windows', text: '\n', options: {} },
-    { cliType: 'codex', text: '\n', options: { inputIntent: 'soft_newline' } },
-    { cliType: 'codex-windows', text: 'x\n', options: { inputIntent: 'soft_newline' } }
+    {
+      cliType: 'codex-windows',
+      text: '\n',
+      options: {},
+      semanticSubmissions: 1
+    },
+    {
+      cliType: 'codex',
+      text: '\x1b[13;5u',
+      options: { inputIntent: 'soft_newline' },
+      semanticSubmissions: 0
+    },
+    {
+      cliType: 'codex-windows',
+      text: '\n',
+      options: { inputIntent: 'soft_newline' },
+      semanticSubmissions: 1
+    },
+    {
+      cliType: 'codex-windows',
+      text: '\x1b[120;5u',
+      options: { inputIntent: 'soft_newline' },
+      semanticSubmissions: 0
+    }
   ]) {
     const harness = createHarness({ cliType: scenario.cliType, promptBuffer: '' });
     try {
@@ -178,7 +200,9 @@ test('invalid soft-newline combinations retain ordinary submission semantics', (
         scenario.text,
         scenario.options
       ), true);
-      assert.equal(harness.semanticSubmissionCount(), 1);
+      assert.equal(harness.semanticSubmissionCount(), scenario.semanticSubmissions);
+      assert.deepEqual(harness.writes, [scenario.text]);
+      assert.notEqual(harness.session.promptBuffer, '\n');
     } finally {
       harness.cleanup();
     }

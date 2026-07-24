@@ -38,18 +38,42 @@ test('exact Ctrl+Enter excludes other modifier combinations', async () => {
   assert.equal(isExactCtrlEnter({ key: 'Enter' }), false);
 });
 
-test('Codex Windows soft newline is a bare LF byte', async () => {
-  const {
-    encodeSoftNewline,
-    shouldUseBracketedSoftNewline
-  } = await import('../ui/src/utils/terminalInputUtils.js');
+test('Codex Windows soft-newline chords preserve modifier identity with CSI-u', async () => {
+  const { encodeCodexWindowsSoftNewline } = await import('../ui/src/utils/terminalInputUtils.js');
 
-  for (const bracketedPasteMode of [false, true]) {
-    const encoded = encodeSoftNewline(
-      shouldUseBracketedSoftNewline('codex-windows', bracketedPasteMode)
-    );
-    assert.equal(Buffer.from(encoded).toString('hex'), '0a');
-    assert.equal(encoded.includes('\x1b[200~'), false);
-    assert.equal(encoded.includes('\x1b[201~'), false);
+  assert.equal(
+    encodeCodexWindowsSoftNewline({ key: 'Enter', shiftKey: true }),
+    '\x1b[13;2u'
+  );
+  assert.equal(
+    encodeCodexWindowsSoftNewline({ key: 'Enter', altKey: true }),
+    '\x1b[13;3u'
+  );
+  assert.equal(
+    encodeCodexWindowsSoftNewline({ key: 'Enter', ctrlKey: true }),
+    '\x1b[13;5u'
+  );
+  assert.equal(
+    encodeCodexWindowsSoftNewline({ key: 'j', ctrlKey: true }),
+    '\x1b[106;5u'
+  );
+  assert.equal(
+    encodeCodexWindowsSoftNewline({ key: 'M', ctrlKey: true }),
+    '\x1b[109;5u'
+  );
+});
+
+test('Codex Windows soft-newline encoding rejects ordinary or ambiguous chords', async () => {
+  const { encodeCodexWindowsSoftNewline } = await import('../ui/src/utils/terminalInputUtils.js');
+
+  for (const event of [
+    { key: 'Enter' },
+    { key: 'Enter', ctrlKey: true, shiftKey: true },
+    { key: 'Enter', ctrlKey: true, altKey: true },
+    { key: 'Enter', ctrlKey: true, metaKey: true },
+    { key: 'j', shiftKey: true },
+    { key: 'x', ctrlKey: true }
+  ]) {
+    assert.equal(encodeCodexWindowsSoftNewline(event), null);
   }
 });
