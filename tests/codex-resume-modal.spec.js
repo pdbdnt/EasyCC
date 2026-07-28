@@ -123,6 +123,41 @@ test('paused recovery choice selects and submits the exact saved Codex thread', 
   });
 });
 
+test('resume work continues in the background after dismissing the modal with Escape', async ({ page }) => {
+  let releaseResume;
+  const resumeCanFinish = new Promise((resolve) => {
+    releaseResume = resolve;
+  });
+  let submittedBody = null;
+  await mockRecoverySummary(page);
+  await page.route('**/api/codex/resume-catalog?**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(catalogFixture()) });
+  });
+  await page.route('**/api/codex/resume-selection', async (route) => {
+    submittedBody = route.request().postDataJSON();
+    await resumeCanFinish;
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ accepted: [{ id: 'easycc-paused-one' }], skipped: [] })
+    });
+  });
+
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('dialog', { name: 'Previous workspace found' })
+    .getByRole('button', { name: 'Restore paused and choose Codex' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Resume exact conversations' });
+  await dialog.getByRole('button', { name: 'Resume 1' }).click();
+  await expect(dialog.getByRole('button', { name: 'Starting…' })).toBeDisabled();
+  await expect.poll(() => submittedBody).not.toBeNull();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  releaseResume();
+  await expect(page.getByText('Starting 1 Codex session')).toBeVisible();
+});
+
 test('History action opens the exact-thread chooser and search stays server-backed', async ({ page }) => {
   const requestedQueries = [];
   await mockRecoverySummary(page, { candidate: false });

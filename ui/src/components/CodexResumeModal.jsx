@@ -226,12 +226,12 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape' && !submitting) onClose();
+      if (event.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     dialogRef.current?.focus();
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, submitting]);
+  }, [onClose]);
 
   const selectedCodexIds = useMemo(
     () => new Set([...selections.values()].map((item) => item.codexSessionId)),
@@ -372,7 +372,7 @@ export default function CodexResumeModal({ scope = {}, onClose, onComplete }) {
   };
 
   return (
-    <div className="modal-overlay codex-resume-overlay" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
+    <div className="modal-overlay codex-resume-overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div
         ref={dialogRef}
         className="modal codex-resume-modal"
