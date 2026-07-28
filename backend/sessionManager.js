@@ -43,6 +43,8 @@ const CODEX_WAKE_READY_STABLE_MS = 2_000;
 const CODEX_HOOK_CORROBORATION_TIMEOUT_MS = 10_000;
 const CODEX_WINDOWS_SUBMIT_DELAY_MS = 2_000;
 const CODEX_WAKE_OUTPUT_MAX_CHARS = 4096;
+const CODEX_WINDOWS_STARTUP_WATCHDOG_MS = 8_000;
+const CODEX_WINDOWS_STARTUP_MAX_RETRIES = 1;
 
 // Debug logger that writes to file
 const DEBUG_LOG_FILE = path.join(__dirname, '..', 'data', 'debug.log');
@@ -234,6 +236,7 @@ class SessionManager extends EventEmitter {
     this.wakePollMs = CODEX_WAKE_POLL_MS;
     this.wakeReadyStableMs = CODEX_WAKE_READY_STABLE_MS;
     this.codexHookCorroborationTimeoutMs = CODEX_HOOK_CORROBORATION_TIMEOUT_MS;
+    this.codexWindowsStartupWatchdogMs = CODEX_WINDOWS_STARTUP_WATCHDOG_MS;
     this.wakeSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     this.recoveryInFlight = new Set();
     this.lifecycleTransitions = new Map();
@@ -2027,6 +2030,78 @@ class SessionManager extends EventEmitter {
     return session.codexWakeAttempt;
   }
 
+  clearCodexWindowsStartupWatchdog(session) {
+    if (!session?.codexWindowsStartupWatchdog) return;
+    clearTimeout(session.codexWindowsStartupWatchdog);
+    session.codexWindowsStartupWatchdog = null;
+  }
+
+  isCodexWindowsStartupStalled(session, ptyGeneration) {
+    if (!session ||
+        session.cliType !== CODEX_WINDOWS ||
+        session.ptyGeneration !== ptyGeneration ||
+        !session.pty ||
+        session.status !== 'active' ||
+        session.runtimeState !== 'live' ||
+        session.codexSessionId ||
+        session.codexIdentityState !== 'verifying' ||
+        session.lastSubmittedInputAtMs > 0 ||
+        session.promptBuffer ||
+        session.startupSequence?.sentCount > 0) {
+      return false;
+    }
+
+    const output = session.outputBuffer?.getAll?.().join('') || '';
+    return this.cleanTerminalText(output).trim().length === 0;
+  }
+
+  armCodexWindowsStartupWatchdog(session) {
+    this.clearCodexWindowsStartupWatchdog(session);
+    if (!session ||
+        session.cliType !== CODEX_WINDOWS ||
+        session.codexSessionId ||
+        (session.codexWindowsStartupRetryCount || 0) > CODEX_WINDOWS_STARTUP_MAX_RETRIES) {
+      return;
+    }
+
+    const ptyGeneration = session.ptyGeneration;
+    const delay = Number(this.codexWindowsStartupWatchdogMs) || CODEX_WINDOWS_STARTUP_WATCHDOG_MS;
+    session.codexWindowsStartupWatchdog = setTimeout(() => {
+      session.codexWindowsStartupWatchdog = null;
+      this.handleCodexWindowsStartupWatchdog(session.id, ptyGeneration);
+    }, delay);
+    session.codexWindowsStartupWatchdog.unref?.();
+  }
+
+  handleCodexWindowsStartupWatchdog(sessionId, ptyGeneration) {
+    const session = this.sessions.get(sessionId);
+    if (!this.isCodexWindowsStartupStalled(session, ptyGeneration)) return false;
+
+    const retries = Number(session.codexWindowsStartupRetryCount) || 0;
+    if (retries >= CODEX_WINDOWS_STARTUP_MAX_RETRIES) {
+      debugLog(`Codex Windows startup remained blank after retry for session ${session.id}`);
+      this.pauseSession(session.id);
+      session.recoveryError = 'Codex (W) did not render after an automatic startup retry';
+      session.codexIdentityState = 'unresolved';
+      session.codexIdentityError = session.recoveryError;
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+      return true;
+    }
+
+    session.codexWindowsStartupRetryCount = retries + 1;
+    debugLog(`Retrying blank Codex Windows startup for session ${session.id}`);
+    if (!this.pauseSession(session.id) ||
+        !this.resumeSession(session.id, { fresh: true, startupRetry: true })) {
+      session.recoveryError = 'Codex (W) automatic startup retry failed';
+      session.codexIdentityState = 'unresolved';
+      session.codexIdentityError = session.recoveryError;
+      this.dataStore.saveSession(session);
+      this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    }
+    return true;
+  }
+
   markCodexWakeAttemptError(session, code, message) {
     const attempt = session?.codexWakeAttempt;
     if (!attempt || attempt.ptyGeneration !== session.ptyGeneration) return false;
@@ -3119,6 +3194,9 @@ class SessionManager extends EventEmitter {
     });
 
     this.sessions.set(id, session);
+    if (cliType === CODEX_WINDOWS) {
+      this.armCodexWindowsStartupWatchdog(session);
+    }
     this.setupRoleInjectionWorkflow(session, 'create');
     if (isCodexType(cliType)) {
       this.codexSessionService.kickMonitor();
@@ -3731,9 +3809,15 @@ class SessionManager extends EventEmitter {
    * @param {object} options - Resume options
    * @param {boolean} options.fresh - Start a fresh CLI session instead of resuming
    * @param {boolean} options.recovery - Safe startup recovery without role/startup automation or Claude fresh fallback
+   * @param {boolean} options.startupRetry - Preserve the bounded native Codex startup retry count
    * @returns {boolean} Success status
    */
-  resumeSession(id, { fresh = false, recovery = false, lifecycleOwner = false } = {}) {
+  resumeSession(id, {
+    fresh = false,
+    recovery = false,
+    lifecycleOwner = false,
+    startupRetry = false
+  } = {}) {
     const session = this.sessions.get(id);
     if (!session) {
       return false;
@@ -3748,6 +3832,9 @@ class SessionManager extends EventEmitter {
 
     const cliType = session.cliType || 'claude';
     session.recoveryError = null;
+    if (cliType === CODEX_WINDOWS && fresh && !startupRetry) {
+      session.codexWindowsStartupRetryCount = 0;
+    }
     if (cliType === CODEX_WINDOWS && session.runtimeState !== 'resuming') {
       this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
     }
@@ -4074,6 +4161,7 @@ class SessionManager extends EventEmitter {
     wirePtyHandlers(ptyProcess);
     if (cliType === CODEX_WINDOWS) {
       this.bindCodexWindowsLaunch(session, codexResumeTargetUsed);
+      if (fresh) this.armCodexWindowsStartupWatchdog(session);
     }
     if (!recovery) {
       this.setupRoleInjectionWorkflow(session, 'resume');
