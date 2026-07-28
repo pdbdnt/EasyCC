@@ -1463,39 +1463,46 @@ function App() {
 
   const handleCreateSession = async (name, workingDir, cliType, role = '', opts = {}) => {
     const count = Math.max(1, Math.min(20, Number(opts.count) || 1));
-    const createdSessions = [];
+    setShowNewSessionModal(false);
+    addToast(`Starting ${count} session${count === 1 ? '' : 's'} in the background`, 'info');
 
-    for (let i = 0; i < count; i += 1) {
-      const createdSession = await createSession(name, workingDir, cliType, {
-        select: false,
-        role,
-        isOrchestrator: opts.isOrchestrator || false,
-        parentSessionId: opts.parentSessionId || null,
-        teamAction: opts.teamAction || undefined,
-        teamName: opts.teamName || undefined
-      });
+    window.setTimeout(async () => {
+      const createdSessions = [];
 
-      if (!createdSession) {
-        break;
+      for (let i = 0; i < count; i += 1) {
+        const createdSession = await createSession(name, workingDir, cliType, {
+          select: false,
+          role,
+          isOrchestrator: opts.isOrchestrator || false,
+          parentSessionId: opts.parentSessionId || null,
+          teamAction: opts.teamAction || undefined,
+          teamName: opts.teamName || undefined
+        });
+
+        if (!createdSession) {
+          break;
+        }
+
+        createdSessions.push(createdSession);
       }
 
-      createdSessions.push(createdSession);
-    }
+      if (createdSessions.length === 0) return;
 
-    if (createdSessions.length === 0) {
-      return false;
-    }
+      const createdIds = createdSessions.map((session) => session.id);
+      const activeId = createdIds[createdIds.length - 1];
+      if (createdIds.length === 1) {
+        selectSession(activeId);
+      } else {
+        selectMultiple(createdIds, activeId);
+        setMultiPaneLayout('auto');
+      }
+      addToast(
+        `Started ${createdSessions.length} of ${count} session${count === 1 ? '' : 's'}`,
+        createdSessions.length === count ? 'success' : 'error',
+        createdSessions.length === count ? 3000 : 5000
+      );
+    }, 0);
 
-    const createdIds = createdSessions.map((session) => session.id);
-    const activeId = createdIds[createdIds.length - 1];
-    if (createdIds.length === 1) {
-      selectSession(activeId);
-    } else {
-      selectMultiple(createdIds, activeId);
-      setMultiPaneLayout('auto');
-    }
-
-    setShowNewSessionModal(false);
     return true;
   };
 

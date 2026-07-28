@@ -1682,10 +1682,39 @@ async function start() {
 
     try {
       const entries = await fs.promises.readdir(requestedBase, { withFileTypes: true });
-      const folders = entries
-        .filter(e => e.isDirectory())
-        .map(e => e.name)
-        .sort();
+      const sessionActivityByPath = new Map();
+      for (const session of sessionManager.getAllSessions()) {
+        const sessionPath = normalizeWindowsPath(session.workingDir).toLowerCase();
+        if (!sessionPath) continue;
+        const activity = session.lastActivity || session.updatedAt || session.createdAt;
+        const activityMs = activity ? new Date(activity).getTime() : 0;
+        if (!Number.isFinite(activityMs)) continue;
+        const existing = sessionActivityByPath.get(sessionPath);
+        if (!existing || activityMs > existing.ms) {
+          sessionActivityByPath.set(sessionPath, {
+            ms: activityMs,
+            value: new Date(activityMs).toISOString()
+          });
+        }
+      }
+
+      const folders = await Promise.all(entries
+        .filter(entry => entry.isDirectory())
+        .map(async (entry) => {
+          const folderPath = joinBrowsePath(requestedBase, entry.name);
+          const activity = sessionActivityByPath.get(normalizeWindowsPath(folderPath).toLowerCase());
+          const [stats, gitStats] = await Promise.all([
+            fs.promises.stat(folderPath).catch(() => null),
+            fs.promises.stat(joinBrowsePath(folderPath, '.git')).catch(() => null)
+          ]);
+          return {
+            name: entry.name,
+            modifiedAt: stats?.mtime?.toISOString?.() || null,
+            lastActive: activity?.value || null,
+            isGitRepo: !!gitStats
+          };
+        }));
+      folders.sort((a, b) => a.name.localeCompare(b.name));
       return {
         folders,
         base: requestedBase,

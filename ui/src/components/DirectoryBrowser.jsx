@@ -1,8 +1,50 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 
 // Fetched from server at runtime via /api/folders defaultRoot
 export const BASE_DIR = null;
 const folderResponseCache = new Map();
+const FOLDER_SORT_STORAGE_PREFIX = 'easycc:folderSort:';
+
+function normalizeFolderEntry(folder) {
+  if (typeof folder === 'string') {
+    return {
+      name: folder,
+      modifiedAt: null,
+      lastActive: null,
+      isGitRepo: false
+    };
+  }
+  return {
+    name: folder?.name || '',
+    modifiedAt: folder?.modifiedAt || null,
+    lastActive: folder?.lastActive || null,
+    isGitRepo: !!folder?.isGitRepo
+  };
+}
+
+function formatFolderDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function compareOptionalDates(a, b, direction) {
+  const aTime = a ? new Date(a).getTime() : Number.NaN;
+  const bTime = b ? new Date(b).getTime() : Number.NaN;
+  const aKnown = Number.isFinite(aTime);
+  const bKnown = Number.isFinite(bTime);
+  if (aKnown && !bKnown) return -1;
+  if (!aKnown && bKnown) return 1;
+  if (!aKnown && !bKnown) return 0;
+  return direction === 'asc' ? aTime - bTime : bTime - aTime;
+}
 
 export function normalizeWindowsPath(input) {
   if (!input || typeof input !== 'string') return '';
@@ -162,8 +204,43 @@ function DirectoryBrowser({
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
-  const clickTimerRef = useRef(null);
+  const [sortKey, setSortKey] = useState('lastActive');
+  const [sortDirection, setSortDirection] = useState('desc');
+  const [browseHistory, setBrowseHistory] = useState(() => initialBase ? [initialBase] : []);
+  const [browseHistoryIndex, setBrowseHistoryIndex] = useState(() => initialBase ? 0 : -1);
   const loadedRequestRef = useRef('');
+
+  const browseToPath = (path, { recordHistory = true } = {}) => {
+    const normalized = normalizeWindowsPath(path);
+    if (!normalized) return;
+    setCurrentBase(normalized);
+    if (recordHistory) {
+      const retained = browseHistory.slice(0, browseHistoryIndex + 1);
+      if (normalizeWindowsPath(retained[retained.length - 1]).toLowerCase() !== normalized.toLowerCase()) {
+        const nextHistory = [...retained, normalized];
+        setBrowseHistory(nextHistory);
+        setBrowseHistoryIndex(nextHistory.length - 1);
+      }
+    }
+  };
+
+  const handleSort = (nextKey) => {
+    const nextDirection = nextKey === sortKey
+      ? (sortDirection === 'asc' ? 'desc' : 'asc')
+      : (nextKey === 'name' ? 'asc' : 'desc');
+    setSortKey(nextKey);
+    setSortDirection(nextDirection);
+    if (activeRootId) {
+      try {
+        window.localStorage.setItem(
+          `${FOLDER_SORT_STORAGE_PREFIX}${activeRootId}`,
+          JSON.stringify({ key: nextKey, direction: nextDirection })
+        );
+      } catch {
+        // Keep the in-memory choice when storage is unavailable.
+      }
+    }
+  };
 
   useEffect(() => {
     const cacheKey = currentBase
@@ -171,6 +248,7 @@ function DirectoryBrowser({
       : `root:${activeRootId}`;
     const requestKey = `${cacheKey}|${refreshNonce}`;
     if (loadedRequestRef.current === requestKey) return;
+    loadedRequestRef.current = requestKey;
 
     let cancelled = false;
     const applyFolderData = (data) => {
@@ -187,9 +265,13 @@ function DirectoryBrowser({
       if (nextBase) {
         loadedRequestRef.current = `base:${nextBase.toLowerCase()}|${refreshNonce}`;
         setCurrentBase(nextBase);
+        setBrowseHistory(previous => previous.length > 0 ? previous : [nextBase]);
+        setBrowseHistoryIndex(previous => previous >= 0 ? previous : 0);
       } else if (!currentBase && serverRoot) {
         loadedRequestRef.current = `base:${serverRoot.toLowerCase()}|${refreshNonce}`;
         setCurrentBase(serverRoot);
+        setBrowseHistory(previous => previous.length > 0 ? previous : [serverRoot]);
+        setBrowseHistoryIndex(previous => previous >= 0 ? previous : 0);
       } else {
         loadedRequestRef.current = requestKey;
       }
@@ -236,6 +318,9 @@ function DirectoryBrowser({
 
     return () => {
       cancelled = true;
+      if (loadedRequestRef.current === requestKey) {
+        loadedRequestRef.current = '';
+      }
     };
   }, [currentBase, activeRootId, refreshNonce]);
 
@@ -243,6 +328,8 @@ function DirectoryBrowser({
     if (!defaultBase) return;
     const normalized = normalizeWindowsPath(defaultBase);
     setCurrentBase(normalized);
+    setBrowseHistory([normalized]);
+    setBrowseHistoryIndex(0);
     onSelectPath?.(normalized);
     setCustomPath('');
     setCustomPathConfirmed(false);
@@ -255,15 +342,26 @@ function DirectoryBrowser({
     const root = roots.find(item => item.id === preferredRootId);
     if (!root) return;
     setActiveRootId(root.id);
-    setCurrentBase(normalizeWindowsPath(root.path));
+    browseToPath(root.path);
     setFilterText('');
   }, [preferredRootId, activeRootId, roots, selectedPath]);
 
   useEffect(() => {
-    return () => {
-      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-    };
-  }, []);
+    if (!activeRootId) return;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(`${FOLDER_SORT_STORAGE_PREFIX}${activeRootId}`));
+      if (['name', 'lastActive', 'modifiedAt'].includes(stored?.key)) {
+        setSortKey(stored.key);
+        setSortDirection(stored.direction === 'asc' ? 'asc' : 'desc');
+      } else {
+        setSortKey('lastActive');
+        setSortDirection('desc');
+      }
+    } catch {
+      setSortKey('lastActive');
+      setSortDirection('desc');
+    }
+  }, [activeRootId]);
 
   const toggleStar = (folderPath, e) => {
     e.stopPropagation();
@@ -273,7 +371,7 @@ function DirectoryBrowser({
   const handleRootChange = (root) => {
     const nextPath = normalizeWindowsPath(root.path);
     setActiveRootId(root.id);
-    setCurrentBase(nextPath);
+    browseToPath(nextPath);
     onSelectPath?.(nextPath);
     setCustomPath('');
     setCustomPathConfirmed(false);
@@ -284,7 +382,7 @@ function DirectoryBrowser({
     const normalized = normalizeWindowsPath(path);
     const rootId = getRootIdForPath(normalized, roots);
     if (rootId) setActiveRootId(rootId);
-    if (browse) setCurrentBase(normalized);
+    if (browse) browseToPath(normalized);
     onSelectPath?.(normalized);
     setCustomPath('');
     setCustomPathConfirmed(false);
@@ -296,7 +394,7 @@ function DirectoryBrowser({
     if (!normalized) return;
     const rootId = getRootIdForPath(normalized, roots);
     if (rootId) setActiveRootId(rootId);
-    setCurrentBase(normalized);
+    browseToPath(normalized);
     onSelectPath?.('');
     setCustomPathConfirmed(true);
     setFilterText('');
@@ -305,9 +403,17 @@ function DirectoryBrowser({
   const handleGoUp = () => {
     const parent = getParentWindowsPath(currentBase);
     if (parent && normalizeWindowsPath(parent) !== normalizeWindowsPath(currentBase)) {
-      setCurrentBase(parent);
+      browseToPath(parent);
       setFilterText('');
     }
+  };
+
+  const handleHistoryMove = (offset) => {
+    const nextIndex = browseHistoryIndex + offset;
+    if (nextIndex < 0 || nextIndex >= browseHistory.length) return;
+    setBrowseHistoryIndex(nextIndex);
+    browseToPath(browseHistory[nextIndex], { recordHistory: false });
+    setFilterText('');
   };
 
   const handleSelectCurrentFolder = () => {
@@ -348,7 +454,7 @@ function DirectoryBrowser({
       folderResponseCache.clear();
       setNewFolderName('');
       setShowCreateFolder(false);
-      setCurrentBase(createdPath);
+      browseToPath(createdPath);
       onSelectPath?.(createdPath);
       setCustomPath('');
       setCustomPathConfirmed(false);
@@ -364,23 +470,58 @@ function DirectoryBrowser({
   const atBrowseRoot = normalizeWindowsPath(currentBase).toLowerCase() === normalizeWindowsPath(browseRoot).toLowerCase();
   const breadcrumbSegments = getBreadcrumbSegments(currentBase);
 
-  const sortedFolders = [...folders].sort((a, b) => {
-    const aPath = joinWindowsPath(currentBase, a);
-    const bPath = joinWindowsPath(currentBase, b);
-    const aStarred = starredFolders.includes(aPath);
-    const bStarred = starredFolders.includes(bPath);
-    if (aStarred && !bStarred) return -1;
-    if (!aStarred && bStarred) return 1;
-    return a.localeCompare(b);
-  });
+  const sortedFolders = useMemo(() => {
+    const normalizedFolders = folders
+      .map(normalizeFolderEntry)
+      .filter(folder => folder.name);
+    return normalizedFolders.sort((a, b) => {
+      const aPath = joinWindowsPath(currentBase, a.name);
+      const bPath = joinWindowsPath(currentBase, b.name);
+      const aStarred = starredFolders.includes(aPath);
+      const bStarred = starredFolders.includes(bPath);
+      if (aStarred && !bStarred) return -1;
+      if (!aStarred && bStarred) return 1;
+
+      let result = 0;
+      if (sortKey === 'name') {
+        result = a.name.localeCompare(b.name);
+        if (sortDirection === 'desc') result *= -1;
+      } else {
+        result = compareOptionalDates(a[sortKey], b[sortKey], sortDirection);
+      }
+      return result || a.name.localeCompare(b.name);
+    });
+  }, [currentBase, folders, sortDirection, sortKey, starredFolders]);
 
   const filteredFolders = filterText
-    ? sortedFolders.filter(folder => folder.toLowerCase().includes(filterText.toLowerCase()))
+    ? sortedFolders.filter(folder => folder.name.toLowerCase().includes(filterText.toLowerCase()))
     : sortedFolders;
+
+  const sortIndicator = (key) => sortKey === key ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : '';
 
   return (
     <div className="folder-selector">
       <div className="folder-browser-toolbar">
+        <button
+          type="button"
+          className="btn btn-secondary btn-small folder-icon-btn"
+          onClick={() => handleHistoryMove(-1)}
+          disabled={disabled || loadingFolders || creatingFolder || browseHistoryIndex <= 0}
+          title="Back"
+          aria-label="Back"
+        >
+          ←
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary btn-small folder-icon-btn"
+          onClick={() => handleHistoryMove(1)}
+          disabled={disabled || loadingFolders || creatingFolder || browseHistoryIndex >= browseHistory.length - 1}
+          title="Forward"
+          aria-label="Forward"
+        >
+          →
+        </button>
         <button
           type="button"
           className="btn btn-secondary btn-small folder-nav-btn"
@@ -514,7 +655,7 @@ function DirectoryBrowser({
       ) : folderError ? (
         <div className="folder-loading">{folderError}</div>
       ) : (
-        <div className="folder-list">
+        <div className="folder-list" role="table" aria-label="Folders">
           {sortedFolders.length > 0 && (
             <input
               type="text"
@@ -543,16 +684,7 @@ function DirectoryBrowser({
                   <div
                     key={normalized}
                     className={`starred-folder-item ${isSelected ? 'selected' : ''}`}
-                    onClick={() => {
-                      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-                      clickTimerRef.current = setTimeout(() => {
-                        selectPath(normalized, true);
-                      }, 250);
-                    }}
-                    onDoubleClick={() => {
-                      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-                      selectPath(normalized, true);
-                    }}
+                    onClick={() => selectPath(normalized, true)}
                     title={normalized}
                   >
                     <span className="folder-name">
@@ -574,43 +706,55 @@ function DirectoryBrowser({
               <div className="starred-separator" />
             </div>
           )}
+          <div className="folder-column-header" role="row">
+            <button type="button" role="columnheader" className="folder-column-name" onClick={() => handleSort('name')}>
+              Name{sortIndicator('name')}
+            </button>
+            <button type="button" role="columnheader" onClick={() => handleSort('lastActive')}>
+              Last active{sortIndicator('lastActive')}
+            </button>
+            <button type="button" role="columnheader" onClick={() => handleSort('modifiedAt')}>
+              Date modified{sortIndicator('modifiedAt')}
+            </button>
+            <span className="folder-column-actions" aria-hidden="true" />
+          </div>
           {filteredFolders.length === 0 && (
             <div className="folder-empty">{filterText ? 'No matching folders' : 'No subfolders found'}</div>
           )}
           {filteredFolders.map(folder => {
-            const folderPath = joinWindowsPath(currentBase, folder);
+            const folderPath = joinWindowsPath(currentBase, folder.name);
             const isStarred = starredFolders.includes(folderPath);
             const isSelected = normalizeWindowsPath(selectedPath).toLowerCase() === normalizeWindowsPath(folderPath).toLowerCase();
             return (
               <div
                 key={folderPath}
+                role="row"
                 className={`folder-option ${isStarred ? 'starred' : ''} ${isSelected ? 'selected' : ''}`}
                 onClick={() => {
-                  if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-                  clickTimerRef.current = setTimeout(() => {
-                    selectPath(folderPath, false);
-                  }, 250);
-                }}
-                onDoubleClick={() => {
-                  if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
                   selectPath(folderPath, true);
                 }}
-                title="Click to select, double-click to browse"
+                title={`Open ${folder.name}`}
               >
-                <span className="folder-name">
+                <span className="folder-name" role="cell">
                   {isStarred && <span className="star-icon">*</span>}
-                  {folder}
+                  {folder.isGitRepo && <span className="folder-git-badge" title="Git repository">Git</span>}
+                  {folder.name}
                 </span>
-                <span className="folder-actions">
+                <span className="folder-date" role="cell" title={folder.lastActive || 'No EasyCC session activity'}>
+                  {formatFolderDate(folder.lastActive)}
+                </span>
+                <span className="folder-date" role="cell" title={folder.modifiedAt || 'Modification date unavailable'}>
+                  {formatFolderDate(folder.modifiedAt)}
+                </span>
+                <span className="folder-actions" role="cell">
                   <button
                     type="button"
                     className="folder-browse-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
                       selectPath(folderPath, true);
                     }}
-                    title={`Browse into ${folder}`}
+                    title={`Open ${folder.name}`}
                   >
                     &gt;
                   </button>
