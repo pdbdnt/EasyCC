@@ -1,5 +1,5 @@
 const {
-  isCodexWindowsSoftNewlineSequence
+  isCodexWindowsSoftNewlineInput
 } = require('./codexKeyboardProtocol');
 
 function forwardTerminalInputMessage(sessionManager, sessionId, parsed) {
@@ -8,7 +8,7 @@ function forwardTerminalInputMessage(sessionManager, sessionId, parsed) {
   }
 
   if (parsed.inputIntent === 'soft_newline' &&
-      isCodexWindowsSoftNewlineSequence(parsed.data)) {
+      isCodexWindowsSoftNewlineInput(parsed.data)) {
     return sessionManager.sendInput(sessionId, parsed.data, {
       inputIntent: 'soft_newline'
     });

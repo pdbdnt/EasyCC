@@ -16,7 +16,7 @@ const { normalizePathKey, resolvePlanRefForHost } = require('./planPathUtils');
 const { CodexSessionService, pathsEqual: codexPathsEqual } = require('./codexSessionService');
 const codexWindowsRuntime = require('./codexWindowsRuntime');
 const { CODEX_WINDOWS, getCodexRuntime, isCodexType } = require('./codexCliTypes');
-const { isCodexWindowsSoftNewlineSequence } = require('./codexKeyboardProtocol');
+const { isCodexWindowsSoftNewlineInput } = require('./codexKeyboardProtocol');
 const { ByteRingBuffer } = require('./byteRingBuffer');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
@@ -5082,7 +5082,7 @@ class SessionManager extends EventEmitter {
       const isCodexWindowsSoftNewline =
         session.cliType === CODEX_WINDOWS &&
         inputIntent === 'soft_newline' &&
-        isCodexWindowsSoftNewlineSequence(filteredText);
+        isCodexWindowsSoftNewlineInput(filteredText);
       if (isCodexWindowsSoftNewline) {
         this._writeInputToPty(session, filteredText);
         this.clearPromptFlushTimer(session);

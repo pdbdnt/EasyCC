@@ -38,29 +38,18 @@ test('exact Ctrl+Enter excludes other modifier combinations', async () => {
   assert.equal(isExactCtrlEnter({ key: 'Enter' }), false);
 });
 
-test('Codex Windows soft-newline chords preserve modifier identity with CSI-u', async () => {
+test('Codex Windows soft-newline chords emit WinPTY Ctrl+J input', async () => {
   const { encodeCodexWindowsSoftNewline } = await import('../ui/src/utils/terminalInputUtils.js');
 
-  assert.equal(
-    encodeCodexWindowsSoftNewline({ key: 'Enter', shiftKey: true }),
-    '\x1b[13;2u'
-  );
-  assert.equal(
-    encodeCodexWindowsSoftNewline({ key: 'Enter', altKey: true }),
-    '\x1b[13;3u'
-  );
-  assert.equal(
-    encodeCodexWindowsSoftNewline({ key: 'Enter', ctrlKey: true }),
-    '\x1b[13;5u'
-  );
-  assert.equal(
-    encodeCodexWindowsSoftNewline({ key: 'j', ctrlKey: true }),
-    '\x1b[106;5u'
-  );
-  assert.equal(
-    encodeCodexWindowsSoftNewline({ key: 'M', ctrlKey: true }),
-    '\x1b[109;5u'
-  );
+  for (const event of [
+    { key: 'Enter', shiftKey: true },
+    { key: 'Enter', altKey: true },
+    { key: 'Enter', ctrlKey: true },
+    { key: 'j', ctrlKey: true },
+    { key: 'M', ctrlKey: true }
+  ]) {
+    assert.equal(encodeCodexWindowsSoftNewline(event), '\n');
+  }
 });
 
 test('Codex Windows soft-newline encoding rejects ordinary or ambiguous chords', async () => {

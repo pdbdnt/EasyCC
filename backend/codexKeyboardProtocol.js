@@ -1,16 +1,12 @@
-const CODEX_WINDOWS_SOFT_NEWLINE_SEQUENCES = new Set([
-  '\x1b[13;2u',  // Shift+Enter
-  '\x1b[13;3u',  // Alt+Enter
-  '\x1b[13;5u',  // Ctrl+Enter
-  '\x1b[106;5u', // Ctrl+J
-  '\x1b[109;5u'  // Ctrl+M
-]);
+// Native Codex runs behind WinPTY, which translates byte input into Windows
+// console key events. LF is delivered as Codex's Ctrl+J/insert_newline action;
+// CSI-u remains literal text because this path is not a VT keyboard stream.
+const CODEX_WINDOWS_SOFT_NEWLINE_INPUT = '\n';
 
-function isCodexWindowsSoftNewlineSequence(value) {
-  return typeof value === 'string' &&
-    CODEX_WINDOWS_SOFT_NEWLINE_SEQUENCES.has(value);
+function isCodexWindowsSoftNewlineInput(value) {
+  return value === CODEX_WINDOWS_SOFT_NEWLINE_INPUT;
 }
 
 module.exports = {
-  isCodexWindowsSoftNewlineSequence
+  isCodexWindowsSoftNewlineInput
 };

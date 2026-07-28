@@ -565,8 +565,8 @@ const TerminalView = forwardRef(function TerminalView({
         }
       }
 
-      // xterm 5 cannot report Codex's enhanced modified-key events, so encode
-      // the configured newline chords with the CSI-u protocol Codex expects.
+      // WinPTY turns LF into Codex's Ctrl+J/insert_newline console event.
+      // Intercept the browser chord so ordinary Enter remains the submit key.
       const cliType = currentCliTypeRef.current;
       const codexWindowsSoftNewline = cliType === 'codex-windows'
         ? encodeCodexWindowsSoftNewline(event)

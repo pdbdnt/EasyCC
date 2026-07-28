@@ -1,11 +1,11 @@
 const BRACKETED_PASTE_START = '\x1b[200~';
 const BRACKETED_PASTE_END = '\x1b[201~';
-const CODEX_WINDOWS_SOFT_NEWLINE_SEQUENCES = new Map([
-  ['shift-enter', '\x1b[13;2u'],
-  ['alt-enter', '\x1b[13;3u'],
-  ['ctrl-enter', '\x1b[13;5u'],
-  ['ctrl-j', '\x1b[106;5u'],
-  ['ctrl-m', '\x1b[109;5u']
+const CODEX_WINDOWS_SOFT_NEWLINE_CHORDS = new Set([
+  'shift-enter',
+  'alt-enter',
+  'ctrl-enter',
+  'ctrl-j',
+  'ctrl-m'
 ]);
 
 export function shouldUseBracketedSoftNewline(cliType, bracketedPasteMode) {
@@ -38,7 +38,7 @@ export function encodeCodexWindowsSoftNewline(event) {
   if (modifiers.length !== 1) return null;
 
   const key = String(event.key || '').toLowerCase();
-  return CODEX_WINDOWS_SOFT_NEWLINE_SEQUENCES.get(
-    `${modifiers[0]}-${key}`
-  ) || null;
+  return CODEX_WINDOWS_SOFT_NEWLINE_CHORDS.has(`${modifiers[0]}-${key}`)
+    ? '\n'
+    : null;
 }
