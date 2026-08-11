@@ -28,7 +28,12 @@ const registerCodexResumeRoutes = require('./codexResumeRoutes');
 const registerRecoveryRoutes = require('./recoveryRoutes');
 const { ParkingCoordinator } = require('./parkingCoordinator');
 
-const app = fastify({ logger: true });
+const backendLogFile = process.env.EASYCC_BACKEND_LOG_FILE;
+const app = fastify({
+  logger: backendLogFile
+    ? { level: 'info', file: backendLogFile }
+    : true
+});
 const dataStore = new DataStore();
 const sessionManager = new SessionManager();
 const planManager = new PlanManager();
