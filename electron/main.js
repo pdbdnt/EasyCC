@@ -11,6 +11,11 @@
 
 const { app, BrowserWindow, Tray, Menu, shell, dialog } = require('electron');
 const path = require('path');
+const { configurePackagedLogging } = require('./packagedLogging');
+
+// A packaged Windows GUI app has no console handles. Redirect logging before
+// the first console call or backend import so writes cannot fail with EBADF.
+configurePackagedLogging({ app });
 
 let mainWindow = null;
 let tray = null;
