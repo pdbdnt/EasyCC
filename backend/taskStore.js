@@ -2,9 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { createComment, addReactionToComment } = require('./commentUtils');
+const { getDataDir } = require('./dataPaths');
 
 class TaskStore {
-  constructor(dataDir = path.join(__dirname, '..', 'data')) {
+  constructor(dataDir = getDataDir()) {
     this.dataDir = dataDir;
     this.filePath = path.join(dataDir, 'tasks.json');
     if (!fs.existsSync(this.dataDir)) {

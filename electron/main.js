@@ -12,15 +12,47 @@
 const { app, BrowserWindow, Tray, Menu, shell, dialog } = require('electron');
 const path = require('path');
 const { configurePackagedLogging } = require('./packagedLogging');
+const { configurePackagedData } = require('./packagedData');
+const { classifyStartupError } = require('./startupErrors');
+const { createQuitCoordinator } = require('./quitCoordinator');
 
 // A packaged Windows GUI app has no console handles. Redirect logging before
 // the first console call or backend import so writes cannot fail with EBADF.
-configurePackagedLogging({ app });
+const packagedLogPaths = configurePackagedLogging({ app });
 
 let mainWindow = null;
 let tray = null;
 let backendStarted = false;
+let serverModule = null;
 const BACKEND_PORT = 5010;
+
+const quitCoordinator = createQuitCoordinator({
+  app,
+  stopBackend: async () => {
+    if (serverModule && typeof serverModule.stop === 'function') {
+      await serverModule.stop();
+    }
+  },
+  onStopped: () => {
+    backendStarted = false;
+  }
+});
+const { requestQuit } = quitCoordinator;
+
+app.on('before-quit', quitCoordinator.handleBeforeQuit);
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.isQuitting = true;
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
 
 /**
  * Start the Fastify backend server
@@ -28,24 +60,27 @@ const BACKEND_PORT = 5010;
 async function startBackend() {
   if (backendStarted) {
     console.log('[Electron] Backend already started');
-    return;
+    return true;
   }
 
   try {
+    configurePackagedData({ app });
     // Force the port so it doesn't inherit a random PORT from the environment
     process.env.PORT = String(BACKEND_PORT);
-    const serverModule = require('../backend/server.js');
+    serverModule = require('../backend/server.js');
     await serverModule.start();
     backendStarted = true;
     console.log(`[Electron] Backend started successfully on port ${BACKEND_PORT}`);
+    return true;
   } catch (error) {
     console.error('[Electron] Failed to start backend:', error);
-    // Show error dialog and quit
-    dialog.showErrorBox(
-      'Failed to Start Server',
-      `Could not start the backend server. Please check if port 5010 is already in use.\n\nError: ${error.message}`
-    );
-    app.quit();
+    const presentation = classifyStartupError(error, {
+      port: BACKEND_PORT,
+      logPaths: packagedLogPaths
+    });
+    dialog.showErrorBox(presentation.title, presentation.message);
+    await requestQuit(1);
+    return false;
   }
 }
 
@@ -53,6 +88,7 @@ async function startBackend() {
  * Create the main application window
  */
 function createWindow() {
+  if (!backendStarted || app.isQuitting) return;
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -128,6 +164,7 @@ function createWindow() {
  * Create system tray icon with menu
  */
 function createTray() {
+  if (!backendStarted || app.isQuitting) return;
   const iconPath = path.join(__dirname, 'icon.ico');
 
   tray = new Tray(iconPath);
@@ -165,8 +202,7 @@ function createTray() {
           detail: 'All active sessions will continue running in their terminals.'
         });
         if (response === 0) {
-          app.isQuitting = true;
-          app.quit();
+          await requestQuit(0);
         }
       }
     }
@@ -195,6 +231,7 @@ function createTray() {
  * Application initialization
  */
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock || app.isQuitting) return;
   console.log('[Electron] App ready, initializing...');
 
   // Set application menu with reload shortcuts
@@ -216,8 +253,7 @@ app.whenReady().then(async () => {
               detail: 'All active sessions will continue running in their terminals.'
             });
             if (response === 0) {
-              app.isQuitting = true;
-              app.quit();
+              await requestQuit(0);
             }
           }
         }
@@ -253,10 +289,11 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
   // Start backend first
-  await startBackend();
+  if (!await startBackend()) return;
 
   // Wait a moment for server to be fully ready
   await new Promise(resolve => setTimeout(resolve, 1000));
+  if (!backendStarted || app.isQuitting) return;
 
   // Create window and tray
   createWindow();
@@ -278,6 +315,7 @@ app.on('window-all-closed', () => {
  * Handle app activation (macOS behavior, but kept for consistency)
  */
 app.on('activate', () => {
+  if (!backendStarted || app.isQuitting) return;
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   } else if (mainWindow) {
@@ -287,25 +325,14 @@ app.on('activate', () => {
 });
 
 /**
- * Handle graceful shutdown
- */
-app.on('before-quit', async () => {
-  console.log('[Electron] Shutting down gracefully...');
-
-  // The backend's SIGTERM handler will clean up sessions
-  // We just need to ensure we're flagged as quitting
-  app.isQuitting = true;
-});
-
-/**
  * Ensure clean exit
  */
 process.on('SIGTERM', () => {
   console.log('[Electron] Received SIGTERM, quitting...');
-  app.quit();
+  void requestQuit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('[Electron] Received SIGINT, quitting...');
-  app.quit();
+  void requestQuit(0);
 });

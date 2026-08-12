@@ -48,6 +48,59 @@ test.describe('New session folder browser', () => {
     await expect(dialog).toBeHidden();
   });
 
+  test('keeps browse sources available after a folder request fails', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('easycc:lastCliType', 'codex');
+    });
+
+    await page.route('**/api/sessions/recovery-summary', (route) => route.fulfill({
+      json: {
+        sessions: [],
+        totals: { candidateTotal: 0, launchableTotal: 0, requiresSelectionTotal: 0, disabledTotal: 0, projectTotal: 0 }
+      }
+    }));
+
+    await page.route('**/api/folders**', async (route) => {
+      const url = new URL(route.request().url());
+      const roots = [
+        { id: 'windows', label: 'Windows', path: 'C:\\Users\\testuser' },
+        { id: 'wsl', label: 'WSL', path: '\\\\wsl$\\Ubuntu\\home\\missing\\apps' }
+      ];
+
+      if (url.searchParams.get('rootId') === 'wsl') {
+        await route.fulfill({
+          status: 400,
+          json: {
+            error: 'Requested path is not a directory',
+            roots,
+            root: roots[1].path,
+            defaultRoot: roots[0].path
+          }
+        });
+        return;
+      }
+
+      await route.fulfill({
+        json: {
+          folders: ['EasyCC'],
+          base: roots[0].path,
+          root: roots[0].path,
+          rootId: 'windows',
+          roots,
+          defaultRoot: roots[0].path
+        }
+      });
+    });
+
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: '+ New' }).click();
+    const dialog = page.getByRole('dialog', { name: 'New Session' });
+
+    await expect(dialog.getByText('Requested path is not a directory')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Windows' }).click();
+    await expect(dialog.getByText('EasyCC', { exact: true })).toBeVisible();
+  });
+
   test('sorts folder metadata by last activity, modified date, and name', async ({ page }) => {
     await page.addInitScript(() => {
       window.localStorage.setItem('easycc:lastCliType', 'claude');

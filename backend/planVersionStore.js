@@ -8,9 +8,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { getDataPath } = require('./dataPaths');
 
 class PlanVersionStore {
-  constructor(dataDir = path.join(__dirname, '..', 'data', 'plan-versions')) {
+  constructor(dataDir = getDataPath('plan-versions')) {
     this.dataDir = dataDir;
     this.dirtyPlans = new Map(); // planPath -> { content, lastModified }
     this.ensureDataDir();

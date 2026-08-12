@@ -1,9 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { getDataDir } = require('./dataPaths');
 
 class AgentStore {
-  constructor(dataDir = path.join(__dirname, '..', 'data')) {
+  constructor(dataDir = getDataDir()) {
     this.dataDir = dataDir;
     this.filePath = path.join(dataDir, 'agents.json');
     if (!fs.existsSync(this.dataDir)) {

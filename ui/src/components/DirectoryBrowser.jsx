@@ -296,6 +296,17 @@ function DirectoryBrowser({
       .then(async (res) => {
         if (!res.ok) {
           const error = await res.json().catch(() => ({ error: 'Failed to load folders' }));
+          if (Array.isArray(error.roots)) {
+            const nextRoots = error.roots.map(root => ({
+              ...root,
+              path: normalizeWindowsPath(root.path)
+            }));
+            setRoots(nextRoots);
+            const nextRootId = getRootIdForPath(error.root || '', nextRoots);
+            if (nextRootId) setActiveRootId(nextRootId);
+            const serverRoot = normalizeWindowsPath(error.root || error.defaultRoot || '');
+            if (serverRoot) setBrowseRoot(serverRoot);
+          }
           throw new Error(error.error || 'Failed to load folders');
         }
         return res.json();

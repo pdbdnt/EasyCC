@@ -1,12 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { getDataDir } = require('./dataPaths');
 
 const VALID_CLI_TYPES = ['claude', 'codex', 'codex-windows', 'terminal', 'wsl'];
 const MAX_SESSIONS_PER_PRESET = 20;
 
 class PresetStore {
-  constructor(dataDir = path.join(__dirname, '..', 'data')) {
+  constructor(dataDir = getDataDir()) {
     this.dataDir = dataDir;
     this.filePath = path.join(dataDir, 'presets.json');
     if (!fs.existsSync(this.dataDir)) {

@@ -27,13 +27,11 @@ const {
 const registerCodexResumeRoutes = require('./codexResumeRoutes');
 const registerRecoveryRoutes = require('./recoveryRoutes');
 const { ParkingCoordinator } = require('./parkingCoordinator');
+const { resolveDefaultWslBrowseRoot } = require('./folderBrowseRoots');
+const { createBackendLogging } = require('./backendLogging');
 
-const backendLogFile = process.env.EASYCC_BACKEND_LOG_FILE;
-const app = fastify({
-  logger: backendLogFile
-    ? { level: 'info', file: backendLogFile }
-    : true
-});
+const backendLogging = createBackendLogging();
+const app = fastify(backendLogging.fastifyOptions);
 const dataStore = new DataStore();
 const sessionManager = new SessionManager();
 const planManager = new PlanManager();
@@ -46,9 +44,14 @@ const teamStore = new TeamStore();
 const { decideKanbanAutoSync } = require('./stagesConfig');
 
 const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || os.homedir();
+const DEFAULT_WSL_FOLDERS_ROOT = resolveDefaultWslBrowseRoot();
 
 // Per-session debounce timers for kanban stage sync (3s stability)
 const kanbanSyncTimers = new Map();
+let orchestratorCleanupTimer = null;
+let startPromise = null;
+let stoppingPromise = null;
+let backendStopped = false;
 
 // Track WebSocket connections
 const dashboardClients = new Set();
@@ -144,8 +147,7 @@ function isPathWithinRoot(targetPath, rootPath) {
 
 function defaultWslBrowseRoot() {
   if (process.env.WSL_FOLDERS_BROWSE_ROOT) return process.env.WSL_FOLDERS_BROWSE_ROOT;
-  if (process.platform === 'win32') return '\\\\wsl$\\Ubuntu\\home\\denni\\apps';
-  return '/home/denni/apps';
+  return DEFAULT_WSL_FOLDERS_ROOT;
 }
 
 function getBrowseRoots() {
@@ -1124,7 +1126,7 @@ function broadcastDashboard(payload) {
   }
 }
 
-async function start() {
+async function startInternal() {
   // Register plugins
   await app.register(fastifyCors, {
     origin: ['http://localhost:5010', 'http://localhost:5011'],
@@ -2192,7 +2194,7 @@ async function start() {
   }
 
   // Cleanup loop detection every 60 seconds
-  setInterval(() => {
+  orchestratorCleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [key, timestamps] of orchestratorLoopDetect.entries()) {
       const recent = timestamps.filter(t => now - t < 10000);
@@ -2200,6 +2202,7 @@ async function start() {
       else orchestratorLoopDetect.set(key, recent);
     }
   }, 60000);
+  if (typeof orchestratorCleanupTimer.unref === 'function') orchestratorCleanupTimer.unref();
 
   // 1.1 LIST — Get all sessions for orchestrator consumption
   app.get('/api/orchestrator/sessions', async () => {
@@ -4296,40 +4299,74 @@ async function start() {
     return reply.sendFile('index.html');
   });
 
-  // Graceful shutdown
-  const shutdown = async () => {
-    console.log('Shutting down...');
-    parkingCoordinator.stop();
-    sessionManager.cleanup();
-    await app.close();
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-
   // Start server
   const host = '127.0.0.1';
   const port = parseInt(process.env.PORT || '5010', 10);
 
+  sessionManager.port = port;
   try {
-    sessionManager.port = port;
-    try {
-      installEcSkills();
-      console.log('Installed /ec-* Claude Code skills');
-    } catch (err) {
-      console.warn('Could not install /ec-* skills:', err.message);
-    }
-    await app.listen({ port, host });
-    parkingCoordinator.start();
-    parkingCoordinator.evaluate();
-    console.log(`\nEasyCC running at:`);
-    console.log(`  Local:   http://localhost:${port}`);
-    console.log(`  Network: http://${getLocalIP()}:${port}\n`);
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
+    installEcSkills();
+    console.log('Installed /ec-* Claude Code skills');
+  } catch (err) {
+    console.warn('Could not install /ec-* skills:', err.message);
   }
+  await app.listen({ port, host });
+  parkingCoordinator.start();
+  parkingCoordinator.evaluate();
+  console.log(`\nEasyCC running at:`);
+  console.log(`  Local:   http://localhost:${port}`);
+  console.log(`  Network: http://${getLocalIP()}:${port}\n`);
+}
+
+async function stop() {
+  if (stoppingPromise) return stoppingPromise;
+
+  stoppingPromise = (async () => {
+    if (backendStopped) return;
+    backendStopped = true;
+    let firstError = null;
+    const safely = async operation => {
+      try {
+        await operation();
+      } catch (error) {
+        firstError ||= error;
+        console.error('Backend shutdown step failed:', error);
+      }
+    };
+
+    parkingCoordinator.stop();
+    if (orchestratorCleanupTimer) {
+      clearInterval(orchestratorCleanupTimer);
+      orchestratorCleanupTimer = null;
+    }
+    for (const { timer } of kanbanSyncTimers.values()) clearTimeout(timer);
+    kanbanSyncTimers.clear();
+    activeChildren.clear();
+
+    await safely(async () => planManager.stopWatching());
+    await safely(async () => sessionManager.cleanup());
+    await safely(async () => app.close());
+    await safely(async () => backendLogging.close());
+
+    if (firstError) throw firstError;
+  })();
+
+  return stoppingPromise;
+}
+
+async function start() {
+  if (backendStopped) throw new Error('EasyCC backend has already been stopped');
+  if (!startPromise) {
+    startPromise = startInternal().catch(async error => {
+      try {
+        await stop();
+      } catch (shutdownError) {
+        console.error('Backend cleanup after startup failure failed:', shutdownError);
+      }
+      throw error;
+    });
+  }
+  return startPromise;
 }
 
 // Get local IP address for network access info
@@ -4349,8 +4386,27 @@ function getLocalIP() {
 
 // Only auto-start if not running in Electron
 if (!process.versions.electron) {
-  start();
+  let standaloneShutdownStarted = false;
+  const finishStandalone = async exitCode => {
+    if (standaloneShutdownStarted) return;
+    standaloneShutdownStarted = true;
+    try {
+      await stop();
+    } catch (error) {
+      console.error('Failed to stop EasyCC cleanly:', error);
+      exitCode = 1;
+    }
+    process.exit(exitCode);
+  };
+
+  process.once('SIGINT', () => { void finishStandalone(0); });
+  process.once('SIGTERM', () => { void finishStandalone(0); });
+
+  start().catch(error => {
+    console.error('Failed to start server:', error);
+    void finishStandalone(1);
+  });
 }
 
 // Export for Electron main process
-module.exports = { start };
+module.exports = { start, stop };
