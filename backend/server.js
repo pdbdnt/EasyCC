@@ -27,6 +27,7 @@ const {
 const registerCodexResumeRoutes = require('./codexResumeRoutes');
 const registerRecoveryRoutes = require('./recoveryRoutes');
 const { ParkingCoordinator } = require('./parkingCoordinator');
+const { resolveDefaultWslBrowseRoot } = require('./folderBrowseRoots');
 
 const backendLogFile = process.env.EASYCC_BACKEND_LOG_FILE;
 const app = fastify({
@@ -46,6 +47,7 @@ const teamStore = new TeamStore();
 const { decideKanbanAutoSync } = require('./stagesConfig');
 
 const DEFAULT_FOLDERS_ROOT = process.env.FOLDERS_BROWSE_ROOT || os.homedir();
+const DEFAULT_WSL_FOLDERS_ROOT = resolveDefaultWslBrowseRoot();
 
 // Per-session debounce timers for kanban stage sync (3s stability)
 const kanbanSyncTimers = new Map();
@@ -144,8 +146,7 @@ function isPathWithinRoot(targetPath, rootPath) {
 
 function defaultWslBrowseRoot() {
   if (process.env.WSL_FOLDERS_BROWSE_ROOT) return process.env.WSL_FOLDERS_BROWSE_ROOT;
-  if (process.platform === 'win32') return '\\\\wsl$\\Ubuntu\\home\\denni\\apps';
-  return '/home/denni/apps';
+  return DEFAULT_WSL_FOLDERS_ROOT;
 }
 
 function getBrowseRoots() {
