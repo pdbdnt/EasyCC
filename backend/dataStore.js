@@ -1,12 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { isCodexType } = require('./codexCliTypes');
+const { getDataDir } = require('./dataPaths');
 
 /**
  * Handles persistent storage of session and stage data to disk
  */
 class DataStore {
-  constructor(dataDir = process.env.EASYCC_DATA_DIR || path.join(__dirname, '..', 'data')) {
+  constructor(dataDir = getDataDir()) {
     this.dataDir = dataDir;
     this.sessionsFile = path.join(dataDir, 'sessions.json');
     this.stagesFile = path.join(dataDir, 'stages.json');

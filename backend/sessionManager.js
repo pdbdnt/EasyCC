@@ -18,6 +18,7 @@ const codexWindowsRuntime = require('./codexWindowsRuntime');
 const { CODEX_WINDOWS, getCodexRuntime, isCodexType } = require('./codexCliTypes');
 const { isCodexWindowsSoftNewlineInput } = require('./codexKeyboardProtocol');
 const { ByteRingBuffer } = require('./byteRingBuffer');
+const { getDataPath } = require('./dataPaths');
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const OUTPUT_BUFFER_MAX_BYTES = 512 * 1024;
@@ -30,7 +31,6 @@ const CODEX_STATUS_SAMPLE_MAX_CHARS = 8 * 1024;
 const CODEX_STATUS_SAMPLE_HOLD_MS = 1500;
 const CODEX_STATUS_SCREEN_MAX_ROWS = 32;
 const CODEX_STATUS_SCREEN_MAX_COORDINATE = 500;
-const SESSION_TRANSCRIPTS_DIR = path.join(__dirname, '..', 'data', 'transcripts');
 const TRANSCRIPT_FLUSH_INTERVAL_MS = 16;
 const TRANSCRIPT_FLUSH_MAX_BYTES = 64 * 1024;
 
@@ -47,11 +47,12 @@ const CODEX_WINDOWS_STARTUP_WATCHDOG_MS = 8_000;
 const CODEX_WINDOWS_STARTUP_MAX_RETRIES = 1;
 
 // Debug logger that writes to file
-const DEBUG_LOG_FILE = path.join(__dirname, '..', 'data', 'debug.log');
 function debugLog(message) {
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] ${message}\n`;
-  fs.appendFileSync(DEBUG_LOG_FILE, line);
+  const debugLogFile = getDataPath('debug.log');
+  fs.mkdirSync(path.dirname(debugLogFile), { recursive: true });
+  fs.appendFileSync(debugLogFile, line);
   console.log(`[DEBUG] ${message}`);
 }
 
@@ -261,14 +262,15 @@ class SessionManager extends EventEmitter {
   }
 
   ensureTranscriptDir() {
-    if (!fs.existsSync(SESSION_TRANSCRIPTS_DIR)) {
-      fs.mkdirSync(SESSION_TRANSCRIPTS_DIR, { recursive: true });
+    const transcriptsDir = getDataPath('transcripts');
+    if (!fs.existsSync(transcriptsDir)) {
+      fs.mkdirSync(transcriptsDir, { recursive: true });
     }
+    return transcriptsDir;
   }
 
   getTranscriptPath(sessionId) {
-    this.ensureTranscriptDir();
-    return path.join(SESSION_TRANSCRIPTS_DIR, `${sessionId}.log`);
+    return path.join(this.ensureTranscriptDir(), `${sessionId}.log`);
   }
 
   resetSessionTranscript(sessionId) {
@@ -6262,14 +6264,30 @@ class SessionManager extends EventEmitter {
 
     for (const [id, session] of this.sessions) {
       if (session.status === 'killed') {
+        this.discardPendingTranscript(id);
         continue;
       }
+      if (session.idleTimer) {
+        clearInterval(session.idleTimer);
+        session.idleTimer = null;
+      }
+      if (session.statusDebounceTimer) {
+        clearTimeout(session.statusDebounceTimer);
+        session.statusDebounceTimer = null;
+      }
+      this.clearPromptFlushTimer(session);
+      this._clearWriteQueue(session);
       this.clearRoleInjectionWorkflow(session);
       this.clearCodexSessionCapture(session);
       this.clearCodexStatusSampler(session);
       if (session.cliType === CODEX_WINDOWS) {
         this.clearCodexWindowsWakeAttempt(session, { clearToken: true });
       }
+      if (session.claudeIndexWatcher) {
+        try { session.claudeIndexWatcher.close(); } catch {}
+        session.claudeIndexWatcher = null;
+      }
+      this.flushTranscript(id);
       session.startupSequence = null;
       if (['parking_failed_live', 'wake_failed_live'].includes(session.runtimeState)) {
         session.pauseReason = 'recovery_failed';
@@ -6278,7 +6296,6 @@ class SessionManager extends EventEmitter {
         session.pauseReason = session.pauseReason || 'startup_restore';
       }
       if (session.pty) {
-        this._clearWriteQueue(session);
         session.pty.kill();
       }
       session.status = 'paused';
@@ -6290,6 +6307,7 @@ class SessionManager extends EventEmitter {
       session.pty = null;
       this.dataStore.saveSession(session);  // Persist for restart
     }
+    this.lifecycleTransitions.clear();
     this.sessions.clear();
   }
 }

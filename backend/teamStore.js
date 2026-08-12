@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { getDataDir } = require('./dataPaths');
 
 const BUILT_IN_TEAMS = [
   {
@@ -46,7 +47,7 @@ const BUILT_IN_TEAMS = [
 ];
 
 class TeamStore {
-  constructor(dataDir = path.join(__dirname, '..', 'data')) {
+  constructor(dataDir = getDataDir()) {
     this.dataDir = dataDir;
     this.teamsFile = path.join(dataDir, 'teams.json');
     this.instancesFile = path.join(dataDir, 'team-instances.json');

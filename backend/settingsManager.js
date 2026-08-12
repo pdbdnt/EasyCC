@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const { getDataDir } = require('./dataPaths');
 
 /**
  * Manages application settings persistence
  */
 class SettingsManager {
-  constructor(dataDir = path.join(__dirname, '..', 'data')) {
+  constructor(dataDir = getDataDir()) {
     this.dataDir = dataDir;
     this.settingsFile = path.join(dataDir, 'settings.json');
 
