@@ -43,6 +43,8 @@ test('Codex Windows soft-newline chords emit WinPTY Ctrl+J input', async () => {
 
   for (const event of [
     { key: 'Enter', shiftKey: true },
+    { code: 'Enter', shiftKey: true },
+    { code: 'NumpadEnter', ctrlKey: true },
     { key: 'Enter', altKey: true },
     { key: 'Enter', ctrlKey: true },
     { key: 'j', ctrlKey: true },

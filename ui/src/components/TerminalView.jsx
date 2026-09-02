@@ -114,6 +114,12 @@ const TerminalView = forwardRef(function TerminalView({
   const wsRef = useRef(null);
   const currentSessionId = useRef(null);
   const currentCliTypeRef = useRef(session?.cliType || '');
+  // Keep terminal callbacks current during the render itself. The xterm key handler is
+  // installed only once, so waiting for an effect can leave it observing stale session
+  // metadata while panes are mounted or switched.
+  if (session?.cliType) {
+    currentCliTypeRef.current = session.cliType;
+  }
   const [sessionStatus, setSessionStatus] = useState(session?.status || 'active');
   const runtimeStateRef = useRef(session?.runtimeState || 'live');
   const [parkedDraft, setParkedDraft] = useState('');
@@ -482,6 +488,36 @@ const TerminalView = forwardRef(function TerminalView({
     term.open(terminalRef.current);
     fitAddon.fit();
 
+    const sendCodexWindowsSoftNewline = (event) => {
+      if (event.type !== 'keydown' || currentCliTypeRef.current !== 'codex-windows') {
+        return false;
+      }
+
+      const data = encodeCodexWindowsSoftNewline(event);
+      if (!data) return false;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'input',
+          data,
+          inputIntent: 'soft_newline'
+        }));
+      }
+      return true;
+    };
+
+    // Capture modified Enter before xterm normalizes Shift+Enter to ordinary Enter.
+    // attachCustomKeyEventHandler remains below as a fallback for environments where
+    // the textarea event reaches xterm directly.
+    const terminalTextarea = term.textarea;
+    const handleTerminalKeyDownCapture = (event) => {
+      sendCodexWindowsSoftNewline(event);
+    };
+    terminalTextarea?.addEventListener('keydown', handleTerminalKeyDownCapture, true);
+
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') {
         return true;
@@ -571,17 +607,18 @@ const TerminalView = forwardRef(function TerminalView({
       const codexWindowsSoftNewline = cliType === 'codex-windows'
         ? encodeCodexWindowsSoftNewline(event)
         : null;
-      if (codexWindowsSoftNewline || isExactCtrlEnter(event)) {
+      if (codexWindowsSoftNewline) {
+        sendCodexWindowsSoftNewline(event);
+        return false;
+      }
+      if (isExactCtrlEnter(event)) {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           const message = {
             type: 'input',
-            data: codexWindowsSoftNewline || encodeSoftNewline(
+            data: encodeSoftNewline(
               shouldUseBracketedSoftNewline(cliType, term.modes.bracketedPasteMode)
             )
           };
-          if (codexWindowsSoftNewline) {
-            message.inputIntent = 'soft_newline';
-          }
           wsRef.current.send(JSON.stringify(message));
         }
         return false;
@@ -842,6 +879,7 @@ const TerminalView = forwardRef(function TerminalView({
       }
       ctrlCPendingRef.current = false;
       window.__terminalOverrideKeys = false;
+      terminalTextarea?.removeEventListener('keydown', handleTerminalKeyDownCapture, true);
       resizeObserver.disconnect();
       term.dispose();
       if (wsRef.current) {

@@ -37,7 +37,11 @@ export function encodeCodexWindowsSoftNewline(event) {
   ].filter(Boolean);
   if (modifiers.length !== 1) return null;
 
-  const key = String(event.key || '').toLowerCase();
+  const eventKey = String(event.key || '').toLowerCase();
+  const eventCode = String(event.code || '').toLowerCase();
+  const key = eventKey === 'enter' || eventCode === 'enter' || eventCode === 'numpadenter'
+    ? 'enter'
+    : eventKey;
   return CODEX_WINDOWS_SOFT_NEWLINE_CHORDS.has(`${modifiers[0]}-${key}`)
     ? '\n'
     : null;
