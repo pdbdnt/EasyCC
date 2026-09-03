@@ -9,6 +9,7 @@ import { getProjectDisplayName } from '../utils/projectUtils';
 import {
   encodeCodexWindowsSoftNewline,
   encodeSoftNewline,
+  getTerminalInputIntent,
   isExactCtrlEnter,
   shouldUseBracketedSoftNewline
 } from '../utils/terminalInputUtils';
@@ -509,14 +510,14 @@ const TerminalView = forwardRef(function TerminalView({
       return true;
     };
 
-    // Capture modified Enter before xterm normalizes Shift+Enter to ordinary Enter.
-    // attachCustomKeyEventHandler remains below as a fallback for environments where
-    // the textarea event reaches xterm directly.
-    const terminalTextarea = term.textarea;
+    // Capture soft-newline chords on the stable terminal container before xterm can
+    // normalize them. Its hidden textarea may be replaced while Electron is running.
+    // attachCustomKeyEventHandler remains below as a second input boundary.
+    const terminalKeyCaptureTarget = terminalRef.current;
     const handleTerminalKeyDownCapture = (event) => {
       sendCodexWindowsSoftNewline(event);
     };
-    terminalTextarea?.addEventListener('keydown', handleTerminalKeyDownCapture, true);
+    terminalKeyCaptureTarget?.addEventListener('keydown', handleTerminalKeyDownCapture, true);
 
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') {
@@ -850,7 +851,12 @@ const TerminalView = forwardRef(function TerminalView({
 
       // Pass everything through to PTY
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'input', data }));
+        const inputIntent = getTerminalInputIntent(currentCliTypeRef.current, data);
+        wsRef.current.send(JSON.stringify({
+          type: 'input',
+          data,
+          ...(inputIntent ? { inputIntent } : {})
+        }));
       }
     });
 
@@ -879,7 +885,7 @@ const TerminalView = forwardRef(function TerminalView({
       }
       ctrlCPendingRef.current = false;
       window.__terminalOverrideKeys = false;
-      terminalTextarea?.removeEventListener('keydown', handleTerminalKeyDownCapture, true);
+      terminalKeyCaptureTarget?.removeEventListener('keydown', handleTerminalKeyDownCapture, true);
       resizeObserver.disconnect();
       term.dispose();
       if (wsRef.current) {

@@ -141,7 +141,17 @@ async function main() {
   child.onData((data) => output.push(data));
 
   try {
-    await wait(1_500);
+    const expectedDirectory = `directory: ~\\apps\\${path.basename(workspaceRoot)}`;
+    await waitFor(
+      () => {
+        const rendered = output.join('');
+        return rendered.includes(expectedDirectory) &&
+          rendered.includes('easycc-probe-model default');
+      },
+      REQUEST_TIMEOUT_MS,
+      'Codex composer to finish loading the workspace and model'
+    );
+    await wait(250);
     child.write('EASYCC_ALPHA');
     child.write(softNewline);
     child.write('EASYCC_OMEGA');

@@ -45,10 +45,13 @@ test('Codex Windows soft-newline chords emit WinPTY Ctrl+J input', async () => {
     { key: 'Enter', shiftKey: true },
     { code: 'Enter', shiftKey: true },
     { code: 'NumpadEnter', ctrlKey: true },
+    { keyCode: 13, ctrlKey: true },
     { key: 'Enter', altKey: true },
     { key: 'Enter', ctrlKey: true },
     { key: 'j', ctrlKey: true },
-    { key: 'M', ctrlKey: true }
+    { code: 'KeyJ', ctrlKey: true },
+    { key: 'M', ctrlKey: true },
+    { code: 'KeyM', ctrlKey: true }
   ]) {
     assert.equal(encodeCodexWindowsSoftNewline(event), '\n');
   }
@@ -62,9 +65,19 @@ test('Codex Windows soft-newline encoding rejects ordinary or ambiguous chords',
     { key: 'Enter', ctrlKey: true, shiftKey: true },
     { key: 'Enter', ctrlKey: true, altKey: true },
     { key: 'Enter', ctrlKey: true, metaKey: true },
+    { keyCode: 13 },
     { key: 'j', shiftKey: true },
     { key: 'x', ctrlKey: true }
   ]) {
     assert.equal(encodeCodexWindowsSoftNewline(event), null);
   }
+});
+
+test('Codex Windows raw LF input retains soft-newline intent', async () => {
+  const { getTerminalInputIntent } = await import('../ui/src/utils/terminalInputUtils.js');
+
+  assert.equal(getTerminalInputIntent('codex-windows', '\n'), 'soft_newline');
+  assert.equal(getTerminalInputIntent('codex-windows', '\r'), null);
+  assert.equal(getTerminalInputIntent('codex', '\n'), null);
+  assert.equal(getTerminalInputIntent('terminal', '\n'), null);
 });
