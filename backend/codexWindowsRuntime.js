@@ -166,9 +166,10 @@ function spawn(workingDir, { resumeTarget = null, easyccSessionId = '', env = {}
   const capability = getCapability();
   if (!capability.available) throw new Error(capability.reason);
   ensureProfile();
+  // Keep shared config forward-compatible. The Desktop app and npm CLI can
+  // update independently, so Desktop-owned fields must not abort this launch.
   const args = [
     '--profile', PROFILE_NAME,
-    '--strict-config',
     '--dangerously-bypass-hook-trust',
     '--dangerously-bypass-approvals-and-sandbox',
     '-C', workingDir

@@ -3,11 +3,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const pty = require('../backend/node_modules/node-pty');
 
 const {
   ensureProfile,
   extractExplicitResumeTarget,
-  findExplicitResumeOwners
+  findExplicitResumeOwners,
+  spawn
 } = require('../backend/codexWindowsRuntime');
 
 test('Windows Codex profile mirrors the WSL status line including context usage', () => {
@@ -92,4 +94,37 @@ test('Windows explicit-resume scan returns matching owners and fails open on sca
   assert.deepEqual(await findExplicitResumeOwners(id, {
     run: () => { throw new Error('spawn failed'); }
   }), []);
+});
+
+test('Windows Codex launch tolerates forward-compatible shared config fields', () => {
+  if (process.platform !== 'win32') return;
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'easycc-codex-forward-config-'));
+  const previousCodexHome = process.env.CODEX_HOME;
+  const originalSpawn = pty.spawn;
+  const calls = [];
+
+  try {
+    process.env.CODEX_HOME = codexHome;
+    fs.writeFileSync(
+      path.join(codexHome, 'config.toml'),
+      '[future_desktop_setting]\nenabled = true\n',
+      'utf8'
+    );
+    pty.spawn = (...args) => {
+      calls.push(args);
+      return { pid: 1 };
+    };
+
+    spawn('C:\\Users\\denni\\apps\\EasyCC', { easyccSessionId: 'session-1' });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].includes('--strict-config'), false);
+    assert.deepEqual(calls[0][1].slice(0, 2), ['--profile', 'easycc-windows']);
+    assert.equal(calls[0][2].useConpty, false);
+  } finally {
+    pty.spawn = originalSpawn;
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+    fs.rmSync(codexHome, { recursive: true, force: true });
+  }
 });
