@@ -5,6 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const pty = require('../backend/node_modules/node-pty');
+const SessionManager = require('../backend/sessionManager');
+const { forwardTerminalInputMessage } = require('../backend/terminalInputMessage');
 
 const CODEX_EXE = path.join(
   process.env.APPDATA || '',
@@ -52,7 +54,9 @@ async function main() {
     key: 'Enter',
     ctrlKey: true
   });
-  assert.equal(softNewline, '\n', 'Ctrl+Enter must map to one LF byte');
+  assert.equal(softNewline, '\n', 'Ctrl+Enter must carry the LF soft-newline intent');
+  const shiftNewline = encodeCodexWindowsSoftNewline({ key: 'Enter', shiftKey: true });
+  assert.equal(shiftNewline, '\n', 'Shift+Enter must carry the LF soft-newline intent');
 
   const requests = [];
   const server = http.createServer((request, response) => {
@@ -139,6 +143,12 @@ async function main() {
   });
   const childExit = new Promise((resolve) => child.onExit(resolve));
   child.onData((data) => output.push(data));
+  const manager = Object.create(SessionManager.prototype);
+  const session = {
+    id: 'newline-probe', cliType: 'codex-windows', status: 'waiting',
+    runtimeState: 'live', pty: child, promptBuffer: ''
+  };
+  manager.sessions = new Map([[session.id, session]]);
 
   try {
     const expectedDirectory = `directory: ~\\apps\\${path.basename(workspaceRoot)}`;
@@ -153,7 +163,19 @@ async function main() {
     );
     await wait(250);
     child.write('EASYCC_ALPHA');
-    child.write(softNewline);
+    // Keep inputs outside Codex's paste window: back-to-back writes hide an
+    // ignored standalone LF by making the whole prompt look like a paste.
+    await wait(500);
+    assert.equal(forwardTerminalInputMessage(manager, session.id, {
+      type: 'input', data: shiftNewline, inputIntent: 'soft_newline'
+    }), true);
+    await wait(500);
+    child.write('EASYCC_BETA');
+    await wait(500);
+    assert.equal(forwardTerminalInputMessage(manager, session.id, {
+      type: 'input', data: softNewline, inputIntent: 'soft_newline'
+    }), true);
+    await wait(500);
     child.write('EASYCC_OMEGA');
 
     await wait(1_000);
@@ -175,15 +197,15 @@ async function main() {
     const serializedPayload = JSON.stringify(payload);
     assert.match(
       serializedPayload,
-      /EASYCC_ALPHA\\nEASYCC_OMEGA/,
+      /EASYCC_ALPHA\\nEASYCC_BETA\\nEASYCC_OMEGA/,
       'Submitted request did not preserve the soft newline'
     );
 
     process.stdout.write(JSON.stringify({
       codexExe: CODEX_EXE,
       pty: 'winpty',
-      browserChord: 'Ctrl+Enter',
-      softNewlineBytes: Buffer.from(softNewline).toString('hex'),
+      browserChords: ['Shift+Enter', 'Ctrl+Enter'],
+      browserPayloadBytes: Buffer.from(softNewline).toString('hex'),
       requestsBeforeEnter: 0,
       requestsAfterEnter: requests.length,
       submittedMultilinePrompt: true

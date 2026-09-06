@@ -602,8 +602,8 @@ const TerminalView = forwardRef(function TerminalView({
         }
       }
 
-      // WinPTY turns LF into Codex's Ctrl+J/insert_newline console event.
-      // Intercept the browser chord so ordinary Enter remains the submit key.
+      // Send the soft-newline intent; the server encodes native Alt+Enter for
+      // WinPTY. Ordinary Enter remains the submit key.
       const cliType = currentCliTypeRef.current;
       const codexWindowsSoftNewline = cliType === 'codex-windows'
         ? encodeCodexWindowsSoftNewline(event)

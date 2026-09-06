@@ -104,7 +104,7 @@ test('Codex Windows soft newline stays an unsubmitted draft', () => {
       { inputIntent: 'soft_newline' }
     ), true);
 
-    assert.deepEqual(harness.writes, [ctrlEnter]);
+    assert.deepEqual(harness.writes, ['\x1b\r']);
     assert.equal(harness.session.promptBuffer, 'first line\n');
     assert.equal(harness.session.promptFlushTimer, null);
     assert.equal(harness.session.isComposingPrompt, true);
@@ -155,7 +155,7 @@ test('ordinary Enter submits the complete multiline prompt once', () => {
       '\r'
     ), true);
 
-    assert.deepEqual(harness.writes, ['\n', 'second line', '\r']);
+    assert.deepEqual(harness.writes, ['\x1b\r', 'second line', '\r']);
     assert.equal(harness.semanticSubmissionCount(), 1);
     assert.deepEqual(harness.promptHistory, ['first line\nsecond line']);
     assert.equal(harness.session.promptBuffer, '');

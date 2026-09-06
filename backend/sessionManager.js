@@ -5086,7 +5086,10 @@ class SessionManager extends EventEmitter {
         inputIntent === 'soft_newline' &&
         isCodexWindowsSoftNewlineInput(filteredText);
       if (isCodexWindowsSoftNewline) {
-        this._writeInputToPty(session, filteredText);
+        // A standalone LF is ignored by native Codex outside its paste window.
+        // WinPTY translates ESC + CR into Alt+Enter, which inserts a newline
+        // even when the user pauses before and after the shortcut.
+        this._writeInputToPty(session, '\x1b\r');
         this.clearPromptFlushTimer(session);
         session.promptBuffer += '\n';
         session.isComposingPrompt = true;

@@ -38,7 +38,7 @@ test('exact Ctrl+Enter excludes other modifier combinations', async () => {
   assert.equal(isExactCtrlEnter({ key: 'Enter' }), false);
 });
 
-test('Codex Windows soft-newline chords emit WinPTY Ctrl+J input', async () => {
+test('Codex Windows soft-newline chords emit the LF intent payload', async () => {
   const { encodeCodexWindowsSoftNewline } = await import('../ui/src/utils/terminalInputUtils.js');
 
   for (const event of [

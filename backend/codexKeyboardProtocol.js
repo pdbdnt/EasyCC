@@ -1,6 +1,6 @@
-// Native Codex runs behind WinPTY, which translates byte input into Windows
-// console key events. LF is delivered as Codex's Ctrl+J/insert_newline action;
-// CSI-u remains literal text because this path is not a VT keyboard stream.
+// LF is the browser-to-server soft-newline payload. SessionManager translates
+// this validated intent to native Alt+Enter (ESC + CR) for WinPTY; standalone
+// LF is ignored by Codex outside its paste window.
 const CODEX_WINDOWS_SOFT_NEWLINE_INPUT = '\n';
 
 function isCodexWindowsSoftNewlineInput(value) {
