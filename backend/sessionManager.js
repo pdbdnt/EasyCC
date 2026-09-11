@@ -2910,6 +2910,51 @@ class SessionManager extends EventEmitter {
     return effectiveStatus;
   }
 
+  scheduleCodexRenameSync(session, submittedText) {
+    if (session.cliType !== CODEX_WINDOWS) return;
+    const match = String(submittedText).trim().match(/^\/rename[ \t]+([^\r\n]+)$/);
+    if (!match) return;
+    const expectedName = match[1].trim();
+    const conversationId = session.codexSessionId;
+    const generation = session.ptyGeneration;
+    clearTimeout(session.codexRenameSyncTimer);
+    let attempts = 0;
+    const check = () => {
+      session.codexRenameSyncTimer = null;
+      if (session.codexSessionId !== conversationId || session.ptyGeneration !== generation ||
+          ['paused', 'completed', 'killed'].includes(session.status)) return;
+      if (this.syncCodexWindowsThreadName(session, expectedName) || ++attempts >= 10) return;
+      session.codexRenameSyncTimer = setTimeout(check, 250);
+      session.codexRenameSyncTimer.unref?.();
+    };
+    session.codexRenameSyncTimer = setTimeout(check, 250);
+    session.codexRenameSyncTimer.unref?.();
+  }
+
+  syncCodexWindowsThreadName(session, expectedName) {
+    if (session.cliType !== CODEX_WINDOWS || !session.codexSessionId ||
+        !['verified', 'resume_verified'].includes(session.codexIdentityState)) return;
+
+    // Modern Codex can update only its footer on /rename. Read the authoritative
+    // index by exact ID, only during a bounded check after a submitted /rename.
+    const indexPath = path.join(this.codexSessionService.resolveWindowsCodexHome(), 'session_index.jsonl');
+    let stat;
+    try { stat = fs.statSync(indexPath); } catch { return; }
+    const signature = `${indexPath}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+    if (this.codexNameIndexSignature !== signature) {
+      this.codexNameIndex = this.codexSessionService.loadWindowsIndex();
+      this.codexNameIndexSignature = signature;
+    }
+    const name = this.codexNameIndex.get(String(session.codexSessionId).toLowerCase())?.threadName;
+    if (!name || (expectedName && name !== expectedName)) return false;
+    if (name === session.codexThreadName && name === session.name) return true;
+    session.name = name;
+    session.codexThreadName = name;
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    return true;
+  }
+
   extractSessionRename(data) {
     const cleanData = this.cleanTerminalText(data);
     const patterns = [
@@ -5110,6 +5155,9 @@ class SessionManager extends EventEmitter {
         submitDelayMs: codexWindowsSubmitDelayMs,
         onSubmitted: onCodexWindowsSubmitted
       });
+      if (isSubmittedInput) {
+        this.scheduleCodexRenameSync(session, `${session.promptBuffer || ''}${filteredText}`);
+      }
 
       // Prompt detection - buffer until Enter.
       // Treat multiline paste chunks as a single prompt entry.
