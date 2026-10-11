@@ -19,6 +19,9 @@ const { CODEX_WINDOWS, getCodexRuntime, isCodexType } = require('./codexCliTypes
 const { isCodexWindowsSoftNewlineInput } = require('./codexKeyboardProtocol');
 const { ByteRingBuffer } = require('./byteRingBuffer');
 const { getDataPath } = require('./dataPaths');
+const claudeProcessRegistry = require('./claudeProcessRegistry');
+const CLAUDE_PID_RESOLVE_DELAYS_MS = [2000, 5000, 12000, 30000];
+const CLAUDE_REGISTRY_DEBOUNCE_MS = 500;
 const MAX_PROMPT_HISTORY_CHARS = 4000;
 const MAX_PROMPT_HISTORY_COUNT = 25;
 const OUTPUT_BUFFER_MAX_BYTES = 512 * 1024;
@@ -3220,6 +3223,11 @@ class SessionManager extends EventEmitter {
         return;
       }
 
+      if (this.shouldKeepSessionAfterExit(session, exitCode)) {
+        this.pauseSessionAfterUnexpectedExit(session, { exitCode, signal });
+        return;
+      }
+
       session.status = 'completed';
       this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
         persist: false,
@@ -3245,6 +3253,7 @@ class SessionManager extends EventEmitter {
       this.armCodexWindowsStartupWatchdog(session);
     }
     this.setupRoleInjectionWorkflow(session, 'create');
+    this.trackClaudeProcess(session);
     if (isCodexType(cliType)) {
       this.codexSessionService.kickMonitor();
     }
@@ -3268,6 +3277,11 @@ class SessionManager extends EventEmitter {
    * @param {object} session - Session object
    */
   watchClaudeSessionForUpdates(session) {
+    // The process registry gives exact identity. Guessing from the newest
+    // transcript in the folder binds this session to whatever other Claude
+    // (desktop app, another terminal) last wrote there.
+    if (this.hasClaudeProcessRegistry()) return;
+
     // Retry sync periodically until we get a Claude session ID
     const attemptSync = (attemptNum = 1) => {
       if (session.claudeSessionId || attemptNum > 10) {
@@ -3322,48 +3336,189 @@ class SessionManager extends EventEmitter {
 
     // Check if this is a new/different Claude session
     if (latestClaudeSession && latestClaudeSession.sessionId !== session.claudeSessionId) {
-      const oldClaudeSessionId = session.claudeSessionId;
-
-      // Before updating claudeSessionId, snapshot plans from the old transcript
-      // so they survive the ID switch (e.g. after /clear)
-      if (oldClaudeSessionId) {
-        // Save old ID to history
-        const history = Array.isArray(session.previousClaudeSessionIds)
-          ? session.previousClaudeSessionIds
-          : [];
-        const withoutCurrent = history.filter(v => v !== oldClaudeSessionId);
-        withoutCurrent.push(oldClaudeSessionId);
-        session.previousClaudeSessionIds = withoutCurrent.slice(-20);
-
-        // Snapshot transcript-tracked plans so they survive the ID switch
-        const trackedPlanPaths = this.planManager.getPlansForClaudeSession(
-          oldClaudeSessionId,
-          session.workingDir
-        );
-        if (trackedPlanPaths.length > 0) {
-          const existingPlans = new Set(session.plans || []);
-          for (const p of trackedPlanPaths) existingPlans.add(p);
-          session.plans = [...existingPlans];
-        }
-      }
-
-      session.claudeSessionId = latestClaudeSession.sessionId;
-
-      // Also update the session name from Claude's summary if set
-      if (latestClaudeSession.summary && latestClaudeSession.summary !== 'No prompt') {
-        session.claudeSessionName = latestClaudeSession.summary;
-      }
-
-      this.dataStore.saveSession(session);
-
-      console.log(`Synced Claude session: ${session.claudeSessionId} (${session.claudeSessionName || 'unnamed'})`);
-
-      this.emit('sessionUpdated', {
-        sessionId: session.id,
-        claudeSessionId: session.claudeSessionId,
-        claudeSessionName: session.claudeSessionName
-      });
+      const summary = latestClaudeSession.summary && latestClaudeSession.summary !== 'No prompt'
+        ? latestClaudeSession.summary
+        : undefined;
+      this.adoptClaudeSessionId(session, latestClaudeSession.sessionId, { name: summary, source: 'transcript-mtime' });
     }
+  }
+
+  /**
+   * Point a session at a different Claude conversation, keeping the old ID in
+   * history and its transcript-tracked plans attached (e.g. after /clear).
+   * @param {object} session - Our session object
+   * @param {string} newClaudeSessionId - Conversation ID the CLI is now on
+   * @param {{name?: string|null, source?: string}} [options] - name: undefined keeps the current one
+   */
+  adoptClaudeSessionId(session, newClaudeSessionId, { name, source = 'unknown' } = {}) {
+    const oldClaudeSessionId = session.claudeSessionId;
+    if (!newClaudeSessionId || newClaudeSessionId === oldClaudeSessionId) return false;
+
+    if (oldClaudeSessionId) {
+      const history = Array.isArray(session.previousClaudeSessionIds)
+        ? session.previousClaudeSessionIds
+        : [];
+      const withoutCurrent = history.filter(v => v !== oldClaudeSessionId);
+      withoutCurrent.push(oldClaudeSessionId);
+      session.previousClaudeSessionIds = withoutCurrent.slice(-20);
+
+      // Snapshot transcript-tracked plans so they survive the ID switch
+      const trackedPlanPaths = this.planManager.getPlansForClaudeSession(
+        oldClaudeSessionId,
+        session.workingDir
+      );
+      if (trackedPlanPaths.length > 0) {
+        const existingPlans = new Set(session.plans || []);
+        for (const p of trackedPlanPaths) existingPlans.add(p);
+        session.plans = [...existingPlans];
+      }
+    }
+
+    session.claudeSessionId = newClaudeSessionId;
+    if (name !== undefined) session.claudeSessionName = name;
+
+    this.dataStore.saveSession(session);
+    debugLog(`Session ${session.id}: Claude conversation ${oldClaudeSessionId || 'none'} -> ${newClaudeSessionId} (${source})`);
+
+    this.emit('sessionUpdated', {
+      sessionId: session.id,
+      claudeSessionId: session.claudeSessionId,
+      claudeSessionName: session.claudeSessionName
+    });
+    return true;
+  }
+
+  /**
+   * Whether this Claude Code build publishes the per-process registry that
+   * gives exact PTY -> conversation identity.
+   */
+  hasClaudeProcessRegistry() {
+    return fs.existsSync(claudeProcessRegistry.getClaudeSessionsDir());
+  }
+
+  /**
+   * Bind a freshly spawned Claude PTY to its process registry entry so the
+   * session follows the conversation that terminal is really on.
+   * @param {object} session - Session whose session.pty was just spawned
+   */
+  trackClaudeProcess(session) {
+    if (!session || (session.cliType || 'claude') !== 'claude' || !session.pty) return;
+    const ptyProcess = session.pty;
+    session.claudePid = null;
+    session.claudePtySpawnedAtMs = Date.now();
+    if (!this.hasClaudeProcessRegistry()) return;
+    this.startClaudeRegistryWatcher();
+
+    const attempt = async (index) => {
+      if (this.isShuttingDown || session.pty !== ptyProcess || session.claudePid) return;
+      const pid = await claudeProcessRegistry.findClaudePidForPty(ptyProcess.pid);
+      if (this.isShuttingDown || session.pty !== ptyProcess) return;
+      if (pid) {
+        session.claudePid = pid;
+        this.syncClaudeIdentityFromProcess(session);
+        return;
+      }
+      if (index + 1 < CLAUDE_PID_RESOLVE_DELAYS_MS.length) schedule(index + 1);
+      else debugLog(`Session ${session.id}: could not find the Claude process for PTY ${ptyProcess.pid}`);
+    };
+    const schedule = (index) => {
+      const timer = setTimeout(() => { void attempt(index); }, CLAUDE_PID_RESOLVE_DELAYS_MS[index]);
+      timer.unref?.();
+    };
+    schedule(0);
+  }
+
+  /**
+   * Read the registry entry of the session's Claude process and adopt its
+   * conversation ID if the terminal moved to another one (/clear, /resume).
+   * @param {object} session - Our session object
+   */
+  syncClaudeIdentityFromProcess(session) {
+    if (!session || !session.pty || !session.claudePid) return false;
+    const entry = claudeProcessRegistry.readClaudeProcessEntry(session.claudePid);
+    if (!entry) return false;
+    // A stale file left by an earlier process that had the same pid
+    if (Number(entry.startedAt) < (session.claudePtySpawnedAtMs || 0) - 5000) return false;
+    if (entry.sessionId === session.claudeSessionId) return false;
+
+    const owner = [...this.sessions.values()].find(s => s.id !== session.id && s.claudeSessionId === entry.sessionId);
+    if (owner) {
+      debugLog(`Session ${session.id}: Claude conversation ${entry.sessionId} is already owned by ${owner.id}`);
+      return false;
+    }
+    return this.adoptClaudeSessionId(session, entry.sessionId, { name: null, source: 'process-registry' });
+  }
+
+  startClaudeRegistryWatcher() {
+    if (this.claudeRegistryWatcher) return;
+    try {
+      this.claudeRegistryWatcher = fs.watch(claudeProcessRegistry.getClaudeSessionsDir(), { persistent: false }, () => {
+        if (this.claudeRegistryTimer) return;
+        this.claudeRegistryTimer = setTimeout(() => {
+          this.claudeRegistryTimer = null;
+          for (const session of this.sessions.values()) this.syncClaudeIdentityFromProcess(session);
+        }, CLAUDE_REGISTRY_DEBOUNCE_MS);
+        this.claudeRegistryTimer.unref?.();
+      });
+      this.claudeRegistryWatcher.on('error', () => this.stopClaudeRegistryWatcher());
+    } catch (error) {
+      console.error('Error watching Claude process registry:', error.message);
+      this.claudeRegistryWatcher = null;
+    }
+  }
+
+  stopClaudeRegistryWatcher() {
+    if (this.claudeRegistryTimer) {
+      clearTimeout(this.claudeRegistryTimer);
+      this.claudeRegistryTimer = null;
+    }
+    if (this.claudeRegistryWatcher) {
+      try { this.claudeRegistryWatcher.close(); } catch {}
+      this.claudeRegistryWatcher = null;
+    }
+  }
+
+  /**
+   * Keep an AI session resumable when its CLI process dies on its own
+   * (crash, killed console, failed update) instead of dropping it from the list.
+   * A clean exit (code 0) still ends the session.
+   */
+  shouldKeepSessionAfterExit(session, exitCode) {
+    const cliType = session.cliType || 'claude';
+    return exitCode !== 0 && (cliType === 'claude' || isCodexType(cliType));
+  }
+
+  pauseSessionAfterUnexpectedExit(session, { exitCode, signal }) {
+    const cliName = isCodexType(session.cliType) ? 'Codex' : 'Claude';
+    debugLog(`Session ${session.id} PAUSED after unexpected exit (exitCode=${exitCode}, signal=${signal})`);
+    if (session.idleTimer) {
+      clearInterval(session.idleTimer);
+      session.idleTimer = null;
+    }
+    session.status = 'paused';
+    session.runtimeState = 'paused';
+    session.pauseReason = 'process_exited';
+    session.parkedAt = null;
+    session.idleEvidence = null;
+    session.readySince = null;
+    this.finalizeCodexTurnTiming(session, 'stopped', Date.now(), {
+      persist: false,
+      emit: false
+    });
+    this._clearWriteQueue(session);
+    session.pty = null;
+    this.clearCodexStatusSampler(session);
+    this.clearCodexSessionCapture(session);
+    this.dataStore.saveSession(session);
+    this.emit('sessionUpdated', this.getSessionSnapshot(session));
+    this.emit('statusChange', {
+      sessionId: session.id,
+      status: 'paused',
+      currentTask: session.currentTask,
+      error: `${cliName} exited unexpectedly (code ${exitCode}). Resume to continue.`,
+      exitCode,
+      signal
+    });
   }
 
   /**
@@ -3390,7 +3545,7 @@ class SessionManager extends EventEmitter {
 
     for (const pattern of patterns) {
       const match = data.match(pattern);
-      if (match && match[1] && match[1].length >= 6) {
+      if (match && claudeProcessRegistry.isClaudeSessionId(match[1])) {
         // Don't adopt an ID already owned by another EasyCC session
         if (ownedIds.has(match[1])) {
           console.log(`Skipping Claude session ID ${match[1]} — already owned by another session`);
@@ -3816,6 +3971,7 @@ class SessionManager extends EventEmitter {
     // Kill the PTY process
     try {
       if (session.pty) {
+        this.syncClaudeIdentityFromProcess(session);
         this._clearWriteQueue(session);
         session.pty.kill();
         session.pty = null;
@@ -3972,6 +4128,7 @@ class SessionManager extends EventEmitter {
       session.lastPtyExitGeneration = null;
       session.lastPtyExitEvent = null;
       const ptyGeneration = session.ptyGeneration;
+      this.trackClaudeProcess(session);
 
       processRef.onData((data) => {
         if (session.pty !== processRef || session.ptyGeneration !== ptyGeneration) return;
@@ -4080,6 +4237,11 @@ class SessionManager extends EventEmitter {
             error: session.recoveryError || 'Failed to resume session',
             recoveryFailure: recovery
           });
+          return;
+        }
+
+        if (this.shouldKeepSessionAfterExit(session, exitCode)) {
+          this.pauseSessionAfterUnexpectedExit(session, { exitCode, signal });
           return;
         }
 
@@ -4227,7 +4389,7 @@ class SessionManager extends EventEmitter {
         session.claudeIndexWatcher = null;
       }
       this.watchClaudeSessionForUpdates(session);
-      if (shouldResyncClaudeSession) {
+      if (shouldResyncClaudeSession && !this.hasClaudeProcessRegistry()) {
         this.syncWithClaudeSession(session);
       }
     }
@@ -4796,6 +4958,7 @@ class SessionManager extends EventEmitter {
     }
 
     // Mark as intentionally killed so onExit handler won't re-persist
+    debugLog(`Session ${id} (${session.name}) KILLED via killSession() (was ${session.status})`);
     session.status = 'killed';
 
     // Kill the PTY process
@@ -6312,6 +6475,7 @@ class SessionManager extends EventEmitter {
     this.isShuttingDown = true;  // Prevent onExit handlers from deleting sessions
     this.planManager.stopWatching();
     this.codexSessionService.stopMonitor();
+    this.stopClaudeRegistryWatcher();
 
     for (const [id, session] of this.sessions) {
       if (session.status === 'killed') {
@@ -6347,6 +6511,7 @@ class SessionManager extends EventEmitter {
         session.pauseReason = session.pauseReason || 'startup_restore';
       }
       if (session.pty) {
+        this.syncClaudeIdentityFromProcess(session);
         session.pty.kill();
       }
       session.status = 'paused';

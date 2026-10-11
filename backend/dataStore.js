@@ -237,7 +237,11 @@ class DataStore {
    */
   writeSessionsFile(sessions) {
     const data = JSON.stringify({ sessions }, null, 2);
-    fs.writeFileSync(this.sessionsFile, data, 'utf8');
+    // Write-then-rename: a process killed mid-write (app quit, crash) must not
+    // leave a truncated file, which would read back as "no sessions".
+    const tempFile = `${this.sessionsFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, data, 'utf8');
+    fs.renameSync(tempFile, this.sessionsFile);
   }
 
   // ============================================
